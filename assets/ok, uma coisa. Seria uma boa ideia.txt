@@ -1,0 +1,1 @@
+ok, uma coisa. Seria uma boa ideia já salvar nossas consultas de alguma maneira. Para que não precise consultar toda vez e ter essa demora. Ai o que eu tinha pensado. Salvar os dados importantes. Ai quando fazer uma consulta. Primeiro verifica na nossa base. Se tem o carro especifico. Faz a busca só do preço na fipe
