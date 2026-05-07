@@ -1,73 +1,58 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import OpenAI from 'openai';
 import { briefingToText } from './briefing.js';
 
-const MODEL = 'gemini-2.5-flash';
+const MODEL = 'llama-3.3-70b-versatile';
+// fallback rápido (14.400 RPD): 'llama-3.1-8b-instant'
 
-let _ai = null;
-function getAI() {
-  if (_ai) return _ai;
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error('GEMINI_API_KEY ausente no .env');
-  _ai = new GoogleGenAI({ apiKey });
-  return _ai;
+let _client = null;
+function getClient() {
+  if (_client) return _client;
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) throw new Error('GROQ_API_KEY ausente no .env');
+  _client = new OpenAI({
+    apiKey,
+    baseURL: 'https://api.groq.com/openai/v1',
+  });
+  return _client;
 }
 
-const CURATOR_SCHEMA = {
-  type: Type.OBJECT,
-  properties: {
-    candidatos: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          marca: { type: Type.STRING, description: 'Nome da marca exatamente como aparece no Brasil. Ex: "Toyota", "Volkswagen", "Chevrolet".' },
-          modelo: { type: Type.STRING, description: 'Modelo + versão/trim quando relevante. Ex: "Corolla Cross XRX Hybrid", "T-Cross Highline".' },
-          ano: { type: Type.INTEGER, description: 'Ano-modelo sugerido para consulta FIPE (carro usado, dentro do ano mínimo do briefing).' },
-          tipo: { type: Type.STRING, description: 'Carroceria. Use: Hatch, Sedã, SUV, Picape, Minivan, Esportivo.' },
-          combustivel: { type: Type.STRING, description: 'Flex, Gasolina, Diesel, Híbrido, Híbrido plug-in, Elétrico.' },
-          racional: { type: Type.STRING, description: 'Em 1-2 frases: por que este modelo entra na shortlist deste cliente.' },
-        },
-        required: ['marca', 'modelo', 'ano', 'tipo', 'combustivel', 'racional'],
-      },
-    },
-  },
-  required: ['candidatos'],
-};
+const CURATOR_SCHEMA_DESC = `Retorne EXCLUSIVAMENTE um JSON com este formato exato:
+{
+  "candidatos": [
+    {
+      "marca": "string — Nome da marca exatamente como aparece no Brasil. Ex: 'Toyota', 'Volkswagen', 'Chevrolet'.",
+      "modelo": "string — Modelo + versão/trim quando relevante. Ex: 'Corolla Cross XRX Hybrid', 'T-Cross Highline'.",
+      "ano": 0,
+      "tipo": "string — Carroceria. Use: Hatch, Sedã, SUV, Picape, Minivan, Esportivo.",
+      "combustivel": "string — Flex, Gasolina, Diesel, Híbrido, Híbrido plug-in, Elétrico.",
+      "racional": "string — Em 1-2 frases: por que este modelo entra na shortlist deste cliente."
+    }
+  ]
+}
+- "ano" é INTEIRO (ano-modelo para consulta FIPE).
+- Todos os campos são obrigatórios em cada candidato.
+- "candidatos" deve conter de 15 a 18 itens.`;
 
-const VENDOR_SCHEMA = {
-  type: Type.OBJECT,
-  properties: {
-    top: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          candidatoId: { type: Type.STRING, description: 'ID do candidato fornecido na lista de entrada.' },
-          rank: { type: Type.INTEGER, description: 'Posição final, começando em 1 para o melhor match.' },
-          match: { type: Type.INTEGER, description: 'Aderência ao briefing de 0 a 100. Apenas o #1 pode chegar a 95-99.' },
-          veredicto: { type: Type.STRING, description: 'Frase de uma linha que resume por que recomendar (será o título no card).' },
-          why: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: '2 a 4 razões objetivas conectando o carro ao briefing. Cite preço/orçamento quando relevante.',
-          },
-          pros: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: '2 a 3 pontos fortes do modelo (qualidades intrínsecas).',
-          },
-          cons: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: '1 a 2 pontos de atenção honestos. Não inventar problema; se não há, retornar array vazio.',
-          },
-        },
-        required: ['candidatoId', 'rank', 'match', 'veredicto', 'why', 'pros', 'cons'],
-      },
-    },
-  },
-  required: ['top'],
-};
+const VENDOR_SCHEMA_DESC = `Retorne EXCLUSIVAMENTE um JSON com este formato exato:
+{
+  "top": [
+    {
+      "candidatoId": "string — ID do candidato fornecido na lista de entrada.",
+      "rank": 0,
+      "match": 0,
+      "veredicto": "string — Frase de uma linha que resume por que recomendar (vira o título do card).",
+      "why": ["string", "..."],
+      "pros": ["string", "..."],
+      "cons": ["string", "..."]
+    }
+  ]
+}
+- "rank" é inteiro começando em 1 (melhor match).
+- "match" é inteiro de 0 a 100. Apenas o #1 pode chegar a 95-99.
+- "why": 2 a 4 razões objetivas conectando o carro ao briefing. Cite preço/orçamento quando relevante.
+- "pros": 2 a 3 pontos fortes do modelo (qualidades intrínsecas).
+- "cons": 1 a 2 pontos de atenção honestos. Se não há nada relevante, retorne array vazio. NUNCA invente defeito.
+- Todos os campos são obrigatórios em cada item.`;
 
 const CURATOR_SYSTEM = `Você é um especialista profundo no mercado automotivo brasileiro de carros usados. Conhece TODAS as marcas e modelos vendidos no Brasil nos últimos 10 anos, suas versões, problemas comuns, depreciação, custo de manutenção e qual perfil de cliente cada modelo serve melhor.
 
@@ -98,7 +83,9 @@ Regras obrigatórias:
 
 Antes de finalizar, REVISE mentalmente: tenho 12+ candidatos? Tenho 5+ marcas? Cada um cabe no orçamento?
 
-Não escreva nada fora do JSON.`;
+Não escreva nada fora do JSON.
+
+${CURATOR_SCHEMA_DESC}`;
 
 const VENDOR_SYSTEM = `Você é um consultor sênior de venda de carros, com 20 anos de experiência. Honesto, direto, NÃO empurra carro — recomenda o que realmente serve ao cliente.
 
@@ -128,30 +115,34 @@ Ordenação e match:
 - Use SOMENTE os candidatos da lista que recebeu. Não invente carros novos.
 - Referencie cada carro pelo "candidatoId" exato fornecido.
 
-Não escreva nada fora do JSON.`;
+Não escreva nada fora do JSON.
+
+${VENDOR_SCHEMA_DESC}`;
+
+async function runChat({ system, user }) {
+  const client = getClient();
+  const completion = await client.chat.completions.create({
+    model: MODEL,
+    temperature: 0.3,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ],
+  });
+  const text = completion.choices?.[0]?.message?.content;
+  if (!text) throw new Error('Resposta vazia do modelo');
+  return JSON.parse(text);
+}
 
 export async function runCurator(briefing) {
-  const ai = getAI();
   const briefText = briefingToText(briefing);
-  const prompt = `Briefing do cliente:\n\n${briefText}\n\nGere a shortlist de 12 a 15 candidatos.`;
-
-  const res = await ai.models.generateContent({
-    model: MODEL,
-    contents: prompt,
-    config: {
-      systemInstruction: CURATOR_SYSTEM,
-      temperature: 0.3,
-      responseMimeType: 'application/json',
-      responseSchema: CURATOR_SCHEMA,
-    },
-  });
-
-  const json = JSON.parse(res.text);
+  const prompt = `Briefing do cliente:\n\n${briefText}\n\nGere a shortlist de 15 a 18 candidatos.`;
+  const json = await runChat({ system: CURATOR_SYSTEM, user: prompt });
   return json.candidatos;
 }
 
 export async function runVendor(briefing, resolvedCandidates) {
-  const ai = getAI();
   const briefText = briefingToText(briefing);
 
   const candidatosTexto = resolvedCandidates.map((c, i) => {
@@ -160,18 +151,6 @@ export async function runVendor(briefing, resolvedCandidates) {
   }).join('\n');
 
   const prompt = `Briefing do cliente:\n\n${briefText}\n\n---\n\nCandidatos validados na FIPE (use o ID exato como "candidatoId" na resposta):\n\n${candidatosTexto}\n\nMonte o top 10 final.`;
-
-  const res = await ai.models.generateContent({
-    model: MODEL,
-    contents: prompt,
-    config: {
-      systemInstruction: VENDOR_SYSTEM,
-      temperature: 0.3,
-      responseMimeType: 'application/json',
-      responseSchema: VENDOR_SCHEMA,
-    },
-  });
-
-  const json = JSON.parse(res.text);
+  const json = await runChat({ system: VENDOR_SYSTEM, user: prompt });
   return json.top;
 }

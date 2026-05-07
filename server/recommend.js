@@ -57,26 +57,85 @@ export async function recommend(rawBriefing, { onStep } = {}) {
   if (matched.length === 0) {
     return {
       ok: false,
-      reason: 'Nenhum candidato pôde ser resolvido na FIPE.',
+      reason: 'Nenhum candidato pôde ser resolvido na FIPE. Tente refinar o briefing (modelos mais comuns, ano mínimo menor, ou amplie os tipos de carroceria).',
       diagnostico: { candidatos, falhas: failed },
+    };
+  }
+
+  // Filtro rígido por ano mínimo (usa anoModelo da FIPE, não a sugestão do LLM)
+  const anoMin = briefing.anoMin;
+  let anoFiltered = matched;
+  let removidosPorAno = [];
+  if (anoMin) {
+    removidosPorAno = matched
+      .filter(p => Number(p.res.fipe.anoModelo) < Number(anoMin))
+      .map(p => ({ marca: p.res.fipe.marca, modelo: p.res.fipe.modelo, ano: p.res.fipe.anoModelo }));
+    anoFiltered = matched.filter(p => Number(p.res.fipe.anoModelo) >= Number(anoMin));
+    log('ano-filtered', { count: anoFiltered.length, removidos: removidosPorAno.length });
+  }
+
+  // Filtro rígido por tipo de carroceria (compara slug do curador com slugs pedidos)
+  const tiposPedidosSlug = (briefing.tiposDesejados || [])
+    .map(t => TIPO_TO_SLUG[t])
+    .filter(Boolean);
+  let tipoFiltered = anoFiltered;
+  let removidosPorTipo = [];
+  if (tiposPedidosSlug.length) {
+    removidosPorTipo = anoFiltered
+      .filter(p => !tiposPedidosSlug.includes(tipoSlug(p.cand.tipo)))
+      .map(p => ({ marca: p.res.fipe.marca, modelo: p.res.fipe.modelo, ano: p.res.fipe.anoModelo, tipo: p.cand.tipo }));
+    tipoFiltered = anoFiltered.filter(p => tiposPedidosSlug.includes(tipoSlug(p.cand.tipo)));
+    log('tipo-filtered', { count: tipoFiltered.length, removidos: removidosPorTipo.length });
+  }
+
+  if (tipoFiltered.length === 0) {
+    const motivos = [];
+    if (anoMin && removidosPorAno.length) motivos.push(`ano mínimo ${anoMin} (${removidosPorAno.length} descartados por ano)`);
+    if (removidosPorTipo.length) motivos.push(`tipo(s) ${briefing.tiposDesejados.join(', ')} (${removidosPorTipo.length} descartados por carroceria)`);
+    return {
+      ok: false,
+      reason: `Não encontrei opções que respeitem o briefing${motivos.length ? ': ' + motivos.join(' e ') : ''}. Sugiro refinar a busca — talvez ampliar o orçamento, baixar o ano mínimo ou aceitar tipos próximos.`,
+      diagnostico: {
+        curadorSugeriu: candidatos.length,
+        fipeResolvidos: matched.length,
+        descartadosPorAno: removidosPorAno,
+        descartadosPorTipo: removidosPorTipo,
+      },
     };
   }
 
   const orc = briefing.orcamentoReais;
   const lower = orc.min * 0.85;
   const upper = orc.max * 1.05;
-  let inBudget = matched.filter(p => p.res.fipe.preco >= lower && p.res.fipe.preco <= upper);
+  let inBudget = tipoFiltered.filter(p => p.res.fipe.preco >= lower && p.res.fipe.preco <= upper);
   let budgetMode = 'normal';
   if (inBudget.length < 5) {
-    inBudget = matched.filter(p => p.res.fipe.preco >= orc.min * 0.7 && p.res.fipe.preco <= orc.max * 1.1);
+    inBudget = tipoFiltered.filter(p => p.res.fipe.preco >= orc.min * 0.7 && p.res.fipe.preco <= orc.max * 1.1);
     budgetMode = 'relaxed';
   }
   if (inBudget.length < 3) {
-    inBudget = matched.filter(p => p.res.fipe.preco <= orc.max * 1.1);
+    inBudget = tipoFiltered.filter(p => p.res.fipe.preco <= orc.max * 1.1);
     budgetMode = 'budget-cap-only';
   }
-  const foraOrcamento = matched.filter(p => !inBudget.includes(p));
+  const foraOrcamento = tipoFiltered.filter(p => !inBudget.includes(p));
   log('budget-filtered', { count: inBudget.length, fora: foraOrcamento.length, mode: budgetMode });
+
+  if (inBudget.length === 0) {
+    return {
+      ok: false,
+      reason: `Encontrei modelos que respeitam ano mínimo e carroceria, mas nenhum dentro do orçamento de R$ ${orc.min.toLocaleString('pt-BR')} a R$ ${orc.max.toLocaleString('pt-BR')}. Tente ampliar o teto do orçamento.`,
+      diagnostico: {
+        curadorSugeriu: candidatos.length,
+        fipeResolvidos: matched.length,
+        aposFiltroAno: anoFiltered.length,
+        aposFiltroTipo: tipoFiltered.length,
+        foraDoOrcamento: tipoFiltered.map(p => ({
+          marca: p.res.fipe.marca, modelo: p.res.fipe.modelo, ano: p.res.fipe.anoModelo,
+          preco: p.res.fipe.preco, precoTexto: p.res.fipe.precoTexto,
+        })),
+      },
+    };
+  }
 
   const candidatesForVendor = inBudget.map(p => p.res);
   const top = await runVendor(briefing, candidatesForVendor);
@@ -130,6 +189,10 @@ export async function recommend(rawBriefing, { onStep } = {}) {
       fipeResolvidos: matched.length,
       fipeFalhou: failed.length,
       duplicadosFipe: duplicates.length,
+      descartadosPorAno: removidosPorAno,
+      descartadosPorTipo: removidosPorTipo,
+      aposFiltroAno: anoFiltered.length,
+      aposFiltroTipo: tipoFiltered.length,
       foraDoOrcamento: foraOrcamento.map(summarize),
       modoOrcamento: budgetMode,
       vendedorRetornou: topEnriched.length,

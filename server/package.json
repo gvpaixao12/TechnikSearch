@@ -9,10 +9,10 @@
     "test:fipe": "node scripts/test-fipe.js"
   },
   "dependencies": {
-    "@google/genai": "^1.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
-    "fuse.js": "^7.0.0"
+    "fuse.js": "^7.0.0",
+    "openai": "^4.77.0"
   }
 }

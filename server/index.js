@@ -25,7 +25,7 @@ app.get('/', (_req, res) => {
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
-    geminiKey: process.env.GEMINI_API_KEY ? 'set' : 'missing',
+    groqKey: process.env.GROQ_API_KEY ? 'set' : 'missing',
     time: new Date().toISOString(),
   });
 });

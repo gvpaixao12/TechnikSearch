@@ -47,6 +47,7 @@ function App() {
   const [lifestyle, setLifestyle] = useState(['family','travel']);
   const [priorities, setPriorities] = useState(['safety','comfort','economy']);
   const [notes, setNotes]     = useState('Cliente viaja para a serra duas vezes por mês. Prioriza espaço e segurança ativa.');
+  const [notesAny, setNotesAny] = useState(false);
 
   function toggle(setter, list, id) {
     setter(list.includes(id) ? list.filter(x => x !== id) : [...list, id]);
@@ -76,7 +77,8 @@ function App() {
       client, budget, yearMin,
       seats: seatsAny ? null : seats,
       trunk: trunkAny ? null : trunk,
-      types, fuels, lifestyle, priorities, notes,
+      types, fuels, lifestyle, priorities,
+      notes: notesAny ? '' : notes,
     };
 
     fetch(`${API_BASE}/api/recommend`, {
@@ -187,6 +189,7 @@ function App() {
             lifestyle={lifestyle} setLifestyle={setLifestyle}
             priorities={priorities} setPriorities={setPriorities}
             notes={notes} setNotes={setNotes}
+            notesAny={notesAny} setNotesAny={setNotesAny}
             toggle={toggle}
           />
         )}
@@ -240,7 +243,8 @@ function FormView(props) {
           seats, setSeats, seatsAny, setSeatsAny,
           trunk, setTrunk, trunkAny, setTrunkAny,
           yearMin, setYearMin, types, setTypes, fuels, setFuels,
-          lifestyle, setLifestyle, priorities, setPriorities, notes, setNotes, toggle } = props;
+          lifestyle, setLifestyle, priorities, setPriorities,
+          notes, setNotes, notesAny, setNotesAny, toggle } = props;
 
   const total = (
     (client.name ? 1 : 0) +
@@ -336,21 +340,17 @@ function FormView(props) {
             <div className="q2__field">
               <label className="tk-label">
                 <span><Icon.Suitcase style={{ verticalAlign: -3, marginRight: 4 }}/> Porta-malas</span>
-                {trunkAny
-                  ? <AnyToggle on={trunkAny} onChange={setTrunkAny} />
-                  : <span className="tk-mono">{trunk} L</span>}
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  {!trunkAny && <span className="tk-mono">{trunk} L</span>}
+                  <AnyToggle on={trunkAny} onChange={setTrunkAny} />
+                </span>
               </label>
               {trunkAny ? (
                 <div style={{ padding: '10px 0', color: 'var(--tk-muted)', fontStyle: 'italic', fontSize: 13 }}>Sem preferência</div>
               ) : (
-                <>
-                  <input type="range" min={150} max={900} step={10} value={trunk}
-                    className="tk-range"
-                    onChange={e => setTrunk(+e.target.value)} />
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
-                    <AnyToggle on={trunkAny} onChange={setTrunkAny} />
-                  </div>
-                </>
+                <input type="range" min={150} max={900} step={10} value={trunk}
+                  className="tk-range"
+                  onChange={e => setTrunk(+e.target.value)} />
               )}
             </div>
           </div>
@@ -420,12 +420,19 @@ function FormView(props) {
         <div className="q2__sect">
           <div className="q2__sect-h">
             <h3>7 · Observações da consultoria</h3>
-            <span className="tk-help">Contexto extra que a IA leva em conta</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+              <span className="tk-help">Contexto extra que a IA leva em conta</span>
+              <AnyToggle on={notesAny} onChange={setNotesAny} />
+            </span>
           </div>
-          <textarea className="tk-input" rows={3}
-            value={notes}
-            onChange={e => setNotes(e.target.value)}
-            placeholder="Notas sobre uso, restrições, preferências de marca…" />
+          {notesAny ? (
+            <div style={{ padding: '14px 0', color: 'var(--tk-muted)', fontStyle: 'italic', fontSize: 13 }}>Sem observações</div>
+          ) : (
+            <textarea className="tk-input" rows={3}
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="Notas sobre uso, restrições, preferências de marca…" />
+          )}
         </div>
       </div>
 
@@ -511,22 +518,26 @@ function AnyToggle({ on, onChange }) {
     <button type="button"
       onClick={() => onChange(!on)}
       style={{
-        background: 'transparent',
+        position: 'relative',
+        width: 32, height: 18,
+        borderRadius: 999,
+        background: on ? 'var(--tk-primary)' : 'rgba(0,0,0,0.18)',
         border: 'none',
         cursor: 'pointer',
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        fontSize: 11,
-        fontWeight: 600,
-        color: on ? 'var(--tk-primary)' : 'var(--tk-muted)',
-        textTransform: 'uppercase',
-        letterSpacing: '0.06em',
         padding: 0,
+        transition: 'background 0.15s ease',
+        flexShrink: 0,
       }}
-      title={on ? 'Você está dizendo que tanto faz' : 'Clique se for indiferente'}>
-      tanto faz
-      <span className={`tk-toggle ${on ? 'is-on' : ''}`} style={{ transform: 'scale(0.7)' }}><span /></span>
+      title={on ? 'Sem preferência — clique pra definir' : 'Clique se tanto faz'}>
+      <span style={{
+        position: 'absolute',
+        top: 2, left: on ? 16 : 2,
+        width: 14, height: 14,
+        borderRadius: '50%',
+        background: '#fff',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+        transition: 'left 0.15s ease',
+      }} />
     </button>
   );
 }
@@ -590,7 +601,7 @@ function LoadingView({ step, error, onRetry, onCancel }) {
             <strong>Detalhe:</strong> {error}
           </p>
           <p style={{ color: 'var(--tk-muted)', fontSize: 13 }}>
-            Verifique se o servidor backend está rodando em <code>localhost:3001</code> e se a chave Gemini está configurada no <code>.env</code>.
+            Verifique se o servidor backend está rodando em <code>localhost:3001</code> e se a chave Groq está configurada no <code>.env</code>.
           </p>
           <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
             <button className="tk-btn tk-btn-primary" onClick={onRetry}>Tentar de novo</button>
