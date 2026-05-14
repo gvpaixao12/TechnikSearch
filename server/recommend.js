@@ -1,6 +1,7 @@
 import { normalizeBriefing } from './briefing.js';
-import { runCurator, runVendor } from './agents.js';
+import { runCurator, runVendor, runCuradorLeve } from './agents.js';
 import { resolveCandidates } from './match.js';
+import { loadCatalog } from './catalog.js';
 
 const TIPO_TO_SLUG = {
   'Hatch': 'hatch',
@@ -16,6 +17,11 @@ function tipoSlug(tipo) {
   return TIPO_TO_SLUG[tipo] || 'suv';
 }
 
+function normFuel(s) {
+  if (!s) return '';
+  return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+}
+
 function slugifyId(marca, modelo, ano) {
   const base = `${marca}-${modelo}-${ano}`.toLowerCase()
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -24,143 +30,122 @@ function slugifyId(marca, modelo, ano) {
   return base.slice(0, 60);
 }
 
-export async function recommend(rawBriefing, { onStep } = {}) {
-  const log = (step, payload) => {
-    console.log(`[recommend] ${step}`, payload?.count !== undefined ? `(${payload.count})` : '');
-    onStep?.(step, payload);
-  };
+// Match flexível de combustível: usuário aceita 'flex' → bate com flex, gasolina, álcool.
+function combMatch(briefingFuels, entryFuel) {
+  if (!briefingFuels.length) return true;
+  const e = normFuel(entryFuel);
+  return briefingFuels.some(b => {
+    if (b === e) return true;
+    // Flex aceita gasolina (carros flex são abastecidos com gasolina também)
+    if (b === 'flex' && (e === 'gasolina' || e === 'flex')) return true;
+    if (b === 'gasolina' && (e === 'gasolina' || e === 'flex')) return true;
+    if (b === 'hibrido' && (e === 'hibrido' || e === 'hibrido plug-in')) return true;
+    return false;
+  });
+}
 
-  const briefing = normalizeBriefing(rawBriefing);
-  log('briefing-normalized');
+// ─── Pipeline NOVO usando catálogo pré-computado ──────────────────────────
+async function recommendFromCatalog(briefing, log) {
+  const catalog = await loadCatalog();
+  log('catalog-loaded', { count: catalog.entries.length });
 
-  const candidatos = await runCurator(briefing);
-  log('curator-done', { count: candidatos.length });
-
-  const resolved = await resolveCandidates(candidatos);
-
-  const pairs = candidatos.map((cand, i) => ({ cand, res: resolved[i] }));
-  const okPairs = pairs.filter(p => p.res?.ok);
-  const failed = pairs.filter(p => !p.res?.ok)
-    .map(p => ({ input: p.cand, reason: p.res?.reason }));
-
-  const seenFipe = new Set();
-  const matched = [];
-  const duplicates = [];
-  for (const p of okPairs) {
-    const key = p.res.fipe.codigoFipe;
-    if (seenFipe.has(key)) { duplicates.push(p); continue; }
-    seenFipe.add(key);
-    matched.push(p);
-  }
-  log('fipe-resolved', { count: matched.length, failed: failed.length, duplicados: duplicates.length });
-
-  if (matched.length === 0) {
-    return {
-      ok: false,
-      reason: 'Nenhum candidato pôde ser resolvido na FIPE. Tente refinar o briefing (modelos mais comuns, ano mínimo menor, ou amplie os tipos de carroceria).',
-      diagnostico: { candidatos, falhas: failed },
-    };
-  }
-
-  // Filtro rígido por ano mínimo (usa anoModelo da FIPE, não a sugestão do LLM)
-  const anoMin = briefing.anoMin;
-  let anoFiltered = matched;
-  let removidosPorAno = [];
-  if (anoMin) {
-    removidosPorAno = matched
-      .filter(p => Number(p.res.fipe.anoModelo) < Number(anoMin))
-      .map(p => ({ marca: p.res.fipe.marca, modelo: p.res.fipe.modelo, ano: p.res.fipe.anoModelo }));
-    anoFiltered = matched.filter(p => Number(p.res.fipe.anoModelo) >= Number(anoMin));
-    log('ano-filtered', { count: anoFiltered.length, removidos: removidosPorAno.length });
-  }
-
-  // Filtro rígido por tipo de carroceria (compara slug do curador com slugs pedidos)
-  const tiposPedidosSlug = (briefing.tiposDesejados || [])
-    .map(t => TIPO_TO_SLUG[t])
-    .filter(Boolean);
-  let tipoFiltered = anoFiltered;
-  let removidosPorTipo = [];
-  if (tiposPedidosSlug.length) {
-    removidosPorTipo = anoFiltered
-      .filter(p => !tiposPedidosSlug.includes(tipoSlug(p.cand.tipo)))
-      .map(p => ({ marca: p.res.fipe.marca, modelo: p.res.fipe.modelo, ano: p.res.fipe.anoModelo, tipo: p.cand.tipo }));
-    tipoFiltered = anoFiltered.filter(p => tiposPedidosSlug.includes(tipoSlug(p.cand.tipo)));
-    log('tipo-filtered', { count: tipoFiltered.length, removidos: removidosPorTipo.length });
-  }
-
-  if (tipoFiltered.length === 0) {
-    const motivos = [];
-    if (anoMin && removidosPorAno.length) motivos.push(`ano mínimo ${anoMin} (${removidosPorAno.length} descartados por ano)`);
-    if (removidosPorTipo.length) motivos.push(`tipo(s) ${briefing.tiposDesejados.join(', ')} (${removidosPorTipo.length} descartados por carroceria)`);
-    return {
-      ok: false,
-      reason: `Não encontrei opções que respeitem o briefing${motivos.length ? ': ' + motivos.join(' e ') : ''}. Sugiro refinar a busca — talvez ampliar o orçamento, baixar o ano mínimo ou aceitar tipos próximos.`,
-      diagnostico: {
-        curadorSugeriu: candidatos.length,
-        fipeResolvidos: matched.length,
-        descartadosPorAno: removidosPorAno,
-        descartadosPorTipo: removidosPorTipo,
-      },
-    };
-  }
-
+  const tiposPedidos = (briefing.tiposDesejados || [])
+    .map(t => TIPO_TO_SLUG[t]).filter(Boolean);
+  const combsPedidas = (briefing.combustiveisAceitos || []).map(normFuel);
   const orc = briefing.orcamentoReais;
-  const lower = orc.min * 0.85;
-  const upper = orc.max * 1.05;
-  let inBudget = tipoFiltered.filter(p => p.res.fipe.preco >= lower && p.res.fipe.preco <= upper);
-  let budgetMode = 'normal';
-  if (inBudget.length < 5) {
-    inBudget = tipoFiltered.filter(p => p.res.fipe.preco >= orc.min * 0.7 && p.res.fipe.preco <= orc.max * 1.1);
-    budgetMode = 'relaxed';
-  }
-  if (inBudget.length < 3) {
-    inBudget = tipoFiltered.filter(p => p.res.fipe.preco <= orc.max * 1.1);
-    budgetMode = 'budget-cap-only';
-  }
-  const foraOrcamento = tipoFiltered.filter(p => !inBudget.includes(p));
-  log('budget-filtered', { count: inBudget.length, fora: foraOrcamento.length, mode: budgetMode });
+  const anoMin = briefing.anoMin;
 
-  if (inBudget.length === 0) {
+  const reasonsCount = { ano: 0, tipo: 0, comb: 0, orcamento: 0, semPreco: 0 };
+
+  // Modo normal: 95% a 105% do orçamento (margem pequena)
+  let pool = catalog.entries.filter(e => {
+    if (!e.preco) { reasonsCount.semPreco++; return false; }
+    if (anoMin && e.ano < Number(anoMin)) { reasonsCount.ano++; return false; }
+    if (tiposPedidos.length && !tiposPedidos.includes(e.tipo)) { reasonsCount.tipo++; return false; }
+    if (combsPedidas.length && !combMatch(combsPedidas, e.combustivel)) { reasonsCount.comb++; return false; }
+    if (e.preco < orc.min * 0.95 || e.preco > orc.max * 1.05) { reasonsCount.orcamento++; return false; }
+    return true;
+  });
+
+  log('catalog-filtered', { count: pool.length, descartes: reasonsCount });
+
+  // Relaxa orçamento se sobrou pouco — piso em 90% do mínimo (mais conservador)
+  if (pool.length < 5) {
+    pool = catalog.entries.filter(e => {
+      if (!e.preco) return false;
+      if (anoMin && e.ano < Number(anoMin)) return false;
+      if (tiposPedidos.length && !tiposPedidos.includes(e.tipo)) return false;
+      if (combsPedidas.length && !combMatch(combsPedidas, e.combustivel)) return false;
+      if (e.preco < orc.min * 0.9 || e.preco > orc.max * 1.10) return false;
+      return true;
+    });
+    log('catalog-relaxed', { count: pool.length });
+  }
+
+  // Dedupe por código FIPE (mesmo carro com 2+ codigosModelo iguais)
+  const seenFipe = new Set();
+  pool = pool.filter(e => {
+    if (seenFipe.has(e.codigoFipe)) return false;
+    seenFipe.add(e.codigoFipe);
+    return true;
+  });
+
+  if (pool.length === 0) {
     return {
       ok: false,
-      reason: `Encontrei modelos que respeitam ano mínimo e carroceria, mas nenhum dentro do orçamento de R$ ${orc.min.toLocaleString('pt-BR')} a R$ ${orc.max.toLocaleString('pt-BR')}. Tente ampliar o teto do orçamento.`,
-      diagnostico: {
-        curadorSugeriu: candidatos.length,
-        fipeResolvidos: matched.length,
-        aposFiltroAno: anoFiltered.length,
-        aposFiltroTipo: tipoFiltered.length,
-        foraDoOrcamento: tipoFiltered.map(p => ({
-          marca: p.res.fipe.marca, modelo: p.res.fipe.modelo, ano: p.res.fipe.anoModelo,
-          preco: p.res.fipe.preco, precoTexto: p.res.fipe.precoTexto,
-        })),
-      },
+      reason: `Não encontrei opções no catálogo que respeitem o briefing (ano>=${anoMin}, tipo(s) ${briefing.tiposDesejados.join(', ')}, combustível(is) ${briefing.combustiveisAceitos.join(', ')}, R$ ${orc.min.toLocaleString('pt-BR')}-${orc.max.toLocaleString('pt-BR')}). Tente refinar critérios.`,
+      diagnostico: { catalogTotal: catalog.entries.length, descartesPorEtapa: reasonsCount },
     };
   }
 
-  const candidatesForVendor = inBudget.map(p => p.res);
+  // Curador leve LLM: se sobrou muito, prioriza top ~30 mais relevantes
+  let candidates = pool;
+  if (pool.length > 30) {
+    try {
+      const ids = await runCuradorLeve(briefing, pool);
+      const byKey = new Map(pool.map(e => [`${e.marcaId}|${e.modeloId}|${e.anoId}`, e]));
+      const picked = ids.map(id => byKey.get(id)).filter(Boolean);
+      if (picked.length >= 5) candidates = picked.slice(0, 30);
+      log('curador-leve-done', { count: candidates.length });
+    } catch (e) {
+      console.warn('[curador-leve] falhou, usando pool inteiro:', e.message);
+      candidates = pool.slice(0, 30);
+    }
+  }
+
+  // Adapta formato pro vendor (espera { fipe: { ... } })
+  const candidatesForVendor = candidates.map(e => ({
+    fipe: {
+      marca: e.marca, modelo: e.modelo, anoModelo: e.ano,
+      precoTexto: e.precoTexto, preco: e.preco,
+      codigoFipe: e.codigoFipe, mesReferencia: e.mesReferencia,
+      combustivel: e.combustivel,
+    },
+    cand: { tipo: e.tipo, combustivel: e.combustivel, marca: e.marca, modelo: e.modelo, ano: e.ano },
+  }));
+
   const top = await runVendor(briefing, candidatesForVendor);
   log('vendor-done', { count: top.length });
 
-  const byId = new Map(inBudget.map((p, i) => [`c${i + 1}`, p]));
+  const byId = new Map(candidatesForVendor.map((p, i) => [`c${i + 1}`, p]));
+  const seenInTop = new Set();
   const topEnriched = top
     .map(t => {
       const pair = byId.get(t.candidatoId);
       if (!pair) return null;
-      const f = pair.res.fipe;
-      const c = pair.cand;
+      const f = pair.fipe;
+      if (seenInTop.has(t.candidatoId) || seenInTop.has(`fipe:${f.codigoFipe}`)) return null;
+      seenInTop.add(t.candidatoId);
+      seenInTop.add(`fipe:${f.codigoFipe}`);
       return {
         id: slugifyId(f.marca, f.modelo, f.anoModelo),
         rank: t.rank,
-        match: t.match,
-        veredicto: t.veredicto,
-        why: t.why,
-        pros: t.pros,
-        cons: t.cons,
+        fichaTecnica: t.fichaTecnica || {},
         brand: f.marca,
         model: f.modelo,
         year: f.anoModelo,
-        type: tipoSlug(c.tipo),
-        fuel: c.combustivel || f.combustivel,
+        type: pair.cand.tipo,
+        fuel: f.combustivel,
         price: f.precoTexto,
         priceN: f.preco,
         codigoFipe: f.codigoFipe,
@@ -170,33 +155,108 @@ export async function recommend(rawBriefing, { onStep } = {}) {
     .filter(Boolean)
     .sort((a, b) => a.rank - b.rank);
 
-  const idsRetornados = new Set(top.map(t => t.candidatoId));
-  const summarize = p => ({
-    marca: p.res.fipe.marca, modelo: p.res.fipe.modelo, ano: p.res.fipe.anoModelo,
-    preco: p.res.fipe.preco, precoTexto: p.res.fipe.precoTexto,
-  });
-  const descartadosPeloVendedor = inBudget
-    .map((p, i) => ({ id: `c${i + 1}`, p }))
-    .filter(({ id }) => !idsRetornados.has(id))
-    .map(({ p }) => summarize(p));
-
   return {
     ok: true,
     briefing,
     top: topEnriched,
     diagnostico: {
-      curadorSugeriu: candidatos.length,
-      fipeResolvidos: matched.length,
-      fipeFalhou: failed.length,
-      duplicadosFipe: duplicates.length,
-      descartadosPorAno: removidosPorAno,
-      descartadosPorTipo: removidosPorTipo,
-      aposFiltroAno: anoFiltered.length,
-      aposFiltroTipo: tipoFiltered.length,
-      foraDoOrcamento: foraOrcamento.map(summarize),
-      modoOrcamento: budgetMode,
+      catalogTotal: catalog.entries.length,
+      catalogPool: pool.length,
+      curadorLeveSelecionou: candidates.length,
       vendedorRetornou: topEnriched.length,
-      descartadosPeloVendedor,
+      descartesPorEtapa: reasonsCount,
+      builtAt: catalog.builtAt,
     },
   };
+}
+
+// ─── Recommend (entrypoint) ──────────────────────────────────────────────
+export async function recommend(rawBriefing, { onStep } = {}) {
+  const log = (step, payload) => {
+    console.log(`[recommend] ${step}`, payload?.count !== undefined ? `(${payload.count})` : '', payload?.descartes ? JSON.stringify(payload.descartes) : '');
+    onStep?.(step, payload);
+  };
+
+  const briefing = normalizeBriefing(rawBriefing);
+  log('briefing-normalized');
+
+  // Tenta usar catálogo. Se não existir, cai no fluxo antigo (LLM curador + FIPE matching).
+  try {
+    return await recommendFromCatalog(briefing, log);
+  } catch (e) {
+    if (e.message?.includes('Catálogo não encontrado')) {
+      console.warn('[recommend] catálogo não disponível, usando fluxo legado LLM-curator');
+      return await recommendLegacy(briefing, log);
+    }
+    throw e;
+  }
+}
+
+// ─── Pipeline LEGADO (LLM curador + FIPE matching) ──────────────────────
+// Mantido como fallback até o catálogo estar pronto.
+async function recommendLegacy(briefing, log) {
+  const candidatos = await runCurator(briefing);
+  log('curator-done', { count: candidatos.length });
+
+  const resolved = await resolveCandidates(candidatos, { anoMin: briefing.anoMin });
+  const pairs = candidatos.map((cand, i) => ({ cand, res: resolved[i] }));
+  const okPairs = pairs.filter(p => p.res?.ok);
+  const failed = pairs.filter(p => !p.res?.ok);
+
+  const seenFipe = new Set();
+  const matched = [];
+  for (const p of okPairs) {
+    const key = p.res.fipe.codigoFipe;
+    if (seenFipe.has(key)) continue;
+    seenFipe.add(key);
+    matched.push(p);
+  }
+  log('fipe-resolved', { count: matched.length });
+
+  if (matched.length === 0) {
+    return { ok: false, reason: 'Catálogo não disponível e curador LLM não retornou candidatos resolvíveis na FIPE.' };
+  }
+
+  const orc = briefing.orcamentoReais;
+  const anoMin = briefing.anoMin;
+  const tiposPedidosSlug = (briefing.tiposDesejados || []).map(t => TIPO_TO_SLUG[t]).filter(Boolean);
+  const combsOK = (briefing.combustiveisAceitos || []).map(normFuel);
+
+  let pool = matched.filter(p => {
+    const f = p.res.fipe;
+    if (anoMin && Number(f.anoModelo) < Number(anoMin)) return false;
+    if (tiposPedidosSlug.length && !tiposPedidosSlug.includes(tipoSlug(p.cand.tipo))) return false;
+    if (combsOK.length && !combMatch(combsOK, f.combustivel)) return false;
+    if (f.preco < orc.min * 0.85 || f.preco > orc.max * 1.05) return false;
+    return true;
+  });
+
+  if (pool.length === 0) {
+    return { ok: false, reason: 'Após filtros (ano/tipo/combustível/orçamento), nenhum candidato sobrou. Refine o briefing.' };
+  }
+
+  const top = await runVendor(briefing, pool.map(p => p.res));
+  log('vendor-done', { count: top.length });
+
+  const byId = new Map(pool.map((p, i) => [`c${i + 1}`, p]));
+  const topEnriched = top
+    .map(t => {
+      const pair = byId.get(t.candidatoId);
+      if (!pair) return null;
+      const f = pair.res.fipe;
+      return {
+        id: slugifyId(f.marca, f.modelo, f.anoModelo),
+        rank: t.rank,
+        fichaTecnica: t.fichaTecnica || {},
+        brand: f.marca, model: f.modelo, year: f.anoModelo,
+        type: tipoSlug(pair.cand.tipo),
+        fuel: f.combustivel,
+        price: f.precoTexto, priceN: f.preco,
+        codigoFipe: f.codigoFipe, mesReferencia: f.mesReferencia,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.rank - b.rank);
+
+  return { ok: true, briefing, top: topEnriched, diagnostico: { fluxo: 'legacy', curador: candidatos.length, fipe: matched.length, pool: pool.length, vendedor: topEnriched.length } };
 }

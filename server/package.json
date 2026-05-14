@@ -14,5 +14,8 @@
     "express": "^4.21.2",
     "fuse.js": "^7.0.0",
     "openai": "^4.77.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.59.1"
   }
 }

@@ -11,6 +11,8 @@ import { resolveCandidate, resolveCandidates } from './match.js';
 import { runCurator } from './agents.js';
 import { normalizeBriefing } from './briefing.js';
 import { recommend } from './recommend.js';
+import { loadCatalog, clearCatalogCache } from './catalog.js';
+import { spawn } from 'node:child_process';
 
 const app = express();
 app.use(cors());
@@ -22,10 +24,19 @@ app.get('/', (_req, res) => {
   res.sendFile(path.join(FRONTEND_DIR, 'Technik - Painel Visual.html'));
 });
 
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', async (_req, res) => {
+  let catalogTotal = null;
+  let catalogBuiltAt = null;
+  try {
+    const c = await loadCatalog();
+    catalogTotal = c.entries.length;
+    catalogBuiltAt = c.builtAt;
+  } catch { /* sem catálogo */ }
   res.json({
     ok: true,
     groqKey: process.env.GROQ_API_KEY ? 'set' : 'missing',
+    catalogTotal,
+    catalogBuiltAt,
     time: new Date().toISOString(),
   });
 });
@@ -75,6 +86,55 @@ app.post('/api/recommend', async (req, res, next) => {
     const result = await recommend(req.body || {});
     res.json(result);
   } catch (e) { next(e); }
+});
+
+// Info do catálogo: contagens, build date, distribuição por tipo
+app.get('/api/catalog/info', async (_req, res) => {
+  try {
+    const c = await loadCatalog();
+    res.json({
+      ok: true,
+      builtAt: c.builtAt,
+      builtFrom: c.builtFrom || 'fipe',
+      anoMin: c.anoMin,
+      total: c.entries.length,
+      tipos: c.stats?.tipos || {},
+      marcas: [...new Set(c.entries.map(e => e.marca))].sort(),
+    });
+  } catch (e) {
+    res.status(404).json({ ok: false, reason: e.message });
+  }
+});
+
+// Reconstrói catálogo a partir do cache local (rápido, sem requests à FIPE).
+// Retorna após ~1-3s. Pra build full da FIPE, rodar manualmente o script.
+let _rebuildInProgress = false;
+app.post('/api/catalog/rebuild-from-cache', async (_req, res) => {
+  if (_rebuildInProgress) return res.status(409).json({ ok: false, reason: 'Build já em progresso' });
+  _rebuildInProgress = true;
+  const t0 = Date.now();
+  const proc = spawn('node', [path.join(__dirname, 'scripts', 'build-catalog-from-cache.js')], {
+    cwd: __dirname,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '', stderr = '';
+  proc.stdout.on('data', d => stdout += d.toString());
+  proc.stderr.on('data', d => stderr += d.toString());
+  proc.on('close', async code => {
+    _rebuildInProgress = false;
+    if (code !== 0) {
+      return res.status(500).json({ ok: false, reason: 'Build falhou', stdout, stderr });
+    }
+    clearCatalogCache();
+    const c = await loadCatalog();
+    res.json({
+      ok: true,
+      durationMs: Date.now() - t0,
+      total: c.entries.length,
+      builtAt: c.builtAt,
+      tipos: c.stats?.tipos || {},
+    });
+  });
 });
 
 app.use((err, _req, res, _next) => {

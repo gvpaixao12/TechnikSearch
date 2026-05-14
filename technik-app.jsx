@@ -38,16 +38,16 @@ function App() {
   const [client, setClient] = useState({ name: 'Mariana Coutinho', segment: 'Família 4 + 1 cão' });
   const [budget, setBudget]   = useState([180, 320]); // R$ mil
   const [seats, setSeats]     = useState(5);
-  const [seatsAny, setSeatsAny] = useState(false);
+  const [seatsAny, setSeatsAny] = useState(true);
   const [trunk, setTrunk]     = useState(420); // litros
-  const [trunkAny, setTrunkAny] = useState(false);
+  const [trunkAny, setTrunkAny] = useState(true);
   const [yearMin, setYearMin] = useState(2022);
   const [types, setTypes]     = useState(['suv']);
   const [fuels, setFuels]     = useState(['flex','hybrid']);
   const [lifestyle, setLifestyle] = useState(['family','travel']);
   const [priorities, setPriorities] = useState(['safety','comfort','economy']);
   const [notes, setNotes]     = useState('Cliente viaja para a serra duas vezes por mês. Prioriza espaço e segurança ativa.');
-  const [notesAny, setNotesAny] = useState(false);
+  const [notesAny, setNotesAny] = useState(true);
 
   function toggle(setter, list, id) {
     setter(list.includes(id) ? list.filter(x => x !== id) : [...list, id]);
@@ -210,6 +210,7 @@ function App() {
             showCompareBar={t.showCompareBar}
             cars={recommendation.top}
             briefing={recommendation.briefing}
+            diagnostico={recommendation.diagnostico}
           />
         )}
       </section>
@@ -232,7 +233,103 @@ function App() {
           <TweakToggle label="Barra de comparação" value={t.showCompareBar}
             onChange={v => setTweak('showCompareBar', v)} />
         </TweakSection>
+        <TweakSection title="Catálogo">
+          <CatalogPanel />
+        </TweakSection>
       </TweaksPanel>
+    </div>
+  );
+}
+
+// ─── CATALOG PANEL (admin) ────────────────────────────────────
+function CatalogPanel() {
+  const [info, setInfo] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [rebuildState, setRebuildState] = useState(null); // 'running' | {ok, durationMs, total} | {error}
+
+  async function fetchInfo() {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/catalog/info`);
+      const j = await r.json();
+      setInfo(j.ok ? j : null);
+    } catch { setInfo(null); }
+    setLoading(false);
+  }
+
+  useEffect(() => { fetchInfo(); }, []);
+
+  async function rebuild() {
+    setRebuildState('running');
+    try {
+      const r = await fetch(`${API_BASE}/api/catalog/rebuild-from-cache`, { method: 'POST' });
+      const j = await r.json();
+      if (j.ok) {
+        setRebuildState(j);
+        await fetchInfo();
+      } else {
+        setRebuildState({ error: j.reason });
+      }
+    } catch (e) {
+      setRebuildState({ error: e.message });
+    }
+  }
+
+  const labelStyle = { fontSize: 12, color: 'rgba(255,255,255,0.7)', marginBottom: 4 };
+  const valueStyle = { fontFamily: 'Exo', fontSize: 14, color: '#fff', fontWeight: 600 };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {loading && <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>Carregando…</div>}
+      {!loading && !info && <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>Catálogo não disponível.</div>}
+      {info && (
+        <>
+          <div>
+            <div style={labelStyle}>Total</div>
+            <div style={valueStyle}>{info.total} carros · {info.marcas?.length || 0} marcas</div>
+          </div>
+          <div>
+            <div style={labelStyle}>Última atualização</div>
+            <div style={valueStyle}>{new Date(info.builtAt).toLocaleString('pt-BR')} <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', fontWeight: 400 }}>({info.builtFrom})</span></div>
+          </div>
+          <div>
+            <div style={labelStyle}>Distribuição</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+              {Object.entries(info.tipos || {}).map(([t, n]) => (
+                <span key={t} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.08)', color: '#fff' }}>
+                  {t}: {n}
+                </span>
+              ))}
+            </div>
+          </div>
+          <button
+            onClick={rebuild}
+            disabled={rebuildState === 'running'}
+            style={{
+              marginTop: 6, padding: '8px 12px', borderRadius: 6,
+              background: rebuildState === 'running' ? 'rgba(255,255,255,0.1)' : 'var(--tk-accent, #f0b429)',
+              color: rebuildState === 'running' ? 'rgba(255,255,255,0.5)' : '#19193A',
+              border: 'none', cursor: rebuildState === 'running' ? 'wait' : 'pointer',
+              fontWeight: 600, fontSize: 12,
+            }}>
+            {rebuildState === 'running' ? 'Reconstruindo…' : 'Reconstruir do cache'}
+          </button>
+          {rebuildState && rebuildState !== 'running' && rebuildState.ok && (
+            <div style={{ fontSize: 11, color: '#7af6b1' }}>
+              ✓ {rebuildState.total} carros em {(rebuildState.durationMs / 1000).toFixed(1)}s
+            </div>
+          )}
+          {rebuildState?.error && (
+            <div style={{ fontSize: 11, color: '#ffd166' }}>
+              Falhou: {rebuildState.error}
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', marginTop: 4, lineHeight: 1.4 }}>
+            "Reconstruir do cache" reclassifica usando os dados FIPE já em disco.<br/>
+            Pra atualização completa da FIPE, rodar <code style={{ color: 'rgba(255,255,255,0.7)' }}>node server/scripts/build-catalog.js</code> no terminal.
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -633,7 +730,7 @@ function LoadingView({ step, error, onRetry, onCancel }) {
 }
 
 // ─── RESULTS ──────────────────────────────────────────────────
-function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing }) {
+function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing, diagnostico }) {
   const [filter, setFilter] = useState('all');
   const [compare, setCompare] = useState([]);
 
@@ -653,7 +750,6 @@ function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing })
 
   const filtered = filter === 'all' ? cars : cars.filter(c => c.type === filter);
   const top = cars[0];
-  const rest = cars.slice(1);
 
   function toggleCompare(id) {
     if (compare.includes(id)) setCompare(compare.filter(x => x !== id));
@@ -679,13 +775,18 @@ function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing })
       {/* Hero */}
       <div className="tk-results__hero">
         <div>
-          <span className="tk-eyebrow">Top {cars.length} · Recomendação Technik</span>
-          <h1>Selecionamos {cars.length} carros para {client.name.split(' ')[0]}, ordenados por aderência ao briefing.</h1>
-          <p>O #1 cobre {top.match}% dos critérios. Preços validados na Tabela FIPE — referência {top.mesReferencia}. Use a barra inferior para montar uma comparação lado-a-lado.</p>
+          <span className="tk-eyebrow">Opções para o briefing</span>
+          <h1>{cars.length} carros encontrados para {client.name.split(' ')[0]}.</h1>
+          <p>Preços validados na Tabela FIPE — referência {top.mesReferencia}. Use a barra inferior para comparar lado a lado.</p>
           <div className="tk-results__pills">
-            <span className="tk-results__pill tk-results__pill--accent">{top.match}% match no #1</span>
             <span className="tk-results__pill">{cars.length} opções · {new Set(cars.map(c => c.brand)).size} marcas</span>
             <span className="tk-results__pill">FIPE {top.mesReferencia}</span>
+            {diagnostico?.catalogTotal && (
+              <span className="tk-results__pill" title={`Pool de ${diagnostico.catalogPool ?? '-'} candidatos do briefing · vendedor escolheu ${diagnostico.vendedorRetornou ?? cars.length}`}>
+                Catálogo: {diagnostico.catalogTotal} carros
+                {diagnostico.builtAt && ` · ${new Date(diagnostico.builtAt).toLocaleDateString('pt-BR')}`}
+              </span>
+            )}
           </div>
         </div>
         <div className="tk-results__client">
@@ -729,45 +830,10 @@ function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing })
         </div>
       </div>
 
-      {/* Spotlight #1 */}
-      {filter === 'all' && (
-        <div className="tk-spotlight">
-          <div className="tk-spotlight__img">
-            <span className="tk-spotlight__rank">01</span>
-            <div style={{ color: '#fff' }}>
-              <CarSilhouette type={top.type} stroke="rgba(255,255,255,0.95)" sw={1.5} />
-            </div>
-          </div>
-          <div className="tk-spotlight__body">
-            <span className="tk-spotlight__pill"><Icon.Star /> Top match Technik</span>
-            <span className="tk-help" style={{ color: 'rgba(255,255,255,0.6)', marginTop: 12 }}>{top.brand} · {top.year}</span>
-            <h3>{top.model}</h3>
-            <ul className="tk-spotlight__why">
-              {top.why.map((w, i) => <li key={i}><Icon.Check /> {w}</li>)}
-            </ul>
-            <div className="tk-spotlight__bar">
-              <div>
-                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 600 }}>A partir de</div>
-                <div className="tk-spotlight__price">{top.price}</div>
-              </div>
-              <MatchRingDark pct={top.match} />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Section h */}
-      {rest.length > 0 && (
-        <h2 className="tk-results__section-h" style={{ margin: '8px 0 16px' }}>
-          Próximas opções
-          <span style={{ fontSize: 13, color: 'var(--tk-muted)', fontWeight: 500 }}>{rest.length} carros · ordenados por match</span>
-        </h2>
-      )}
-
-      {/* Grid */}
+      {/* Grid — todos os carros lado a lado, sem destaque */}
       <div className="tk-results__grid">
-        {(filter === 'all' ? rest : filtered).map((c, i) => (
-          <CarCard key={c.id} car={c} rank={filter === 'all' ? i + 2 : i + 1}
+        {filtered.map((c, i) => (
+          <CarCard key={c.id} car={c} rank={i + 1}
             isComparing={compare.includes(c.id)}
             onCompare={() => toggleCompare(c.id)}
             variant={cardStyle} />
@@ -796,28 +862,38 @@ function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing })
   );
 }
 
-function MatchRingDark({ pct = 90 }) {
+function SpecRow({ label, value }) {
+  if (!value) return null;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-      <div style={{
-        width: 52, height: 52, borderRadius: '50%',
-        background: `conic-gradient(var(--tk-accent) ${pct}%, rgba(255,255,255,0.12) 0)`,
-        display: 'grid', placeItems: 'center'
-      }}>
-        <div style={{
-          position: 'relative',
-          width: 44, height: 44,
-          background: 'var(--tk-primary)',
-          borderRadius: '50%',
-          display: 'grid', placeItems: 'center',
-          fontFamily: 'Exo', fontWeight: 700, fontSize: 14,
-          color: '#fff'
-        }}>{pct}</div>
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 0', fontSize: 12, borderBottom: '1px dashed var(--tk-border, rgba(0,0,0,0.08))' }}>
+      <span style={{ color: 'var(--tk-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600, fontSize: 10 }}>{label}</span>
+      <span style={{ fontWeight: 600, color: 'var(--tk-primary)', textAlign: 'right' }}>{value}</span>
+    </div>
+  );
+}
+
+function FichaTecnica({ ficha }) {
+  if (!ficha) return null;
+  const lugaresStr = ficha.lugares && ficha.lugares > 0 ? `${ficha.lugares} lugares` : '';
+  const hasAny = [ficha.motor, ficha.cambio, ficha.potencia, ficha.torque, ficha.tracao, ficha.consumoCidade, ficha.consumoEstrada, ficha.porta_malas].some(Boolean) || lugaresStr;
+  if (!hasAny) {
+    return (
+      <div style={{ fontSize: 12, color: 'var(--tk-muted)', fontStyle: 'italic', padding: '8px 0' }}>
+        Ficha técnica indisponível.
       </div>
-      <div>
-        <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 600 }}>Match</div>
-        <div style={{ fontFamily: 'Exo', fontSize: 14, fontWeight: 600 }}>Excepcional</div>
-      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 4 }}>
+      <SpecRow label="Motor" value={ficha.motor} />
+      <SpecRow label="Câmbio" value={ficha.cambio} />
+      <SpecRow label="Potência" value={ficha.potencia} />
+      <SpecRow label="Torque" value={ficha.torque} />
+      <SpecRow label="Tração" value={ficha.tracao} />
+      <SpecRow label="Consumo cidade" value={ficha.consumoCidade} />
+      <SpecRow label="Consumo estrada" value={ficha.consumoEstrada} />
+      <SpecRow label="Porta-malas" value={ficha.porta_malas} />
+      <SpecRow label="Lugares" value={lugaresStr} />
     </div>
   );
 }
@@ -826,18 +902,13 @@ function CarCard({ car, rank, isComparing, onCompare, variant = 'editorial' }) {
   if (variant === 'minimal') {
     return (
       <div className="tk-cc" style={{ borderRadius: 10 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 16px' }}>
-          <span className="tk-cc__rank">
-            <span className="tk-mono">#{String(rank).padStart(2,'0')}</span>
-          </span>
-          <MatchRing pct={car.match} size={36} />
-        </div>
-        <div style={{ padding: '0 16px 4px' }}>
-          <div className="tk-cc__brand">{car.brand}</div>
+        <div style={{ padding: '14px 16px 0' }}>
+          <div className="tk-cc__brand">{car.brand} · {car.year}</div>
           <div className="tk-cc__model" style={{ fontSize: 18 }}>{car.model}</div>
           <div style={{ height: 60, color: 'var(--tk-secondary)', margin: '12px 0' }}>
             <CarSilhouette type={car.type} sw={1.4} />
           </div>
+          <FichaTecnica ficha={car.fichaTecnica} />
         </div>
         <div className="tk-cc__foot">
           <div className="tk-cc__price" style={{ fontSize: 18 }}>{car.price}</div>
@@ -851,14 +922,7 @@ function CarCard({ car, rank, isComparing, onCompare, variant = 'editorial' }) {
 
   return (
     <div className="tk-cc">
-      <div className="tk-cc__head">
-        <span className="tk-cc__rank">
-          <span className="tk-mono">RANK</span>
-          <span className="tk-cc__rnum">#{String(rank).padStart(2,'0')}</span>
-        </span>
-      </div>
       <div className="tk-cc__img">
-        <div className="tk-cc__match"><MatchRing pct={car.match} size={42} /></div>
         <div style={{ width: '100%', color: 'var(--tk-primary)' }}>
           <CarSilhouette type={car.type} sw={1.4} />
         </div>
@@ -866,11 +930,7 @@ function CarCard({ car, rank, isComparing, onCompare, variant = 'editorial' }) {
       <div className="tk-cc__body">
         <div className="tk-cc__brand">{car.brand} · {car.year}</div>
         <div className="tk-cc__model">{car.model}</div>
-        <ul className="tk-cc__reasons">
-          {car.why.slice(0, 2).map((w, i) => (
-            <li key={i}><Icon.Check /> {w}</li>
-          ))}
-        </ul>
+        <FichaTecnica ficha={car.fichaTecnica} />
       </div>
       <div className="tk-cc__foot">
         <div>
