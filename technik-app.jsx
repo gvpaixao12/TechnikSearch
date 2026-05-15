@@ -1,5 +1,5 @@
 /* Technik — Variação 2: Painel Visual (formulário em tela única) */
-/* global React, ReactDOM, TechnikLogo, TechnikLogoMark, Icon, CarSilhouette, MatchRing, CARS, TYPE_OPTIONS, FUEL_OPTIONS, LIFESTYLE_OPTIONS, PRIORITY_OPTIONS, useTweaks, TweaksPanel, TweakSection, TweakToggle, TweakRadio, TweakColor, TweakSlider */
+/* global React, ReactDOM, TechnikLogo, TechnikLogoMark, Icon, CarSilhouette, CarPhoto, useCarImages, MatchRing, CARS, TYPE_OPTIONS, FUEL_OPTIONS, LIFESTYLE_OPTIONS, PRIORITY_OPTIONS, useTweaks, TweaksPanel, TweakSection, TweakToggle, TweakRadio, TweakColor, TweakSlider */
 
 const { useState, useMemo, useEffect } = React;
 
@@ -905,8 +905,8 @@ function CarCard({ car, rank, isComparing, onCompare, variant = 'editorial' }) {
         <div style={{ padding: '14px 16px 0' }}>
           <div className="tk-cc__brand">{car.brand} · {car.year}</div>
           <div className="tk-cc__model" style={{ fontSize: 18 }}>{car.model}</div>
-          <div style={{ height: 60, color: 'var(--tk-secondary)', margin: '12px 0' }}>
-            <CarSilhouette type={car.type} sw={1.4} />
+          <div style={{ height: 100, margin: '12px 0', overflow: 'hidden', borderRadius: 6 }}>
+            <CarPhoto brand={car.brand} model={car.model} year={car.year} type={car.type} />
           </div>
           <FichaTecnica ficha={car.fichaTecnica} />
         </div>
@@ -922,10 +922,8 @@ function CarCard({ car, rank, isComparing, onCompare, variant = 'editorial' }) {
 
   return (
     <div className="tk-cc">
-      <div className="tk-cc__img">
-        <div style={{ width: '100%', color: 'var(--tk-primary)' }}>
-          <CarSilhouette type={car.type} sw={1.4} />
-        </div>
+      <div className="tk-cc__img" style={{ height: 'auto', padding: 0, overflow: 'hidden' }}>
+        <CarPhoto brand={car.brand} model={car.model} year={car.year} type={car.type} eager={rank === 1} rounded />
       </div>
       <div className="tk-cc__body">
         <div className="tk-cc__brand">{car.brand} · {car.year}</div>

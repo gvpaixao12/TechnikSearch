@@ -113,6 +113,183 @@ function MatchRing({ pct = 80, size = 44 }) {
   );
 }
 
+// ─── Fotos dos carros (backend cacheia em Supabase) ───────────
+const CAR_PHOTO_API = 'http://localhost:3001';
+
+function useCarImages({ brand, model, year, enabled = true }) {
+  const [state, setState] = useState({ loading: false, images: [] });
+  useEffect(() => {
+    if (!enabled || !brand || !model || !year) return;
+    let cancelled = false;
+    setState({ loading: true, images: [] });
+    const url = `${CAR_PHOTO_API}/api/images/${encodeURIComponent(brand)}/${encodeURIComponent(model)}/${year}`;
+    fetch(url)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(data => { if (!cancelled) setState({ loading: false, images: data.images || [] }); })
+      .catch(() => { if (!cancelled) setState({ loading: false, images: [] }); });
+    return () => { cancelled = true; };
+  }, [brand, model, year, enabled]);
+  return state;
+}
+
+const _arrow = (side) => ({
+  position: 'absolute', top: '50%', [side]: 8, transform: 'translateY(-50%)',
+  width: 32, height: 32, borderRadius: '50%', border: 'none', padding: 0,
+  background: 'rgba(0,0,0,0.5)', color: '#fff', cursor: 'pointer',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  fontSize: 22, fontWeight: 600, lineHeight: 1,
+  transition: 'background .15s, opacity .15s', opacity: 0.85,
+});
+
+// Lazy-load via IntersectionObserver. Aspecto 4:3 (mais quadrado).
+// Navegação: setas laterais + dots + clique abre lightbox em fullscreen.
+function CarPhoto({ brand, model, year, type = 'suv', eager = false, rounded = false, aspect = '4 / 3' }) {
+  const containerRef = useRef(null);
+  const [visible, setVisible] = useState(eager);
+  const [idx, setIdx] = useState(0);
+  const [lightbox, setLightbox] = useState(false);
+
+  useEffect(() => {
+    if (visible || !containerRef.current) return;
+    const io = new IntersectionObserver(
+      entries => entries.forEach(e => { if (e.isIntersecting) setVisible(true); }),
+      { rootMargin: '200px' }
+    );
+    io.observe(containerRef.current);
+    return () => io.disconnect();
+  }, [visible]);
+
+  const { images, loading } = useCarImages({ brand, model, year, enabled: visible });
+  const n = images.length;
+  const cur = n > 0 ? images[idx % n] : null;
+
+  // Preload todas as fotos assim que chegam (em background) pra navegação
+  // ser instantânea quando o usuário clicar nas setas.
+  useEffect(() => {
+    if (n <= 1) return;
+    images.slice(1).forEach(im => {
+      const img = new Image();
+      img.src = im.url;
+    });
+  }, [images]);
+
+  const go = (delta) => (e) => {
+    if (e) e.stopPropagation();
+    if (n > 0) setIdx(i => (i + delta + n) % n);
+  };
+
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setLightbox(false);
+      else if (e.key === 'ArrowRight') go(1)();
+      else if (e.key === 'ArrowLeft') go(-1)();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightbox, n]);
+
+  const containerStyle = {
+    position: 'relative', width: '100%', aspectRatio: aspect,
+    overflow: 'hidden', borderRadius: rounded ? 8 : 0,
+    background: 'rgba(0,0,0,0.04)',
+  };
+
+  if (!visible || n === 0) {
+    return (
+      <div ref={containerRef} style={containerStyle}>
+        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--tk-primary)' }}>
+          <CarSilhouette type={type} sw={1.4} />
+        </div>
+        {visible && loading && (
+          <div style={{ position: 'absolute', bottom: 6, right: 8, fontSize: 10, color: 'var(--tk-muted)', opacity: 0.6, fontFamily: 'JetBrains Mono, monospace' }}>
+            carregando…
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const multiple = n > 1;
+
+  return (
+    <>
+      <div
+        ref={containerRef}
+        onClick={() => setLightbox(true)}
+        style={{ ...containerStyle, cursor: 'zoom-in' }}
+      >
+        <img
+          src={cur.url}
+          alt={`${brand} ${model} ${year}`}
+          loading="lazy"
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+        />
+        {multiple && (
+          <>
+            <button onClick={go(-1)} aria-label="Anterior" style={_arrow('left')}>‹</button>
+            <button onClick={go(1)} aria-label="Próxima" style={_arrow('right')}>›</button>
+            <div style={{ position: 'absolute', bottom: 8, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 5, padding: '4px 8px', background: 'rgba(0,0,0,0.4)', borderRadius: 999 }}>
+              {images.map((_, i) => (
+                <button
+                  key={i}
+                  onClick={(e) => { e.stopPropagation(); setIdx(i); }}
+                  aria-label={`Foto ${i + 1}`}
+                  style={{
+                    width: 6, height: 6, borderRadius: '50%', padding: 0, border: 'none',
+                    background: i === idx % n ? '#fff' : 'rgba(255,255,255,0.45)',
+                    cursor: 'pointer',
+                  }}
+                />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      {lightbox && ReactDOM.createPortal(
+        <div
+          onClick={() => setLightbox(false)}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            width: '100vw', height: '100vh',
+            background: 'rgba(0,0,0,0.94)',
+            zIndex: 999999,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 0, cursor: 'zoom-out',
+          }}
+        >
+          <img
+            src={cur.url}
+            alt={`${brand} ${model} ${year}`}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: '98vw', maxHeight: '96vh', width: 'auto', height: 'auto',
+              objectFit: 'contain',
+              boxShadow: '0 30px 100px rgba(0,0,0,0.6)', cursor: 'default',
+            }}
+          />
+          {multiple && (
+            <>
+              <button onClick={go(-1)} aria-label="Anterior" style={{ ..._arrow('left'), left: 24, width: 52, height: 52, fontSize: 34, background: 'rgba(255,255,255,0.18)' }}>‹</button>
+              <button onClick={go(1)} aria-label="Próxima" style={{ ..._arrow('right'), right: 24, width: 52, height: 52, fontSize: 34, background: 'rgba(255,255,255,0.18)' }}>›</button>
+              <div style={{ position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)', color: '#fff', fontFamily: 'JetBrains Mono, monospace', fontSize: 12, opacity: 0.8, background: 'rgba(0,0,0,0.5)', padding: '6px 14px', borderRadius: 999 }}>
+                {(idx % n) + 1} / {n} · {cur.view || ''}
+              </div>
+            </>
+          )}
+          <button
+            onClick={() => setLightbox(false)}
+            aria-label="Fechar"
+            style={{ position: 'absolute', top: 20, right: 24, width: 44, height: 44, borderRadius: '50%', border: 'none', background: 'rgba(255,255,255,0.18)', color: '#fff', fontSize: 26, cursor: 'pointer', lineHeight: 1 }}
+          >×</button>
+        </div>,
+        document.body
+      )}
+    </>
+  );
+}
+
 // ─── Car catalog ──────────────────────────────────────────────
 const CARS = [
   { id: 'tig',  brand: 'Volkswagen', model: 'Tiguan Allspace', year: 2024, type: 'suv',     price: 'R$ 312.900', priceN: 312900, match: 96, why: ['Porta-malas de 480L acomoda família e bagagem', '7 lugares para imprevistos', 'Custo de manutenção dentro do orçamento'] },
@@ -162,5 +339,6 @@ const PRIORITY_OPTIONS = [
 
 Object.assign(window, {
   TechnikLogo, TechnikLogoMark, Icon, CarSilhouette, MatchRing,
+  CarPhoto, useCarImages,
   CARS, TYPE_OPTIONS, FUEL_OPTIONS, LIFESTYLE_OPTIONS, PRIORITY_OPTIONS
 });

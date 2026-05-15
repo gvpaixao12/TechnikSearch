@@ -103,7 +103,18 @@ async function main() {
 
   console.log(`${marcasFiltered.length} marcas a processar (de ${marcas.length} totais)\n`);
 
-  const catalog = [];
+  // MERGE: carrega catálogo existente (se houver) e indexa por codigoFipe.
+  // Cada marca processada faz upsert nas suas entries, preservando outras marcas.
+  let catalog = [];
+  try {
+    const raw = await fs.readFile(OUT_FILE, 'utf8');
+    const existing = JSON.parse(raw);
+    catalog = existing.entries || [];
+    console.log(`✓ catálogo existente carregado: ${catalog.length} entries (preservando ao processar)\n`);
+  } catch {
+    console.log('(sem catálogo prévio — começando do zero)\n');
+  }
+
   let modelosTotal = 0, anosTotal = 0, errosTotal = 0;
   const tipoStats = {};
 
@@ -120,6 +131,9 @@ async function main() {
       continue;
     }
     modelosTotal += modelos.length;
+
+    // Coleta entries dessa marca em variável separada — depois faz merge no catalog
+    const brandEntries = [];
 
     // Sequencial — o rate limiter global garante ~3 req/s
     const BATCH = 1;
@@ -164,11 +178,14 @@ async function main() {
         anosTotal += anosUsados.length;
         return entries;
       }));
-      results.forEach(entries => catalog.push(...entries));
+      results.forEach(entries => brandEntries.push(...entries));
       if ((bi + BATCH) % 10 === 0 || bi + BATCH >= modelos.length) {
-        console.log(`    ${Math.min(bi + BATCH, modelos.length)}/${modelos.length} modelos · ${catalog.length} entries`);
+        console.log(`    ${Math.min(bi + BATCH, modelos.length)}/${modelos.length} modelos · +${brandEntries.length} entries (cat total: ${catalog.length + brandEntries.length})`);
       }
     }
+
+    // MERGE: remove entries antigas dessa marca, adiciona as novas
+    catalog = catalog.filter(e => e.marcaId !== marca.codigo).concat(brandEntries);
 
     // Salva incrementalmente a cada marca pra não perder progresso
     await fs.writeFile(OUT_FILE, JSON.stringify({

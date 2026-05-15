@@ -12,6 +12,7 @@ import { runCurator } from './agents.js';
 import { normalizeBriefing } from './briefing.js';
 import { recommend } from './recommend.js';
 import { loadCatalog, clearCatalogCache } from './catalog.js';
+import { getOrBuildImages } from './imageCache.js';
 import { spawn } from 'node:child_process';
 
 const app = express();
@@ -135,6 +136,21 @@ app.post('/api/catalog/rebuild-from-cache', async (_req, res) => {
       tipos: c.stats?.tipos || {},
     });
   });
+});
+
+// Imagens dos modelos: busca + valida + cacheia no Supabase.
+// Primeira request por modelo demora (~10-30s); subsequentes são instant.
+app.get('/api/images/:marca/:modelo/:ano', async (req, res, next) => {
+  try {
+    const ano = Number(req.params.ano);
+    if (!Number.isFinite(ano)) return res.status(400).json({ error: 'ano inválido' });
+    const result = await getOrBuildImages({
+      marca: req.params.marca,
+      modelo: req.params.modelo,
+      ano,
+    });
+    res.json(result);
+  } catch (e) { next(e); }
 });
 
 app.use((err, _req, res, _next) => {

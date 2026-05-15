@@ -1,0 +1,151 @@
+// Validador de imagens via Vision LLM (Groq). Recebe candidatos por view e
+// devolve até 2 fotos APROVADAS por view. Filosofia "honestidade > generosidade":
+// se o LLM duvida ou a chamada falha, descarta — melhor zero foto que foto errada.
+
+import OpenAI from 'openai';
+
+// Único vision acessível na conta free: Llama 4 Scout. Modelos 3.2-vision
+// foram descontinuados; outros Llama 4 (Maverick) não tão liberados.
+// Override via env GROQ_VISION_MODEL.
+const VISION_MODEL = process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct';
+
+// Se bater TPD (500k tokens/dia), marca pra cortar curto as próximas chamadas
+// na mesma sessão. Reseta quando o processo reiniciar (ou TTL_FAILED expirar
+// no Supabase, o que vier antes).
+let _tpdExhaustedUntil = 0;
+function isTpdExhausted() { return Date.now() < _tpdExhaustedUntil; }
+function markTpdExhausted(seconds) {
+  const ms = Math.max(seconds, 60) * 1000;
+  _tpdExhaustedUntil = Date.now() + ms;
+  console.warn(`[validator] TPD esgotado por ${Math.round(ms/60000)} min — pulando validações até reset`);
+}
+
+let _client = null;
+function getClient() {
+  if (_client) return _client;
+  const apiKey = process.env.GROQ_VISION_API_KEY || process.env.GROQ_API_KEY;
+  if (!apiKey) throw new Error('GROQ_API_KEY ausente no .env');
+  _client = new OpenAI({
+    apiKey,
+    baseURL: 'https://api.groq.com/openai/v1',
+  });
+  return _client;
+}
+
+const VIEW_LABEL = {
+  front: 'frente (vista frontal externa)',
+  rear: 'traseira (vista traseira externa)',
+  side: 'lateral (perfil do carro de lado)',
+  interior: 'interior (painel, console ou bancos)',
+};
+
+// Llama 4 Scout aceita no máx 5 imagens por chamada.
+const MAX_IMAGES_PER_CALL = 5;
+const MAX_APPROVED_PER_VIEW = 3;
+
+async function validateBatch({ marca, modelo, ano, view, images, retries = 2 }) {
+  if (images.length === 0) return [];
+  const client = getClient();
+
+  const isExternal = view !== 'interior';
+  const diversityHint = isExternal
+    ? 'Se entre as fotos houver cores EXTERNAS diferentes do carro (ex: preto, branco, vermelho), prefira escolher 2-3 com cores DISTINTAS — diversidade visual é desejável.'
+    : 'Se houver variações de revestimento interno (cores de banco, tipo de painel), prefira escolher exemplos visualmente diferentes.';
+
+  const content = [
+    {
+      type: 'text',
+      text:
+`Vou te mostrar ${images.length} fotos numeradas de 1 a ${images.length}.
+
+Pra cada foto, julgue se é REALMENTE um(a) ${marca} ${modelo} do ano ${ano}, vista de ${VIEW_LABEL[view]}.
+
+Rejeite a foto se qualquer um abaixo for verdade:
+- Marca, modelo ou geração visivelmente diferente
+- View errada (ex: interior quando pedi frente)
+- Imagem 3D/render/CAD/desenho (queremos foto real)
+- Marca d'água grande cobrindo o carro
+- Miniatura, brinquedo, peça solta
+- **TEXTO SOBREPOSTO** na foto: thumbnail de YouTube, chamada de matéria, headline tipo "MELHOR HATCH 2024?", "TESTE COMPLETO", preços ou números grandes sobre o carro, logo de canal/site. Queremos FOTOS LIMPAS, não capa de vídeo/anúncio.
+- Foto com várias imagens montadas (colagem, antes/depois, comparativo).
+
+${diversityHint}
+
+Em dúvida, REJEITE. Melhor zero foto aprovada que uma foto errada.
+
+Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (índices das aprovadas), MÁXIMO ${MAX_APPROVED_PER_VIEW} itens, em ordem do mais representativo pro menos.`,
+    },
+    ...images.map(img => ({
+      type: 'image_url',
+      image_url: { url: img.visionUrl || img.url },
+    })),
+  ];
+
+  // Curto-circuito: se TPD já esgotou nesta sessão, nem chama Groq.
+  if (isTpdExhausted()) {
+    throw new Error('TPD esgotado — pulando validação');
+  }
+
+  let completion;
+  try {
+    completion = await client.chat.completions.create({
+      model: VISION_MODEL,
+      temperature: 0.1,
+      max_tokens: 150,
+      response_format: { type: 'json_object' },
+      messages: [{ role: 'user', content }],
+    });
+  } catch (e) {
+    const msg = String(e.message || '');
+    const is429 = /429|rate.limit|too many/i.test(msg);
+    const isTPD = /tokens per day|TPD/i.test(msg);
+
+    // TPD esgotou → marca a sessão e desiste deste view.
+    if (is429 && isTPD) {
+      const minMatch = msg.match(/(\d+)m/i);
+      const secMatch = msg.match(/(\d+(?:\.\d+)?)s/i);
+      const totalSec = (minMatch ? parseInt(minMatch[1]) * 60 : 0) + (secMatch ? parseFloat(secMatch[1]) : 0);
+      markTpdExhausted(totalSec || 3600);
+      throw new Error('TPD esgotado');
+    }
+
+    // TPM (por minuto) → aguarda o tempo que a Groq pediu e retenta.
+    if (retries > 0 && is429) {
+      const secMatch = msg.match(/try again in (\d+(?:\.\d+)?)s/i);
+      const waitMs = secMatch ? Math.ceil(parseFloat(secMatch[1]) * 1000) + 250 : 2500;
+      console.warn(`[validator] TPM 429 em ${view}, aguardando ${waitMs}ms`);
+      await new Promise(r => setTimeout(r, waitMs));
+      return validateBatch({ marca, modelo, ano, view, images, retries: retries - 1 });
+    }
+    throw e;
+  }
+
+  const text = completion.choices?.[0]?.message?.content || '{}';
+  try {
+    const json = JSON.parse(text);
+    const arr = Array.isArray(json.aprovadas) ? json.aprovadas : [];
+    return arr
+      .map(n => Number(n) - 1)
+      .filter(i => Number.isInteger(i) && i >= 0 && i < images.length)
+      .slice(0, MAX_APPROVED_PER_VIEW);
+  } catch {
+    return [];
+  }
+}
+
+// Valida as 4 views. Retorna { front, rear, side, interior } — até 3 fotos por view.
+export async function validateImages({ marca, modelo, ano, byView }) {
+  const out = { front: [], rear: [], side: [], interior: [] };
+  for (const view of ['front', 'rear', 'side', 'interior']) {
+    const batch = (byView[view] || []).slice(0, MAX_IMAGES_PER_CALL);
+    if (batch.length === 0) continue;
+    try {
+      const okIdx = await validateBatch({ marca, modelo, ano, view, images: batch });
+      out[view] = okIdx.map(i => batch[i]);
+    } catch (e) {
+      console.warn(`[validator] ${view} falhou (descartando view): ${e.message}`);
+      out[view] = [];
+    }
+  }
+  return out;
+}
