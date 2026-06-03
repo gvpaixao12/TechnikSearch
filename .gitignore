@@ -21,3 +21,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Claude Code (locks/estado interno, não faz parte do projeto)
+.claude/

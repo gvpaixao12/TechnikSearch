@@ -17,7 +17,7 @@ repositório, porque o VPS vai clonar de lá:
 ```powershell
 git add -A
 git commit -m "deploy: API_BASE relativo em produção"
-git push origin gv      # ou a branch que for usar
+git push origin main
 ```
 
 ---
@@ -51,8 +51,7 @@ acesso de leitura ao repo):
 
 ```bash
 git clone https://SEU_TOKEN@github.com/gvpaixao12/TechnikSearch.git /opt/technik
-cd /opt/technik
-git checkout gv         # a branch que você fez push
+cd /opt/technik         # já vem na branch main
 ```
 
 ## 4. Instalar dependências e configurar .env
