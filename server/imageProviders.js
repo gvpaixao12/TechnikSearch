@@ -90,11 +90,34 @@ function dedupeByUrl(items) {
   return out;
 }
 
-// Buscas direcionadas por view. Retorna { front, rear, interior } com
+// Limpa o nome do modelo pra busca de imagem. O nome FIPE vem cheio de
+// motorização/câmbio que polui image search:
+//   "TAOS Highline 1.4 250 TSI Flex Aut." → "TAOS Highline"
+//   "A 200 AMG Line 1.3 TB Advance Aut."  → "A 200 AMG Line"
+//   "CLA-250 2.0 16V TB Aut."             → "CLA-250"
+// Estratégia: corta no primeiro token de cilindrada (padrão "1.4", "2.0"),
+// remove parênteses e palavras soltas de combustível/câmbio no fim.
+function cleanModelName(modelo) {
+  const words = String(modelo || '').split(/\s+/);
+  const out = [];
+  for (const w of words) {
+    if (/^\d\.\d/.test(w)) break;            // cilindrada — corta aqui
+    out.push(w);
+  }
+  let s = out.join(' ')
+    .replace(/\([^)]*\)/g, ' ')              // remove "(Elétrico)" etc
+    .replace(/\s+(flex|diesel|gasolina|aut\.?|mec\.?|cvt|el[ée]trico|hybrid|h[íi]brido|turbo|tb|bi-?turbo)$/i, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return s || String(modelo || '');
+}
+
+// Buscas direcionadas por view. Retorna { front, rear, side, interior } com
 // candidatos dedupados de Commons + (se necessário) Serper.
 export async function searchByView({ marca, modelo, ano }) {
-  const base = `${marca} ${modelo} ${ano}`;
-  const baseEn = `${marca} ${modelo} ${ano}`;
+  const modeloLimpo = cleanModelName(modelo);
+  const base = `${marca} ${modeloLimpo} ${ano}`;
+  const baseEn = `${marca} ${modeloLimpo} ${ano}`;
   const plans = {
     front: { pt: `${base} frente`, en: `${baseEn} front` },
     rear: { pt: `${base} traseira`, en: `${baseEn} rear` },

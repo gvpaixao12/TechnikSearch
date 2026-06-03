@@ -8,7 +8,7 @@
 import { createClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
 import { searchByView } from './imageProviders.js';
-import { validateImages } from './imageValidator.js';
+import { validateImages, isTpdExhausted } from './imageValidator.js';
 
 const BUCKET = 'car-images';
 const TTL_VALIDATED_DAYS = 180;
@@ -232,11 +232,82 @@ async function _buildImagesUnlocked({ marca, modelo, ano, key, skipVision = fals
     key, marca, modelo, ano,
     images: uploaded,
     validated,
+    vision_validated: !skipVision && validated,
     expires_at: new Date(Date.now() + ttlDays * 86400_000).toISOString(),
   };
   await writeCache(supabase, row);
   console.log(`[images] ${key}: ${uploaded.length} salvas em ${Date.now() - t0}ms`);
   return { key, images: uploaded, validated, cached: false };
+}
+
+// Lazy upgrade: substitui fotos heurísticas por validadas no vision.
+// Roda em background (fire-and-forget). Se vision falhar/rejeitar tudo,
+// PRESERVA as fotos heurísticas existentes — nunca deixa o carro vazio.
+const _upgradesInFlight = new Set();
+
+async function upgradeWithVision({ marca, modelo, ano, key }) {
+  if (_upgradesInFlight.has(key)) return;
+  _upgradesInFlight.add(key);
+  try {
+    await acquireBuildSlot();
+    const supabase = getSupabase();
+    const t0 = Date.now();
+    console.log(`[upgrade] ${key}: iniciando re-validação com vision`);
+
+    const views = ['front', 'rear', 'side', 'interior'];
+    const byViewRaw = await searchByView({ marca, modelo, ano });
+    const byView = await downloadByView(byViewRaw, views);
+    const totalCand = views.reduce((s, v) => s + byView[v].length, 0);
+    if (totalCand === 0) {
+      console.log(`[upgrade] ${key}: 0 candidatos novos, mantendo heurística`);
+      return;
+    }
+
+    let approved;
+    try {
+      approved = await validateImages({ marca, modelo, ano, byView });
+    } catch (e) {
+      console.log(`[upgrade] ${key}: vision falhou (${e.message}), mantendo heurística`);
+      return;
+    }
+    const totalApproved = views.reduce((s, v) => s + approved[v].length, 0);
+    if (totalApproved < 2) {
+      console.log(`[upgrade] ${key}: vision aprovou ${totalApproved} fotos — mantendo heurística`);
+      return;
+    }
+
+    const uploaded = [];
+    for (const view of views) {
+      let idx = 0;
+      for (const img of approved[view]) {
+        try {
+          const publicUrl = await uploadOne({ supabase, key, view, idx, buffer: img.buffer });
+          uploaded.push({ url: publicUrl, view, sourcePage: img.page || null });
+          idx++;
+        } catch (e) {
+          console.warn(`[upgrade] ${key} upload ${view}#${idx}: ${e.message}`);
+        }
+      }
+    }
+
+    if (uploaded.length < 2) {
+      console.log(`[upgrade] ${key}: só ${uploaded.length} subiram, mantendo heurística`);
+      return;
+    }
+
+    const row = {
+      key, marca, modelo, ano,
+      images: uploaded,
+      validated: true,
+      vision_validated: true,
+      expires_at: new Date(Date.now() + TTL_VALIDATED_DAYS * 86400_000).toISOString(),
+    };
+    await writeCache(supabase, row);
+    console.log(`[upgrade] ${key}: ${uploaded.length} fotos validadas em ${Date.now() - t0}ms ✓`);
+  } finally {
+    releaseBuildSlot();
+    _upgradesInFlight.delete(key);
+  }
 }
 
 // Semáforo: limita builds simultâneos. Groq free tier tem 30k TPM no vision
@@ -266,6 +337,18 @@ export async function getOrBuildImages({ marca, modelo, ano, skipVision = false 
 
   const cached = await readCache(supabase, key);
   if (cached) {
+    // Lazy upgrade: se a entry tá só com heurística E vision tem TPD,
+    // dispara reválida em background. Próxima visita pega validada.
+    if (
+      !skipVision &&
+      !cached.vision_validated &&
+      (cached.images?.length || 0) > 0 &&
+      !isTpdExhausted() &&
+      !_upgradesInFlight.has(key)
+    ) {
+      upgradeWithVision({ marca, modelo, ano, key })
+        .catch(e => console.warn(`[upgrade] ${key} crashou:`, e.message));
+    }
     return { key, images: cached.images || [], validated: !!cached.validated, cached: true };
   }
 

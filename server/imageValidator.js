@@ -13,7 +13,7 @@ const VISION_MODEL = process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-
 // na mesma sessão. Reseta quando o processo reiniciar (ou TTL_FAILED expirar
 // no Supabase, o que vier antes).
 let _tpdExhaustedUntil = 0;
-function isTpdExhausted() { return Date.now() < _tpdExhaustedUntil; }
+export function isTpdExhausted() { return Date.now() < _tpdExhaustedUntil; }
 function markTpdExhausted(seconds) {
   const ms = Math.max(seconds, 60) * 1000;
   _tpdExhaustedUntil = Date.now() + ms;
