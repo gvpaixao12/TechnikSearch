@@ -497,6 +497,84 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--tk-bg); font
 }
 .is-on .tk-loading__dot { background: var(--tk-primary); color: #fff; }
 
+/* ─── Porsche 911 loader ─── */
+.tk-porsche-loader {
+  display: grid; place-items: center;
+  width: 100%;
+  margin: 30px 0 34px;
+}
+.tk-porsche-carwrap {
+  position: relative;
+  width: 182px;
+  height: 56px;
+  transform: scale(1.7);
+  transform-origin: center;
+}
+/* silhouette mask — clips children to the car shape */
+.tk-porsche-car {
+  position: absolute; inset: 0;
+  -webkit-mask-image: url(porsche-911-mask.png);
+          mask-image: url(porsche-911-mask.png);
+  -webkit-mask-repeat: no-repeat;
+          mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+          mask-position: center;
+  -webkit-mask-size: contain;
+          mask-size: contain;
+}
+.tk-porsche-car > div { position: absolute; inset: 0; }
+/* faint always-on outline */
+.tk-porsche-ghost { background: var(--tk-primary); opacity: 0.15; }
+/* ink that draws front-to-rear, then fades to reset seamlessly */
+.tk-porsche-fill {
+  background: var(--tk-primary);
+  clip-path: inset(0 100% 0 0);
+  animation: tk-porsche-draw 3.8s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+@keyframes tk-porsche-draw {
+  0%   { clip-path: inset(0 100% 0 0); opacity: 1; }
+  45%  { clip-path: inset(0 0 0 0);    opacity: 1; }
+  88%  { clip-path: inset(0 0 0 0);    opacity: 1; }
+  100% { clip-path: inset(0 0 0 0);    opacity: 0; }
+}
+/* white glint sweeping across after the fill completes */
+.tk-porsche-shine {
+  background: linear-gradient(108deg, transparent 43%, rgba(255,255,255,0.95) 50%, transparent 57%);
+  transform: translateX(-150%);
+  animation: tk-porsche-shine 3.8s ease-in-out infinite;
+}
+@keyframes tk-porsche-shine {
+  0%, 58% { transform: translateX(-150%); }
+  86%     { transform: translateX(150%); }
+  100%    { transform: translateX(150%); }
+}
+/* spinning rims — overlaid, not masked, so they aren't clipped */
+.tk-porsche-wheel {
+  position: absolute;
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  background: repeating-conic-gradient(var(--tk-primary) 0deg 3.5deg, transparent 3.5deg 72deg);
+  -webkit-mask: radial-gradient(closest-side, transparent 22%, #000 26%, #000 92%, transparent 100%);
+          mask: radial-gradient(closest-side, transparent 22%, #000 26%, #000 92%, transparent 100%);
+  opacity: 0.9;
+  animation: tk-porsche-spin 0.85s linear infinite;
+}
+.tk-porsche-wheel::after {
+  content: "";
+  position: absolute; inset: 0; margin: auto;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--tk-primary);
+}
+.tk-porsche-wheel.front { left: 18px;  top: 23px; }
+.tk-porsche-wheel.rear  { left: 122px; top: 23px; }
+@keyframes tk-porsche-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .tk-porsche-fill { animation: none; clip-path: inset(0 0 0 0); opacity: 1; }
+  .tk-porsche-shine, .tk-porsche-wheel { animation: none; }
+  .tk-porsche-shine { display: none; }
+}
+
 /* ─── Results ─── */
 .tk-results { padding: 28px 36px 40px; overflow-y: auto; height: 100%; background: var(--tk-bg); }
 .tk-results__hero {

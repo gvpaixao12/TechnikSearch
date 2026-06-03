@@ -144,10 +144,14 @@ app.get('/api/images/:marca/:modelo/:ano', async (req, res, next) => {
   try {
     const ano = Number(req.params.ano);
     if (!Number.isFinite(ano)) return res.status(400).json({ error: 'ano inválido' });
+    // skipVision: 1º acesso devolve fotos rápido via heurística; allowUpgrade liga
+    // o upgrade pra vision (limpa watermark, valida modelo) em background no próximo acesso.
     const result = await getOrBuildImages({
       marca: req.params.marca,
       modelo: req.params.modelo,
       ano,
+      skipVision: true,
+      allowUpgrade: true,
     });
     res.json(result);
   } catch (e) { next(e); }

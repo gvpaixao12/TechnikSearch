@@ -17,20 +17,51 @@ const MAX_WIDTH = 1200;            // resize p/ storage final (~170KB médio)
 const VISION_WIDTH = 512;          // resize p/ enviar à Groq (suficiente p/ classificar)
 const WEBP_QUALITY = 82;
 const WEBP_VISION_QUALITY = 70;
-const MAX_CANDIDATES_PER_VIEW = 8; // download top-N por view (no skipVision precisa mais)
+const MAX_CANDIDATES_PER_VIEW = 12; // download top-N por view (rich: precisa de pool maior)
+const HEURISTIC_PER_VIEW = 6;      // fotos por view no modo skipVision (galeria rica)
 const MAX_BYTES = 8 * 1024 * 1024; // 8 MB hard cap por download
 
 // Heurísticas pra modo skipVision (background sem LLM):
 const BAD_URL_PATTERNS = [/youtube\.com/i, /youtu\.be/i, /ytimg/i, /vimeo/i];
 const BAD_TITLE_KEYWORDS = /\b(vs|review|teste|melhor|vale a pena|completo|comparativo|opinião|opiniao|detonando|pior|ranking)\b/i;
 
+// Agregadores/classificados que costumam estampar URL/marca d'água na própria
+// foto. O caminho heurístico não lê pixels, então filtramos pela origem.
+// (O caminho vision rejeita watermark olhando a imagem — ver imageValidator.)
+// Lista extensível: adicione domínios conforme aparecerem fotos marcadas.
+const WATERMARK_DOMAINS = ['carrosnaweb', 'usadosbr', 'napista'];
+
+function hostOf(u) {
+  try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; }
+}
+
 function isLikelyBadImage(im) {
   const url = (im.url || '').toLowerCase();
   const page = (im.page || '').toLowerCase();
   const title = (im.title || '').toLowerCase();
   if (BAD_URL_PATTERNS.some(rx => rx.test(url) || rx.test(page))) return true;
+  if (WATERMARK_DOMAINS.some(d => url.includes(d) || page.includes(d))) return true;
   if (BAD_TITLE_KEYWORDS.test(title)) return true;
   return false;
+}
+
+// Seleção heurística com diversidade de fonte: pega 1 por domínio primeiro
+// (evita 6 recortes do mesmo anúncio), depois completa com os melhores restantes.
+function pickDiverse(sorted, k) {
+  const picked = [];
+  const seenHosts = new Set();
+  for (const im of sorted) {
+    if (picked.length >= k) break;
+    const h = hostOf(im.page || im.url);
+    if (h && seenHosts.has(h)) continue;
+    if (h) seenHosts.add(h);
+    picked.push(im);
+  }
+  for (const im of sorted) {
+    if (picked.length >= k) break;
+    if (!picked.includes(im)) picked.push(im);
+  }
+  return picked;
 }
 
 function scoreImage(im) {
@@ -40,13 +71,13 @@ function scoreImage(im) {
   return s;
 }
 
-function selectHeuristic(byView, perView = 2) {
+function selectHeuristic(byView, perView = HEURISTIC_PER_VIEW) {
   const out = { front: [], rear: [], side: [], interior: [] };
   for (const view of Object.keys(out)) {
-    out[view] = (byView[view] || [])
+    const sorted = (byView[view] || [])
       .filter(im => !isLikelyBadImage(im))
-      .sort((a, b) => scoreImage(b) - scoreImage(a))
-      .slice(0, perView);
+      .sort((a, b) => scoreImage(b) - scoreImage(a));
+    out[view] = pickDiverse(sorted, perView);
   }
   return out;
 }
@@ -70,8 +101,15 @@ function slug(s) {
     .replace(/^-+|-+$/g, '');
 }
 
+// Versão do cache: faz parte da key. Bump invalida tudo (entradas antigas viram
+// "miss" e são reconstruídas quando o carro reaparece = rebuild preguiçoso, sem
+// precisar de migração de schema). Linhas/pastas antigas expiram sozinhas (≤180d)
+// ou podem ser limpas com `build-images-background.js --prune-old`.
+export const CACHE_VERSION = 'v2';
+export const KEY_PREFIX = `${CACHE_VERSION}__`;
+
 export function makeKey({ marca, modelo, ano }) {
-  return `${slug(marca)}__${slug(modelo)}__${ano}`;
+  return `${KEY_PREFIX}${slug(marca)}__${slug(modelo)}__${ano}`;
 }
 
 // Baixa a imagem da web pro nosso servidor. Retorna o Buffer cru.
@@ -185,7 +223,7 @@ async function _buildImagesUnlocked({ marca, modelo, ano, key, skipVision = fals
   const t0 = Date.now();
 
   const views = ['front', 'rear', 'side', 'interior'];
-  const byViewRaw = await searchByView({ marca, modelo, ano });
+  const byViewRaw = await searchByView({ marca, modelo, ano, rich: true });
 
   // Baixa imagens pro nosso servidor (até MAX_CANDIDATES_PER_VIEW por view).
   // Cada imagem fica com { buffer, visionUrl } prontos.
@@ -207,7 +245,7 @@ async function _buildImagesUnlocked({ marca, modelo, ano, key, skipVision = fals
 
   // Seleciona top-N por view. skipVision usa heurísticas; default usa LLM vision.
   const approved = skipVision
-    ? selectHeuristic(byView, 2)
+    ? selectHeuristic(byView, HEURISTIC_PER_VIEW)
     : await validateImages({ marca, modelo, ano, byView });
   const totalApproved = views.reduce((s, v) => s + approved[v].length, 0);
   console.log(`[images] ${key}: ${totalApproved} ${skipVision ? 'selecionadas (heurística)' : 'aprovadas no vision'}`);
@@ -218,7 +256,7 @@ async function _buildImagesUnlocked({ marca, modelo, ano, key, skipVision = fals
     for (const img of approved[view]) {
       try {
         const publicUrl = await uploadOne({ supabase, key, view, idx, buffer: img.buffer });
-        uploaded.push({ url: publicUrl, view, sourcePage: img.page || null });
+        uploaded.push({ url: publicUrl, view, sourcePage: img.page || null, vision: !skipVision });
         idx++;
       } catch (e) {
         console.warn(`[images] upload ${view} #${idx} falhou: ${e.message}`);
@@ -228,11 +266,12 @@ async function _buildImagesUnlocked({ marca, modelo, ano, key, skipVision = fals
 
   const validated = uploaded.length >= 2;
   const ttlDays = validated ? TTL_VALIDATED_DAYS : TTL_FAILED_DAYS;
+  // OBS: o status "vision-validado" é persistido por foto (campo `vision` em cada
+  // item de `images`), não numa coluna própria — a tabela não tem `vision_validated`.
   const row = {
     key, marca, modelo, ano,
     images: uploaded,
     validated,
-    vision_validated: !skipVision && validated,
     expires_at: new Date(Date.now() + ttlDays * 86400_000).toISOString(),
   };
   await writeCache(supabase, row);
@@ -255,7 +294,7 @@ async function upgradeWithVision({ marca, modelo, ano, key }) {
     console.log(`[upgrade] ${key}: iniciando re-validação com vision`);
 
     const views = ['front', 'rear', 'side', 'interior'];
-    const byViewRaw = await searchByView({ marca, modelo, ano });
+    const byViewRaw = await searchByView({ marca, modelo, ano, rich: true });
     const byView = await downloadByView(byViewRaw, views);
     const totalCand = views.reduce((s, v) => s + byView[v].length, 0);
     if (totalCand === 0) {
@@ -282,7 +321,7 @@ async function upgradeWithVision({ marca, modelo, ano, key }) {
       for (const img of approved[view]) {
         try {
           const publicUrl = await uploadOne({ supabase, key, view, idx, buffer: img.buffer });
-          uploaded.push({ url: publicUrl, view, sourcePage: img.page || null });
+          uploaded.push({ url: publicUrl, view, sourcePage: img.page || null, vision: true });
           idx++;
         } catch (e) {
           console.warn(`[upgrade] ${key} upload ${view}#${idx}: ${e.message}`);
@@ -299,7 +338,6 @@ async function upgradeWithVision({ marca, modelo, ano, key }) {
       key, marca, modelo, ano,
       images: uploaded,
       validated: true,
-      vision_validated: true,
       expires_at: new Date(Date.now() + TTL_VALIDATED_DAYS * 86400_000).toISOString(),
     };
     await writeCache(supabase, row);
@@ -330,18 +368,27 @@ function releaseBuildSlot() {
 // não dispara 5 builds — todas aguardam o mesmo build).
 const _inFlight = new Map();
 
-export async function getOrBuildImages({ marca, modelo, ano, skipVision = false }) {
+// Uma entry é "vision-validada" se alguma das fotos foi marcada com `vision`.
+// (Flag persistido por foto dentro de `images`, já que não há coluna própria.)
+function isVisionValidated(cached) {
+  return (cached?.images || []).some(im => im && im.vision === true);
+}
+
+// allowUpgrade: o caminho web (skipVision rápido) liga isso pra que o upgrade
+// vision rode em background na visita seguinte. O bg script deixa desligado
+// (não quer disparar vision pro catálogo inteiro).
+export async function getOrBuildImages({ marca, modelo, ano, skipVision = false, allowUpgrade = false }) {
   if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
   const supabase = getSupabase();
   const key = makeKey({ marca, modelo, ano });
 
   const cached = await readCache(supabase, key);
   if (cached) {
-    // Lazy upgrade: se a entry tá só com heurística E vision tem TPD,
-    // dispara reválida em background. Próxima visita pega validada.
+    // Lazy upgrade: entry só com heurística → dispara reválida vision em
+    // background (se vision não estiver com TPD esgotado). Próxima visita pega validada.
     if (
-      !skipVision &&
-      !cached.vision_validated &&
+      allowUpgrade &&
+      !isVisionValidated(cached) &&
       (cached.images?.length || 0) > 0 &&
       !isTpdExhausted() &&
       !_upgradesInFlight.has(key)

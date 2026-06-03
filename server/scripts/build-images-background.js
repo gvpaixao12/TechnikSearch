@@ -12,10 +12,12 @@
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 import { loadCatalog } from '../catalog.js';
-import { getOrBuildImages, makeKey } from '../imageCache.js';
+import { getOrBuildImages, makeKey, KEY_PREFIX } from '../imageCache.js';
 
 const SLEEP_MS = 2500;        // pausa entre carros — evita estourar Commons rate limit
 const PROGRESS_EVERY = 10;    // print de resumo a cada N carros
+const BUCKET = 'car-images';
+const PRUNE_OLD = process.argv.slice(2).includes('--prune-old');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function fmtTime(ms) {
@@ -24,6 +26,47 @@ function fmtTime(ms) {
   const m = Math.floor(s / 60);
   const rs = s % 60;
   return `${m}m${String(rs).padStart(2,'0')}s`;
+}
+
+// Remove entradas e arquivos de versões antigas do cache (keys que não começam
+// com KEY_PREFIX). Roda só com a flag --prune-old.
+async function pruneOldVersions(supabase) {
+  console.log(`[prune] limpando versões antigas (mantendo ${KEY_PREFIX}*)…`);
+  // 1) Linhas do índice
+  const oldKeys = [];
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('car_images_cache').select('key').range(from, from + PAGE - 1);
+    if (error) { console.warn('[prune] erro lendo keys:', error.message); break; }
+    if (!data || data.length === 0) break;
+    for (const r of data) if (!r.key.startsWith(KEY_PREFIX)) oldKeys.push(r.key);
+    if (data.length < PAGE) break;
+  }
+  let deletedRows = 0;
+  for (let i = 0; i < oldKeys.length; i += 200) {
+    const chunk = oldKeys.slice(i, i + 200);
+    const { error } = await supabase.from('car_images_cache').delete().in('key', chunk);
+    if (error) console.warn('[prune] erro deletando linhas:', error.message);
+    else deletedRows += chunk.length;
+  }
+  console.log(`[prune] ${deletedRows} linhas antigas removidas`);
+
+  // 2) Pastas órfãs no bucket
+  const { data: top, error: e1 } = await supabase.storage.from(BUCKET).list('', { limit: 10000 });
+  if (e1) { console.warn('[prune] erro listando bucket:', e1.message); return; }
+  const oldFolders = (top || []).filter(o => o.id === null && !o.name.startsWith(KEY_PREFIX));
+  let deletedFiles = 0;
+  for (const folder of oldFolders) {
+    const { data: files, error: e2 } = await supabase.storage.from(BUCKET).list(folder.name, { limit: 1000 });
+    if (e2) { console.warn(`[prune] erro listando ${folder.name}:`, e2.message); continue; }
+    const paths = (files || []).map(f => `${folder.name}/${f.name}`);
+    if (paths.length === 0) continue;
+    const { error: e3 } = await supabase.storage.from(BUCKET).remove(paths);
+    if (e3) console.warn(`[prune] erro removendo ${folder.name}:`, e3.message);
+    else deletedFiles += paths.length;
+  }
+  console.log(`[prune] ${oldFolders.length} pastas antigas, ${deletedFiles} arquivos removidos do bucket\n`);
 }
 
 async function main() {
@@ -36,6 +79,8 @@ async function main() {
   const supabase = createClient(supaUrl, supaKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+
+  if (PRUNE_OLD) await pruneOldVersions(supabase);
 
   const catalog = await loadCatalog();
   console.log(`[bg] catálogo: ${catalog.entries.length} entries`);

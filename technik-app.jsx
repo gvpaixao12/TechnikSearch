@@ -720,7 +720,17 @@ function LoadingView({ step, error, onRetry, onCancel }) {
         <span className="tk-eyebrow">Tempo médio · 25-40 segundos</span>
         <h2>Cruzando o briefing com<br/>a Tabela FIPE em tempo real.</h2>
         <p>Dois agentes IA estão trabalhando: um curador que conhece o catálogo brasileiro inteiro e um consultor sênior que valida preços reais e monta o ranking final.</p>
-        <div className="tk-progress-stripes" style={{ margin: '22px 0 26px', maxWidth: 420 }} />
+        <div className="tk-porsche-loader" role="status" aria-label="Carregando recomendações">
+          <div className="tk-porsche-carwrap">
+            <div className="tk-porsche-car">
+              <div className="tk-porsche-ghost"></div>
+              <div className="tk-porsche-fill"></div>
+              <div className="tk-porsche-shine"></div>
+            </div>
+            <div className="tk-porsche-wheel front"></div>
+            <div className="tk-porsche-wheel rear"></div>
+          </div>
+        </div>
         <ul className="tk-loading__steps">
           {steps.map((s, i) => (
             <li key={i} className={i < step ? 'is-on' : ''}>

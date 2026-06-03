@@ -41,11 +41,16 @@ const VIEW_LABEL = {
 
 // Llama 4 Scout aceita no máx 5 imagens por chamada.
 const MAX_IMAGES_PER_CALL = 5;
-const MAX_APPROVED_PER_VIEW = 3;
+// Fotos aprovadas por view (galeria rica; interior mais variado).
+const APPROVED_PER_VIEW = { front: 6, side: 4, rear: 4, interior: 8 };
+const DEFAULT_APPROVED = 4;
+// Teto de candidatos enviados ao vision por view (segura quota: ~2 lotes/view).
+const MAX_CANDIDATES_TO_VALIDATE = 10;
 
-async function validateBatch({ marca, modelo, ano, view, images, retries = 2 }) {
+async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3, retries = 2 }) {
   if (images.length === 0) return [];
   const client = getClient();
+  const cap = Math.min(maxApproved, images.length);
 
   const isExternal = view !== 'interior';
   const diversityHint = isExternal
@@ -66,14 +71,14 @@ Rejeite a foto se qualquer um abaixo for verdade:
 - Imagem 3D/render/CAD/desenho (queremos foto real)
 - Marca d'água grande cobrindo o carro
 - Miniatura, brinquedo, peça solta
-- **TEXTO SOBREPOSTO** na foto: thumbnail de YouTube, chamada de matéria, headline tipo "MELHOR HATCH 2024?", "TESTE COMPLETO", preços ou números grandes sobre o carro, logo de canal/site. Queremos FOTOS LIMPAS, não capa de vídeo/anúncio.
+- **TEXTO / URL / LOGO SOBREPOSTO** na foto: qualquer endereço de site ou domínio visível (ex.: "carrosnaweb", "www…", ".com.br", "@perfil"), marca d'água ou logo de loja/site/revenda — MESMO pequeno e em QUALQUER canto. Também rejeite thumbnail de YouTube, chamada de matéria, headline tipo "MELHOR HATCH 2024?", "TESTE COMPLETO", preços ou números grandes sobre o carro. Queremos FOTOS LIMPAS, não capa de vídeo/anúncio nem foto carimbada por classificado.
 - Foto com várias imagens montadas (colagem, antes/depois, comparativo).
 
 ${diversityHint}
 
 Em dúvida, REJEITE. Melhor zero foto aprovada que uma foto errada.
 
-Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (índices das aprovadas), MÁXIMO ${MAX_APPROVED_PER_VIEW} itens, em ordem do mais representativo pro menos.`,
+Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (índices das aprovadas), MÁXIMO ${cap} itens, em ordem do mais representativo pro menos.`,
     },
     ...images.map(img => ({
       type: 'image_url',
@@ -115,7 +120,7 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
       const waitMs = secMatch ? Math.ceil(parseFloat(secMatch[1]) * 1000) + 250 : 2500;
       console.warn(`[validator] TPM 429 em ${view}, aguardando ${waitMs}ms`);
       await new Promise(r => setTimeout(r, waitMs));
-      return validateBatch({ marca, modelo, ano, view, images, retries: retries - 1 });
+      return validateBatch({ marca, modelo, ano, view, images, maxApproved, retries: retries - 1 });
     }
     throw e;
   }
@@ -127,25 +132,36 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
     return arr
       .map(n => Number(n) - 1)
       .filter(i => Number.isInteger(i) && i >= 0 && i < images.length)
-      .slice(0, MAX_APPROVED_PER_VIEW);
+      .slice(0, cap);
   } catch {
     return [];
   }
 }
 
-// Valida as 4 views. Retorna { front, rear, side, interior } — até 3 fotos por view.
+// Valida as 4 views. Retorna { front, rear, side, interior } com até
+// APPROVED_PER_VIEW[view] fotos. Como o modelo aceita ≤5 imagens/chamada,
+// lote os candidatos em grupos de MAX_IMAGES_PER_CALL e mescla as aprovadas até
+// o alvo da view. Se TPD/TPM estourar no meio, fica com o que já aprovou.
 export async function validateImages({ marca, modelo, ano, byView }) {
   const out = { front: [], rear: [], side: [], interior: [] };
   for (const view of ['front', 'rear', 'side', 'interior']) {
-    const batch = (byView[view] || []).slice(0, MAX_IMAGES_PER_CALL);
-    if (batch.length === 0) continue;
-    try {
-      const okIdx = await validateBatch({ marca, modelo, ano, view, images: batch });
-      out[view] = okIdx.map(i => batch[i]);
-    } catch (e) {
-      console.warn(`[validator] ${view} falhou (descartando view): ${e.message}`);
-      out[view] = [];
+    const target = APPROVED_PER_VIEW[view] || DEFAULT_APPROVED;
+    const candidates = (byView[view] || []).slice(0, MAX_CANDIDATES_TO_VALIDATE);
+    if (candidates.length === 0) continue;
+
+    const approved = [];
+    for (let start = 0; start < candidates.length && approved.length < target; start += MAX_IMAGES_PER_CALL) {
+      const batch = candidates.slice(start, start + MAX_IMAGES_PER_CALL);
+      const remaining = target - approved.length;
+      try {
+        const okIdx = await validateBatch({ marca, modelo, ano, view, images: batch, maxApproved: remaining });
+        for (const i of okIdx) approved.push(batch[i]);
+      } catch (e) {
+        console.warn(`[validator] ${view} lote (offset ${start}) falhou: ${e.message} — encerrando view`);
+        break; // TPD/TPM ou erro: preserva o que já foi aprovado
+      }
     }
+    out[view] = approved.slice(0, target);
   }
   return out;
 }

@@ -119,6 +119,27 @@ const CAR_PHOTO_API = window.API_BASE !== undefined
   ? window.API_BASE
   : (location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? 'http://localhost:3001' : '');
 
+// Ordem e rótulos das categorias de foto (campo `view` que vem do backend).
+const VIEW_ORDER = ['front', 'side', 'rear', 'interior'];
+const VIEW_LABEL_PT = { front: 'Frente', side: 'Lateral', rear: 'Traseira', interior: 'Interior' };
+
+// Agrupa as imagens por categoria, preservando a ordem de VIEW_ORDER e
+// ignorando views desconhecidas. Devolve só as categorias que têm foto.
+function groupByView(images) {
+  const out = {};
+  for (const v of VIEW_ORDER) {
+    const arr = (images || []).filter(im => im.view === v);
+    if (arr.length) out[v] = arr;
+  }
+  return out;
+}
+
+// Escolhe a foto da frente pro card (fallback: primeira disponível).
+function pickFront(images) {
+  if (!images || !images.length) return null;
+  return images.find(im => im.view === 'front') || images[0];
+}
+
 function useCarImages({ brand, model, year, enabled = true }) {
   const [state, setState] = useState({ loading: false, images: [] });
   useEffect(() => {
@@ -145,12 +166,11 @@ const _arrow = (side) => ({
 });
 
 // Lazy-load via IntersectionObserver. Aspecto 4:3 (mais quadrado).
-// Navegação: setas laterais + dots + clique abre lightbox em fullscreen.
+// No card mostra SÓ a foto da frente; clique abre o tour de fotos por categoria.
 function CarPhoto({ brand, model, year, type = 'suv', eager = false, rounded = false, aspect = '4 / 3' }) {
   const containerRef = useRef(null);
   const [visible, setVisible] = useState(eager);
-  const [idx, setIdx] = useState(0);
-  const [lightbox, setLightbox] = useState(false);
+  const [tourOpen, setTourOpen] = useState(false);
 
   useEffect(() => {
     if (visible || !containerRef.current) return;
@@ -164,33 +184,7 @@ function CarPhoto({ brand, model, year, type = 'suv', eager = false, rounded = f
 
   const { images, loading } = useCarImages({ brand, model, year, enabled: visible });
   const n = images.length;
-  const cur = n > 0 ? images[idx % n] : null;
-
-  // Preload todas as fotos assim que chegam (em background) pra navegação
-  // ser instantânea quando o usuário clicar nas setas.
-  useEffect(() => {
-    if (n <= 1) return;
-    images.slice(1).forEach(im => {
-      const img = new Image();
-      img.src = im.url;
-    });
-  }, [images]);
-
-  const go = (delta) => (e) => {
-    if (e) e.stopPropagation();
-    if (n > 0) setIdx(i => (i + delta + n) % n);
-  };
-
-  useEffect(() => {
-    if (!lightbox) return;
-    const onKey = (e) => {
-      if (e.key === 'Escape') setLightbox(false);
-      else if (e.key === 'ArrowRight') go(1)();
-      else if (e.key === 'ArrowLeft') go(-1)();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [lightbox, n]);
+  const front = pickFront(images);
 
   const containerStyle = {
     position: 'relative', width: '100%', aspectRatio: aspect,
@@ -213,83 +207,170 @@ function CarPhoto({ brand, model, year, type = 'suv', eager = false, rounded = f
     );
   }
 
-  const multiple = n > 1;
-
   return (
     <>
       <div
         ref={containerRef}
-        onClick={() => setLightbox(true)}
+        onClick={() => setTourOpen(true)}
+        title="Ver todas as fotos"
         style={{ ...containerStyle, cursor: 'zoom-in' }}
       >
         <img
-          src={cur.url}
+          src={front.url}
           alt={`${brand} ${model} ${year}`}
           loading="lazy"
           style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
         />
-        {multiple && (
-          <>
-            <button onClick={go(-1)} aria-label="Anterior" style={_arrow('left')}>‹</button>
-            <button onClick={go(1)} aria-label="Próxima" style={_arrow('right')}>›</button>
-            <div style={{ position: 'absolute', bottom: 8, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 5, padding: '4px 8px', background: 'rgba(0,0,0,0.4)', borderRadius: 999 }}>
-              {images.map((_, i) => (
-                <button
-                  key={i}
-                  onClick={(e) => { e.stopPropagation(); setIdx(i); }}
-                  aria-label={`Foto ${i + 1}`}
-                  style={{
-                    width: 6, height: 6, borderRadius: '50%', padding: 0, border: 'none',
-                    background: i === idx % n ? '#fff' : 'rgba(255,255,255,0.45)',
-                    cursor: 'pointer',
-                  }}
-                />
-              ))}
-            </div>
-          </>
+        {n > 1 && (
+          <div style={{ position: 'absolute', bottom: 8, right: 8, display: 'flex', alignItems: 'center', gap: 5, padding: '4px 9px', background: 'rgba(0,0,0,0.55)', color: '#fff', borderRadius: 999, fontSize: 11, fontWeight: 600 }}>
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+            {n}
+          </div>
         )}
       </div>
 
-      {lightbox && ReactDOM.createPortal(
+      {tourOpen && (
+        <PhotoTourModal
+          brand={brand} model={model} year={year}
+          images={images}
+          onClose={() => setTourOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+// Modal "Tour por fotos" (estilo galeria Airbnb): faixa de categorias no topo,
+// uma seção por categoria com foto grande + miniaturas, e lightbox interno com
+// navegação dentro da categoria. Recebe as imagens já com o campo `view`.
+function PhotoTourModal({ brand, model, year, images, onClose }) {
+  const grouped = useMemo(() => groupByView(images), [images]);
+  const views = Object.keys(grouped);
+  const sectionRefs = useRef({});
+  const [lb, setLb] = useState(null); // { view, idx } | null
+
+  // Trava o scroll do body enquanto o modal está aberto.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  // Pré-carrega tudo pra navegação instantânea.
+  useEffect(() => {
+    images.forEach(im => { const i = new Image(); i.src = im.url; });
+  }, [images]);
+
+  const lbList = lb ? grouped[lb.view] : null;
+  const lbCur = lbList ? lbList[lb.idx % lbList.length] : null;
+
+  const lbGo = (delta) => (e) => {
+    if (e) e.stopPropagation();
+    setLb(s => {
+      if (!s) return s;
+      const list = grouped[s.view];
+      return { ...s, idx: (s.idx + delta + list.length) % list.length };
+    });
+  };
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') { if (lb) setLb(null); else onClose(); }
+      else if (lb && e.key === 'ArrowRight') lbGo(1)();
+      else if (lb && e.key === 'ArrowLeft') lbGo(-1)();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lb]);
+
+  const scrollTo = (view) => {
+    const el = sectionRefs.current[view];
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  return ReactDOM.createPortal(
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 999999, background: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center' }}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="tk-tour tk-scroll"
+        style={{ background: '#fff', width: '100%', maxWidth: 1040, height: '100%', overflowY: 'auto', position: 'relative' }}
+      >
+        {/* Header sticky */}
+        <div style={{ position: 'sticky', top: 0, zIndex: 5, background: 'rgba(255,255,255,0.96)', backdropFilter: 'blur(6px)', borderBottom: '1px solid rgba(0,0,0,0.08)', padding: '14px 22px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--tk-muted)', fontWeight: 600 }}>{brand} · {year}</div>
+            <div style={{ fontFamily: 'Exo, sans-serif', fontSize: 20, fontWeight: 700, color: 'var(--tk-primary)' }}>{model}</div>
+          </div>
+          <button onClick={onClose} aria-label="Fechar" style={{ width: 38, height: 38, borderRadius: '50%', border: '1px solid rgba(0,0,0,0.12)', background: '#fff', cursor: 'pointer', fontSize: 22, lineHeight: 1, color: 'var(--tk-primary)' }}>×</button>
+        </div>
+
+        <div style={{ padding: 22 }}>
+          <h2 style={{ fontFamily: 'Exo, sans-serif', fontSize: 22, fontWeight: 700, margin: '0 0 16px', color: 'var(--tk-primary)' }}>Tour por fotos</h2>
+
+          {/* Faixa de categorias */}
+          <div className="tk-tour__strip">
+            {views.map(v => (
+              <button key={v} className="tk-tour__cat" onClick={() => scrollTo(v)}>
+                <img src={grouped[v][0].url} alt={VIEW_LABEL_PT[v]} loading="lazy" />
+                <span>{VIEW_LABEL_PT[v]} · {grouped[v].length}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* Seções por categoria */}
+          {views.map(v => {
+            const list = grouped[v];
+            const hero = list[0];
+            const rest = list.slice(1);
+            return (
+              <section key={v} ref={el => (sectionRefs.current[v] = el)} style={{ marginTop: 30, scrollMarginTop: 80 }}>
+                <h3 style={{ fontFamily: 'Exo, sans-serif', fontSize: 18, fontWeight: 700, margin: '0 0 12px', color: 'var(--tk-primary)' }}>{VIEW_LABEL_PT[v]}</h3>
+                <img
+                  src={hero.url}
+                  alt={`${model} ${VIEW_LABEL_PT[v]}`}
+                  onClick={() => setLb({ view: v, idx: 0 })}
+                  className="tk-tour__hero"
+                />
+                {rest.length > 0 && (
+                  <div className="tk-tour__grid">
+                    {rest.map((im, i) => (
+                      <img
+                        key={i}
+                        src={im.url}
+                        alt={`${model} ${VIEW_LABEL_PT[v]} ${i + 2}`}
+                        loading="lazy"
+                        onClick={() => setLb({ view: v, idx: i + 1 })}
+                      />
+                    ))}
+                  </div>
+                )}
+              </section>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Lightbox interno (zoom full-screen, navega dentro da categoria) */}
+      {lbCur && (
         <div
-          onClick={() => setLightbox(false)}
-          style={{
-            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            width: '100vw', height: '100vh',
-            background: 'rgba(0,0,0,0.94)',
-            zIndex: 999999,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            padding: 0, cursor: 'zoom-out',
-          }}
+          onClick={(e) => { e.stopPropagation(); setLb(null); }}
+          style={{ position: 'fixed', inset: 0, zIndex: 1000000, background: 'rgba(0,0,0,0.94)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'zoom-out' }}
         >
-          <img
-            src={cur.url}
-            alt={`${brand} ${model} ${year}`}
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              maxWidth: '98vw', maxHeight: '96vh', width: 'auto', height: 'auto',
-              objectFit: 'contain',
-              boxShadow: '0 30px 100px rgba(0,0,0,0.6)', cursor: 'default',
-            }}
-          />
-          {multiple && (
+          <img src={lbCur.url} alt={`${brand} ${model} ${year}`} onClick={(e) => e.stopPropagation()} style={{ maxWidth: '96vw', maxHeight: '92vh', objectFit: 'contain', boxShadow: '0 30px 100px rgba(0,0,0,0.6)', cursor: 'default' }} />
+          {lbList.length > 1 && (
             <>
-              <button onClick={go(-1)} aria-label="Anterior" style={{ ..._arrow('left'), left: 24, width: 52, height: 52, fontSize: 34, background: 'rgba(255,255,255,0.18)' }}>‹</button>
-              <button onClick={go(1)} aria-label="Próxima" style={{ ..._arrow('right'), right: 24, width: 52, height: 52, fontSize: 34, background: 'rgba(255,255,255,0.18)' }}>›</button>
-              <div style={{ position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)', color: '#fff', fontFamily: 'JetBrains Mono, monospace', fontSize: 12, opacity: 0.8, background: 'rgba(0,0,0,0.5)', padding: '6px 14px', borderRadius: 999 }}>
-                {(idx % n) + 1} / {n} · {cur.view || ''}
+              <button onClick={lbGo(-1)} aria-label="Anterior" style={{ ..._arrow('left'), left: 24, width: 52, height: 52, fontSize: 34, background: 'rgba(255,255,255,0.18)' }}>‹</button>
+              <button onClick={lbGo(1)} aria-label="Próxima" style={{ ..._arrow('right'), right: 24, width: 52, height: 52, fontSize: 34, background: 'rgba(255,255,255,0.18)' }}>›</button>
+              <div style={{ position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)', color: '#fff', fontFamily: 'JetBrains Mono, monospace', fontSize: 12, opacity: 0.85, background: 'rgba(0,0,0,0.5)', padding: '6px 14px', borderRadius: 999 }}>
+                {VIEW_LABEL_PT[lb.view]} · {(lb.idx % lbList.length) + 1} / {lbList.length}
               </div>
             </>
           )}
-          <button
-            onClick={() => setLightbox(false)}
-            aria-label="Fechar"
-            style={{ position: 'absolute', top: 20, right: 24, width: 44, height: 44, borderRadius: '50%', border: 'none', background: 'rgba(255,255,255,0.18)', color: '#fff', fontSize: 26, cursor: 'pointer', lineHeight: 1 }}
-          >×</button>
-        </div>,
-        document.body
+          <button onClick={(e) => { e.stopPropagation(); setLb(null); }} aria-label="Fechar" style={{ position: 'absolute', top: 20, right: 24, width: 44, height: 44, borderRadius: '50%', border: 'none', background: 'rgba(255,255,255,0.18)', color: '#fff', fontSize: 26, cursor: 'pointer', lineHeight: 1 }}>×</button>
+        </div>
       )}
-    </>
+    </div>,
+    document.body
   );
 }
 

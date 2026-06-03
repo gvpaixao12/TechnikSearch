@@ -112,9 +112,19 @@ function cleanModelName(modelo) {
   return s || String(modelo || '');
 }
 
+// Pool de busca. rich pede mais candidatos (galeria) e dispara buscas por cor.
+const COMMONS_LIMIT = 15;
+const SERPER_NUM = 12;
+const SERPER_NUM_COLOR = 6;
+const RICH_TARGET = 12;        // candidatos desejados por view antes de parar
+// Cores pra diversificar configurações (só no modo rich, via Serper):
+const EXT_COLORS = ['branco', 'preto', 'vermelho'];   // exterior (front/side)
+const INT_FINISHES = ['interior preto', 'interior bege']; // acabamento interno
+
 // Buscas direcionadas por view. Retorna { front, rear, side, interior } com
-// candidatos dedupados de Commons + (se necessário) Serper.
-export async function searchByView({ marca, modelo, ano }) {
+// candidatos dedupados de Commons + Serper. Em modo rich, soma buscas por cor
+// pra trazer variações de exterior (front/side) e de acabamento (interior).
+export async function searchByView({ marca, modelo, ano, rich = false }) {
   const modeloLimpo = cleanModelName(modelo);
   const base = `${marca} ${modeloLimpo} ${ano}`;
   const baseEn = `${marca} ${modeloLimpo} ${ano}`;
@@ -125,22 +135,41 @@ export async function searchByView({ marca, modelo, ano }) {
     interior: { pt: `${base} interior painel`, en: `${baseEn} interior dashboard` },
   };
 
+  // Queries extras por cor (rich). Front recebe mais cores; side 1; interior por acabamento.
+  const colorQueries = rich ? {
+    front: EXT_COLORS.map(c => `${base} frente ${c}`),
+    rear: [],
+    side: EXT_COLORS.slice(0, 1).map(c => `${base} lateral ${c}`),
+    interior: INT_FINISHES.map(c => `${base} ${c}`),
+  } : { front: [], rear: [], side: [], interior: [] };
+
+  const target = rich ? RICH_TARGET : 4;
   const out = { front: [], rear: [], side: [], interior: [] };
 
   for (const [view, { pt, en }] of Object.entries(plans)) {
     // Commons é predominantemente catalogado em inglês.
     try {
-      const c = await searchCommons(en, { limit: 15 });
+      const c = await searchCommons(en, { limit: COMMONS_LIMIT });
       out[view].push(...c);
     } catch (e) {
       console.warn(`[providers] Commons ${view} falhou: ${e.message}`);
     }
-    if (out[view].length < 4) {
+    if (out[view].length < target) {
       try {
-        const s = await searchSerper(pt, { num: 10 });
+        const s = await searchSerper(pt, { num: SERPER_NUM });
         out[view].push(...s);
       } catch (e) {
         console.warn(`[providers] Serper ${view} falhou: ${e.message}`);
+      }
+    }
+    // Buscas por cor (rich): rodam sempre, pois o objetivo é variedade de cor,
+    // não só quantidade. O teto real de fotos vem dos limites de download/validação.
+    for (const q of colorQueries[view]) {
+      try {
+        const s = await searchSerper(q, { num: SERPER_NUM_COLOR });
+        out[view].push(...s);
+      } catch (e) {
+        console.warn(`[providers] Serper cor "${q}" falhou: ${e.message}`);
       }
     }
     out[view] = dedupeByUrl(out[view]);
