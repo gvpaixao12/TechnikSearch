@@ -3,7 +3,12 @@
 
 const { useState, useMemo, useEffect } = React;
 
-const API_BASE = 'http://localhost:3001';
+// Em dev (localhost) bate no backend em :3001; em produção o próprio
+// servidor serve o frontend, então usa a mesma origem ('' = relativo).
+// Override manual possível via window.API_BASE.
+const API_BASE = window.API_BASE !== undefined
+  ? window.API_BASE
+  : (location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? 'http://localhost:3001' : '');
 
 const NAV = [
   { id: 'new',     label: 'Nova consulta', icon: <Icon.Plus />,   badge: '⌘N' },

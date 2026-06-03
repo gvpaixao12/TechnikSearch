@@ -114,7 +114,10 @@ function MatchRing({ pct = 80, size = 44 }) {
 }
 
 // ─── Fotos dos carros (backend cacheia em Supabase) ───────────
-const CAR_PHOTO_API = 'http://localhost:3001';
+// Mesma lógica de API_BASE: localhost em dev, mesma origem em produção.
+const CAR_PHOTO_API = window.API_BASE !== undefined
+  ? window.API_BASE
+  : (location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? 'http://localhost:3001' : '');
 
 function useCarImages({ brand, model, year, enabled = true }) {
   const [state, setState] = useState({ loading: false, images: [] });
