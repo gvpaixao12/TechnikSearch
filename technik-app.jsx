@@ -461,7 +461,7 @@ function FormView(props) {
               <span>Ano mínimo</span>
               <span className="tk-mono">≥ {yearMin}</span>
             </label>
-            <input type="range" min={2018} max={2024} step={1} value={yearMin}
+            <input type="range" min={2005} max={2024} step={1} value={yearMin}
               className="tk-range"
               onChange={e => setYearMin(+e.target.value)} />
           </div>

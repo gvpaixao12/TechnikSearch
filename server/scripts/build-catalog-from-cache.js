@@ -16,7 +16,7 @@ const CACHE_DIR = path.join(__dirname, '..', 'cache');
 const OUT_DIR = path.join(__dirname, '..', 'data');
 const OUT_FILE = path.join(OUT_DIR, 'catalog.json');
 
-const ANO_MIN = 2018;
+const ANO_MIN = 2005;
 
 function parsePreco(s) {
   if (!s) return null;

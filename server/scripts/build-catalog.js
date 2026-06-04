@@ -16,7 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = path.join(__dirname, '..', 'data');
 const OUT_FILE = path.join(OUT_DIR, 'catalog.json');
 
-const ANO_MIN = 2018;
+const ANO_MIN = 2005;
 const ALL_BRANDS = process.argv.includes('--all-brands');
 
 // Top marcas vendidas no BR — cobre ~95% do mercado

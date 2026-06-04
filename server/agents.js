@@ -92,8 +92,10 @@ Se o briefing aceita ano antigo (anoMin <= último ano produzido), descontinuado
 - anoMin <= 2020: VW Golf GTI/R/Comfortline, BMW Série 1, Mini Cooper geração antiga, EcoSport, Toyota Etios
 - anoMin <= 2021: tudo acima + Ford EcoSport, Ford Ka, Camaro
 - anoMin <= 2018: tudo acima + Audi A3 Sportback, Audi A1, Mercedes Classe A hatch, Peugeot 308
+- anoMin <= 2015: tudo acima + BMW Série 3 E90 (2006-2012), BMW Série 1 E87 (2004-2011), BMW X1 E84 (2010-2015), Mercedes Classe C W204 (2008-2014), Audi A4 B8 (2008-2015), VW Golf 6 (2010-2013), Honda Civic 9ª ger. (2012-2016), Toyota Corolla 11ª ger. (2014-2019 no BR, mas anos antigos válidos)
+- anoMin <= 2010: tudo acima + BMW Série 3 E46 (2000-2005), BMW Série 5 E60 (2004-2010), Mercedes Classe C W203 (2001-2007), Audi A4 B6/B7 (2001-2008), VW Golf 5 (2006-2009), Honda Civic 8ª ger. (2006-2011), Toyota Corolla 10ª ger. (2008-2013), Mitsubishi Lancer (2007-2013), Subaru Impreza/WRX (até 2012 no BR)
 SÓ EXCLUIR descontinuados quando anoMin > último ano produzido.
-Exemplo prático: briefing anoMin=2018 R$100-150k hatch → Golf 2018-2020, EcoSport 2018-2021, Fiesta 2018-2019, A3 Sportback 2018, Polo GTS, Argo HGT, Honda Fit (descontinuado 2021), Mini Cooper 2018-2020 são TUDO opção válida e atrativa.
+Exemplo prático: briefing anoMin=2008 R$30-60k sedan → BMW E46 2003-2005, E90 2006-2008, Golf 5 2007-2009, Civic 8ª ger. 2006-2011, Corolla E140 2008-2013 são TODOS válidos e muito procurados no mercado de usados BR.
 
 NUNCA VENDIDOS NO BRASIL — NUNCA SUGERIR:
 - Skoda (qualquer modelo). Seat (qualquer). Citroen DS (DS3/DS4/DS7).
