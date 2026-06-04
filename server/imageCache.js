@@ -394,13 +394,20 @@ async function revalidateExisting({ marca, modelo, ano, key, images }) {
     try {
       approved = await validateImages({ marca, modelo, ano, byView });
     } catch (e) {
-      console.warn(`[revalida] ${key}: visão indisponível (${e.message}) — mantendo fotos atuais`);
+      console.warn(`[revalida] ${key}: visão lançou exceção (${e.message}) — mantendo fotos atuais`);
       return { key, images, validated: images.length >= 2, cached: true };
     }
 
     const kept = [];
     for (const view of ['front', 'rear', 'side', 'interior'])
       for (const im of approved[view]) kept.push({ url: im.url, view, sourcePage: im.page || null, vision: true });
+
+    // validateImages pode retornar 0 aprovadas silenciosamente (TPM/TPD que captura
+    // internamente). Nesse caso preservamos o que tínhamos — nunca zeramos o cache.
+    if (kept.length === 0 && images.length > 0) {
+      console.warn(`[revalida] ${key}: visão retornou 0 aprovadas — mantendo ${images.length} fotos atuais`);
+      return { key, images, validated: images.length >= 2, cached: true };
+    }
 
     const validated = kept.length >= 2;
     const ttlDays = validated ? TTL_VALIDATED_DAYS : TTL_FAILED_DAYS;
