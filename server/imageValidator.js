@@ -4,10 +4,15 @@
 
 import OpenAI from 'openai';
 
-// Único vision acessível na conta free: Llama 4 Scout. Modelos 3.2-vision
-// foram descontinuados; outros Llama 4 (Maverick) não tão liberados.
-// Override via env GROQ_VISION_MODEL.
-const VISION_MODEL = process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct';
+// Provedor de visão. Default: reaproveita a conta OpenAI do texto (LLM_API_KEY)
+// com gpt-4o-mini — confiável, sem teto diário (TPD) e bom em ler volante/placa.
+// Override explícito via VISION_API_KEY / VISION_BASE_URL / VISION_MODEL.
+// Fallback Groq (Llama 4 Scout) só se nenhuma chave OpenAI estiver setada.
+const VISION_API_KEY = process.env.VISION_API_KEY || process.env.LLM_API_KEY || process.env.GROQ_VISION_API_KEY || process.env.GROQ_API_KEY;
+const USE_OPENAI_VISION = !!(process.env.VISION_API_KEY || process.env.LLM_API_KEY);
+const VISION_BASE_URL = process.env.VISION_BASE_URL || (USE_OPENAI_VISION ? 'https://api.openai.com/v1' : 'https://api.groq.com/openai/v1');
+const VISION_MODEL = process.env.VISION_MODEL || process.env.GROQ_VISION_MODEL || (USE_OPENAI_VISION ? 'gpt-4o-mini' : 'meta-llama/llama-4-scout-17b-16e-instruct');
+console.log(`[validator] visão via ${VISION_BASE_URL} · model=${VISION_MODEL}`);
 
 // Se bater TPD (500k tokens/dia), marca pra cortar curto as próximas chamadas
 // na mesma sessão. Reseta quando o processo reiniciar (ou TTL_FAILED expirar
@@ -23,12 +28,8 @@ function markTpdExhausted(seconds) {
 let _client = null;
 function getClient() {
   if (_client) return _client;
-  const apiKey = process.env.GROQ_VISION_API_KEY || process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error('GROQ_API_KEY ausente no .env');
-  _client = new OpenAI({
-    apiKey,
-    baseURL: 'https://api.groq.com/openai/v1',
-  });
+  if (!VISION_API_KEY) throw new Error('Nenhuma chave de visão no .env (LLM_API_KEY/VISION_API_KEY/GROQ_API_KEY)');
+  _client = new OpenAI({ apiKey: VISION_API_KEY, baseURL: VISION_BASE_URL });
   return _client;
 }
 
@@ -64,9 +65,13 @@ async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3
 `Vou te mostrar ${images.length} fotos numeradas de 1 a ${images.length}.
 
 Pra cada foto, julgue se é REALMENTE um(a) ${marca} ${modelo} do ano ${ano}, vista de ${VIEW_LABEL[view]}.
+IMPORTANTE: queremos a versão vendida no MERCADO BRASILEIRO. Carros do Brasil têm volante à ESQUERDA.
 
 Rejeite a foto se qualquer um abaixo for verdade:
 - Marca, modelo ou geração visivelmente diferente
+- **VOLANTE À DIREITA (mão inglesa)**: se o volante aparecer e estiver do lado DIREITO, é unidade de outro mercado (Reino Unido/Japão/Austrália/Índia) — REJEITE. Vale pra interior e qualquer foto que mostre o painel/volante.
+- **PLACA ESTRANGEIRA** visível: placa europeia (faixa azul da UE à esquerda), alemã, americana, etc. indica carro de fora — REJEITE. Placa brasileira (Mercosul ou a cinza antiga) é ok.
+- Versão/acabamento claramente de outro mercado — faróis, para-choque, rodas ou detalhes que não correspondem ao vendido no Brasil. Em dúvida sobre o mercado, REJEITE.
 - View errada (ex: interior quando pedi frente)
 - Imagem 3D/render/CAD/desenho (queremos foto real)
 - Marca d'água grande cobrindo o carro

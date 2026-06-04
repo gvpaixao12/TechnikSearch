@@ -105,8 +105,13 @@ function slug(s) {
 // "miss" e são reconstruídas quando o carro reaparece = rebuild preguiçoso, sem
 // precisar de migração de schema). Linhas/pastas antigas expiram sozinhas (≤180d)
 // ou podem ser limpas com `build-images-background.js --prune-old`.
-export const CACHE_VERSION = 'v2';
-export const KEY_PREFIX = `${CACHE_VERSION}__`;
+//
+// ATENÇÃO: as ~495 entradas já populadas no Supabase têm key SEM prefixo
+// (`marca__modelo__ano`). Bumpar o prefixo aqui faz `readCache` dar miss em
+// todas elas → o app fica sem foto até repopular o catálogo inteiro. Só bumpe
+// DEPOIS de rodar `build-images-background.js` pra reconstruir no prefixo novo.
+export const CACHE_VERSION = 'v1';
+export const KEY_PREFIX = '';
 
 export function makeKey({ marca, modelo, ano }) {
   return `${KEY_PREFIX}${slug(marca)}__${slug(modelo)}__${ano}`;
@@ -348,10 +353,10 @@ async function upgradeWithVision({ marca, modelo, ano, key }) {
   }
 }
 
-// Semáforo: limita builds simultâneos. Groq free tier tem 30k TPM no vision
-// e cada build consome ~30-50k tokens (4 views × ~10k cada). Mais que 1 em
-// paralelo bate no rate limit. Builds extras aguardam na fila.
-const MAX_CONCURRENT_BUILDS = 1;
+// Semáforo: limita builds/validações simultâneos. Com visão no gpt-4o-mini (sem
+// teto por minuto como o Groq), dá pra rodar alguns em paralelo — acelera o
+// portão num top 10. Ajustável via IMAGE_BUILD_CONCURRENCY. Extras enfileiram.
+const MAX_CONCURRENT_BUILDS = Number(process.env.IMAGE_BUILD_CONCURRENCY) || 3;
 let _activeBuilds = 0;
 const _waiters = [];
 async function acquireBuildSlot() {
@@ -374,6 +379,42 @@ function isVisionValidated(cached) {
   return (cached?.images || []).some(im => im && im.vision === true);
 }
 
+// Re-valida com visão as fotos QUE JÁ ESTÃO no cache, sem nova busca na web
+// (não depende do Serper). Mantém só as aprovadas e descarta o que for de outro
+// mercado/modelo (europeu, mão-inglesa, geração errada). Se a visão falhar,
+// PRESERVA as fotos atuais — nunca deixa o carro pior do que estava.
+async function revalidateExisting({ marca, modelo, ano, key, images }) {
+  await acquireBuildSlot();
+  try {
+    const supabase = getSupabase();
+    const byView = { front: [], rear: [], side: [], interior: [] };
+    for (const im of images) if (byView[im.view]) byView[im.view].push({ url: im.url, page: im.sourcePage });
+
+    let approved;
+    try {
+      approved = await validateImages({ marca, modelo, ano, byView });
+    } catch (e) {
+      console.warn(`[revalida] ${key}: visão indisponível (${e.message}) — mantendo fotos atuais`);
+      return { key, images, validated: images.length >= 2, cached: true };
+    }
+
+    const kept = [];
+    for (const view of ['front', 'rear', 'side', 'interior'])
+      for (const im of approved[view]) kept.push({ url: im.url, view, sourcePage: im.page || null, vision: true });
+
+    const validated = kept.length >= 2;
+    const ttlDays = validated ? TTL_VALIDATED_DAYS : TTL_FAILED_DAYS;
+    await writeCache(supabase, {
+      key, marca, modelo, ano, images: kept, validated,
+      expires_at: new Date(Date.now() + ttlDays * 86400_000).toISOString(),
+    });
+    console.log(`[revalida] ${key}: ${images.length} → ${kept.length} fotos aprovadas na visão`);
+    return { key, images: kept, validated, cached: false };
+  } finally {
+    releaseBuildSlot();
+  }
+}
+
 // allowUpgrade: o caminho web (skipVision rápido) liga isso pra que o upgrade
 // vision rode em background na visita seguinte. O bg script deixa desligado
 // (não quer disparar vision pro catálogo inteiro).
@@ -384,19 +425,19 @@ export async function getOrBuildImages({ marca, modelo, ano, skipVision = false,
 
   const cached = await readCache(supabase, key);
   if (cached) {
-    // Lazy upgrade: entry só com heurística → dispara reválida vision em
-    // background (se vision não estiver com TPD esgotado). Próxima visita pega validada.
-    if (
-      allowUpgrade &&
-      !isVisionValidated(cached) &&
-      (cached.images?.length || 0) > 0 &&
-      !isTpdExhausted() &&
-      !_upgradesInFlight.has(key)
-    ) {
-      upgradeWithVision({ marca, modelo, ano, key })
-        .catch(e => console.warn(`[upgrade] ${key} crashou:`, e.message));
+    const imgs = cached.images || [];
+    // Portão de visão: no caminho web (skipVision=false) só servimos fotos já
+    // aprovadas pela visão. Entrada heurística (sem flag `vision`) com fotos é
+    // RE-VALIDADA usando as fotos que já temos (sem nova busca → independe do
+    // Serper). Entradas vazias ou já-validadas voltam direto.
+    if (skipVision || isVisionValidated(cached) || imgs.length === 0) {
+      return { key, images: imgs, validated: !!cached.validated, cached: true };
     }
-    return { key, images: cached.images || [], validated: !!cached.validated, cached: true };
+    if (_inFlight.has(key)) return _inFlight.get(key);
+    const p = revalidateExisting({ marca, modelo, ano, key, images: imgs })
+      .finally(() => _inFlight.delete(key));
+    _inFlight.set(key, p);
+    return p;
   }
 
   if (_inFlight.has(key)) return _inFlight.get(key);
