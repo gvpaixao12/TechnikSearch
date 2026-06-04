@@ -74,9 +74,11 @@ Rejeite a foto se qualquer um abaixo for verdade:
 - Versão/acabamento claramente de outro mercado — faróis, para-choque, rodas ou detalhes que não correspondem ao vendido no Brasil. Em dúvida sobre o mercado, REJEITE.
 - View errada (ex: interior quando pedi frente)
 - Imagem 3D/render/CAD/desenho (queremos foto real)
-- Marca d'água grande cobrindo o carro
+- Marca d'água ou logo GRANDE cobrindo parte significativa do carro (mais de ~10% da área)
 - Miniatura, brinquedo, peça solta
-- **TEXTO / URL / LOGO SOBREPOSTO** na foto: qualquer endereço de site ou domínio visível (ex.: "carrosnaweb", "www…", ".com.br", "@perfil"), marca d'água ou logo de loja/site/revenda — MESMO pequeno e em QUALQUER canto. Também rejeite thumbnail de YouTube, chamada de matéria, headline tipo "MELHOR HATCH 2024?", "TESTE COMPLETO", preços ou números grandes sobre o carro. Queremos FOTOS LIMPAS, não capa de vídeo/anúncio nem foto carimbada por classificado.
+- **THUMBNAIL DE VÍDEO / CHAMADA DE MATÉRIA**: capa de YouTube, headline sobreposta ("MELHOR HATCH 2024?", "TESTE COMPLETO"), preço ou número grande em destaque sobre o carro — REJEITE.
+- Colagem / montagem com várias fotos numa só (antes/depois, comparativo).
+- Logo ou URL PEQUENO e discreto num canto (ex: marca d'água sutil de site, logo de concessionária) é ACEITÁVEL — não rejeite por isso.
 - Foto com várias imagens montadas (colagem, antes/depois, comparativo).
 
 ${diversityHint}
