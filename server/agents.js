@@ -1,18 +1,33 @@
 import OpenAI from 'openai';
 import { briefingToText } from './briefing.js';
 
-const MODEL = 'llama-3.3-70b-versatile';
-// fallback: 'llama-3.1-8b-instant' (TPM 6k — caso TPD do 70B esgote)
+// Provedor de texto (curador + vendedor). Default: Groq (Llama 3.3 70B) — grátis,
+// mas com teto diário de tokens. Pra trocar de provedor SEM editar código, basta
+// preencher LLM_API_KEY no .env (aí usa OpenAI por default; ajuste LLM_BASE_URL /
+// LLM_MODEL pra Anthropic etc). Tudo via SDK da OpenAI (endpoints compatíveis).
+//   OpenAI:    LLM_API_KEY=sk-...            (default: gpt-4o-mini)
+//   Anthropic: LLM_API_KEY=sk-ant-...  LLM_BASE_URL=https://api.anthropic.com/v1  LLM_MODEL=claude-haiku-4-5
+// Fallback Groq sem provedor custom: 'llama-3.1-8b-instant' (caso TPD do 70B esgote).
+const USE_CUSTOM_LLM = !!process.env.LLM_API_KEY;
+const MODEL = USE_CUSTOM_LLM
+  ? (process.env.LLM_MODEL || 'gpt-4o-mini')
+  : 'llama-3.3-70b-versatile';
+
+console.log(`[llm] texto via ${USE_CUSTOM_LLM ? (process.env.LLM_BASE_URL || 'https://api.openai.com/v1') : 'groq'} · model=${MODEL}`);
 
 let _client = null;
 function getClient() {
   if (_client) return _client;
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error('GROQ_API_KEY ausente no .env');
-  _client = new OpenAI({
-    apiKey,
-    baseURL: 'https://api.groq.com/openai/v1',
-  });
+  if (USE_CUSTOM_LLM) {
+    _client = new OpenAI({
+      apiKey: process.env.LLM_API_KEY,
+      baseURL: process.env.LLM_BASE_URL || 'https://api.openai.com/v1',
+    });
+  } else {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) throw new Error('GROQ_API_KEY ausente no .env');
+    _client = new OpenAI({ apiKey, baseURL: 'https://api.groq.com/openai/v1' });
+  }
   return _client;
 }
 

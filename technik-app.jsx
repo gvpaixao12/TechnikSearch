@@ -914,20 +914,25 @@ function FichaTecnica({ ficha }) {
 }
 
 function CarCard({ car, rank, isComparing, onCompare, variant = 'editorial' }) {
+  // Clicar em qualquer lugar do card abre a galeria de fotos. Cada clique
+  // incrementa openSignal, que o CarPhoto observa pra abrir a tela cheia.
+  const [openSignal, setOpenSignal] = useState(0);
+  const openGallery = () => setOpenSignal(n => n + 1);
+
   if (variant === 'minimal') {
     return (
-      <div className="tk-cc" style={{ borderRadius: 10 }}>
+      <div className="tk-cc" onClick={openGallery} title="Ver todas as fotos" style={{ borderRadius: 10, cursor: 'pointer' }}>
         <div style={{ padding: '14px 16px 0' }}>
           <div className="tk-cc__brand">{car.brand} · {car.year}</div>
           <div className="tk-cc__model" style={{ fontSize: 18 }}>{car.model}</div>
           <div style={{ height: 100, margin: '12px 0', overflow: 'hidden', borderRadius: 6 }}>
-            <CarPhoto brand={car.brand} model={car.model} year={car.year} type={car.type} />
+            <CarPhoto brand={car.brand} model={car.model} year={car.year} type={car.type} openSignal={openSignal} />
           </div>
           <FichaTecnica ficha={car.fichaTecnica} />
         </div>
         <div className="tk-cc__foot">
           <div className="tk-cc__price" style={{ fontSize: 18 }}>{car.price}</div>
-          <button className={`tk-icobtn ${isComparing ? 'is-active' : ''}`} onClick={onCompare}>
+          <button className={`tk-icobtn ${isComparing ? 'is-active' : ''}`} onClick={(e) => { e.stopPropagation(); onCompare(); }}>
             <Icon.Compare />
           </button>
         </div>
@@ -936,9 +941,9 @@ function CarCard({ car, rank, isComparing, onCompare, variant = 'editorial' }) {
   }
 
   return (
-    <div className="tk-cc">
+    <div className="tk-cc" onClick={openGallery} title="Ver todas as fotos" style={{ cursor: 'pointer' }}>
       <div className="tk-cc__img" style={{ height: 'auto', padding: 0, overflow: 'hidden' }}>
-        <CarPhoto brand={car.brand} model={car.model} year={car.year} type={car.type} eager={rank === 1} rounded />
+        <CarPhoto brand={car.brand} model={car.model} year={car.year} type={car.type} eager={rank === 1} rounded openSignal={openSignal} />
       </div>
       <div className="tk-cc__body">
         <div className="tk-cc__brand">{car.brand} · {car.year}</div>
@@ -950,7 +955,7 @@ function CarCard({ car, rank, isComparing, onCompare, variant = 'editorial' }) {
           <div style={{ fontSize: 10, color: 'var(--tk-muted)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 600 }}>A partir de</div>
           <div className="tk-cc__price">{car.price}</div>
         </div>
-        <button className={`tk-icobtn ${isComparing ? 'is-active' : ''}`} onClick={onCompare} title="Adicionar à comparação">
+        <button className={`tk-icobtn ${isComparing ? 'is-active' : ''}`} onClick={(e) => { e.stopPropagation(); onCompare(); }} title="Adicionar à comparação">
           <Icon.Compare />
         </button>
       </div>

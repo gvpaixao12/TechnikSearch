@@ -167,7 +167,7 @@ const _arrow = (side) => ({
 
 // Lazy-load via IntersectionObserver. Aspecto 4:3 (mais quadrado).
 // No card mostra SÓ a foto da frente; clique abre o tour de fotos por categoria.
-function CarPhoto({ brand, model, year, type = 'suv', eager = false, rounded = false, aspect = '4 / 3' }) {
+function CarPhoto({ brand, model, year, type = 'suv', eager = false, rounded = false, aspect = '4 / 3', openSignal = 0 }) {
   const containerRef = useRef(null);
   const [visible, setVisible] = useState(eager);
   const [tourOpen, setTourOpen] = useState(false);
@@ -181,6 +181,10 @@ function CarPhoto({ brand, model, year, type = 'suv', eager = false, rounded = f
     io.observe(containerRef.current);
     return () => io.disconnect();
   }, [visible]);
+
+  // O card (pai) pode abrir a galeria clicando em qualquer lugar: cada clique
+  // incrementa openSignal. Abrir por aqui mantém a busca de imagens centralizada.
+  useEffect(() => { if (openSignal) setTourOpen(true); }, [openSignal]);
 
   const { images, loading } = useCarImages({ brand, model, year, enabled: visible });
   const n = images.length;
@@ -246,7 +250,6 @@ function CarPhoto({ brand, model, year, type = 'suv', eager = false, rounded = f
 function PhotoTourModal({ brand, model, year, images, onClose }) {
   const grouped = useMemo(() => groupByView(images), [images]);
   const views = Object.keys(grouped);
-  const sectionRefs = useRef({});
   const [lb, setLb] = useState(null); // { view, idx } | null
 
   // Trava o scroll do body enquanto o modal está aberto.
@@ -283,71 +286,40 @@ function PhotoTourModal({ brand, model, year, images, onClose }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [lb]);
 
-  const scrollTo = (view) => {
-    const el = sectionRefs.current[view];
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
   return ReactDOM.createPortal(
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 999999, background: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center' }}>
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="tk-tour tk-scroll"
-        style={{ background: '#fff', width: '100%', maxWidth: 1040, height: '100%', overflowY: 'auto', position: 'relative' }}
-      >
-        {/* Header sticky */}
-        <div style={{ position: 'sticky', top: 0, zIndex: 5, background: 'rgba(255,255,255,0.96)', backdropFilter: 'blur(6px)', borderBottom: '1px solid rgba(0,0,0,0.08)', padding: '14px 22px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--tk-muted)', fontWeight: 600 }}>{brand} · {year}</div>
-            <div style={{ fontFamily: 'Exo, sans-serif', fontSize: 20, fontWeight: 700, color: 'var(--tk-primary)' }}>{model}</div>
-          </div>
-          <button onClick={onClose} aria-label="Fechar" style={{ width: 38, height: 38, borderRadius: '50%', border: '1px solid rgba(0,0,0,0.12)', background: '#fff', cursor: 'pointer', fontSize: 22, lineHeight: 1, color: 'var(--tk-primary)' }}>×</button>
+    // stopPropagation: eventos de um portal sobem pela árvore REACT (não a DOM),
+    // então cliques aqui chegariam no onClick do card e reabririam a galeria.
+    <div className="tk-gallery" onClick={(e) => e.stopPropagation()}>
+      {/* Barra superior: voltar pro top 10 + título do carro */}
+      <div className="tk-gallery__bar">
+        <button className="tk-gallery__back" onClick={onClose} aria-label="Voltar ao top 10">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+          Voltar
+        </button>
+        <div style={{ minWidth: 0 }}>
+          <div className="tk-gallery__title-brand">{brand} · {year}</div>
+          <div className="tk-gallery__title-model">{model}</div>
         </div>
+      </div>
 
-        <div style={{ padding: 22 }}>
-          <h2 style={{ fontFamily: 'Exo, sans-serif', fontSize: 22, fontWeight: 700, margin: '0 0 16px', color: 'var(--tk-primary)' }}>Tour por fotos</h2>
-
-          {/* Faixa de categorias */}
-          <div className="tk-tour__strip">
-            {views.map(v => (
-              <button key={v} className="tk-tour__cat" onClick={() => scrollTo(v)}>
-                <img src={grouped[v][0].url} alt={VIEW_LABEL_PT[v]} loading="lazy" />
-                <span>{VIEW_LABEL_PT[v]} · {grouped[v].length}</span>
-              </button>
-            ))}
-          </div>
-
-          {/* Seções por categoria */}
-          {views.map(v => {
-            const list = grouped[v];
-            const hero = list[0];
-            const rest = list.slice(1);
-            return (
-              <section key={v} ref={el => (sectionRefs.current[v] = el)} style={{ marginTop: 30, scrollMarginTop: 80 }}>
-                <h3 style={{ fontFamily: 'Exo, sans-serif', fontSize: 18, fontWeight: 700, margin: '0 0 12px', color: 'var(--tk-primary)' }}>{VIEW_LABEL_PT[v]}</h3>
+      {/* Uma seção por categoria de foto: título + as fotos que temos */}
+      <div className="tk-gallery__inner">
+        {views.map(v => (
+          <section key={v} className="tk-gallery__section">
+            <h3>{VIEW_LABEL_PT[v]}</h3>
+            <div className="tk-gallery__grid">
+              {grouped[v].map((im, i) => (
                 <img
-                  src={hero.url}
-                  alt={`${model} ${VIEW_LABEL_PT[v]}`}
-                  onClick={() => setLb({ view: v, idx: 0 })}
-                  className="tk-tour__hero"
+                  key={i}
+                  src={im.url}
+                  alt={`${model} ${VIEW_LABEL_PT[v]} ${i + 1}`}
+                  loading="lazy"
+                  onClick={() => setLb({ view: v, idx: i })}
                 />
-                {rest.length > 0 && (
-                  <div className="tk-tour__grid">
-                    {rest.map((im, i) => (
-                      <img
-                        key={i}
-                        src={im.url}
-                        alt={`${model} ${VIEW_LABEL_PT[v]} ${i + 2}`}
-                        loading="lazy"
-                        onClick={() => setLb({ view: v, idx: i + 1 })}
-                      />
-                    ))}
-                  </div>
-                )}
-              </section>
-            );
-          })}
-        </div>
+              ))}
+            </div>
+          </section>
+        ))}
       </div>
 
       {/* Lightbox interno (zoom full-screen, navega dentro da categoria) */}

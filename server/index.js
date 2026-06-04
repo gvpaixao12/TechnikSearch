@@ -144,14 +144,14 @@ app.get('/api/images/:marca/:modelo/:ano', async (req, res, next) => {
   try {
     const ano = Number(req.params.ano);
     if (!Number.isFinite(ano)) return res.status(400).json({ error: 'ano inválido' });
-    // skipVision: 1º acesso devolve fotos rápido via heurística; allowUpgrade liga
-    // o upgrade pra vision (limpa watermark, valida modelo) em background no próximo acesso.
+    // Portão de visão: valida por visão (gpt-4o-mini) antes de mostrar. Entrada
+    // heurística é re-validada com as fotos que já temos — descarta europeu,
+    // mão-inglesa e modelo errado. Sem foto certa = placeholder (honestidade).
     const result = await getOrBuildImages({
       marca: req.params.marca,
       modelo: req.params.modelo,
       ano,
-      skipVision: true,
-      allowUpgrade: true,
+      skipVision: false,
     });
     res.json(result);
   } catch (e) { next(e); }

@@ -734,6 +734,57 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--tk-bg); font
 }
 .tk-cc__price { font-family: var(--tk-font); font-size: 22px; font-weight: 700; color: var(--tk-primary); letter-spacing: -0.01em; }
 
+/* ── Galeria full-screen estilo Airbnb (página de fotos do carro) ── */
+.tk-gallery {
+  position: fixed; inset: 0; z-index: 999999;
+  background: #fff; overflow-y: auto;
+}
+.tk-gallery__bar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 24px;
+  background: rgba(255,255,255,0.92); backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+}
+.tk-gallery__back {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 16px 9px 12px; border-radius: 999px;
+  border: 1px solid rgba(0,0,0,0.14); background: #fff; cursor: pointer;
+  font-family: var(--tk-font); font-weight: 600; font-size: 14px;
+  color: var(--tk-primary); transition: background .15s, border-color .15s;
+}
+.tk-gallery__back:hover { background: rgba(0,0,0,0.04); border-color: var(--tk-primary); }
+.tk-gallery__title-brand {
+  font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--tk-secondary); font-weight: 600;
+}
+.tk-gallery__title-model {
+  font-family: var(--tk-font); font-size: 18px; font-weight: 700;
+  color: var(--tk-primary); line-height: 1.15;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tk-gallery__inner { max-width: 1120px; margin: 0 auto; padding: 12px 24px 80px; }
+.tk-gallery__section {
+  display: grid; grid-template-columns: 220px 1fr; gap: 28px;
+  padding: 28px 0; border-top: 1px solid rgba(0,0,0,0.07);
+}
+.tk-gallery__section:first-child { border-top: none; }
+.tk-gallery__section h3 {
+  position: sticky; top: 88px; align-self: start; margin: 0;
+  font-family: var(--tk-font); font-size: 22px; font-weight: 700; color: var(--tk-primary);
+}
+.tk-gallery__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.tk-gallery__grid img {
+  width: 100%; aspect-ratio: 4 / 3; object-fit: cover;
+  border-radius: 12px; cursor: zoom-in; background: rgba(0,0,0,0.04);
+  transition: filter .15s;
+}
+.tk-gallery__grid img:hover { filter: brightness(0.93); }
+@media (max-width: 760px) {
+  .tk-gallery__section { grid-template-columns: 1fr; gap: 12px; padding: 20px 0; }
+  .tk-gallery__section h3 { position: static; top: auto; }
+}
+
 /* Compare bar */
 .tk-compare-bar {
   position: fixed;
