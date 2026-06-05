@@ -66,6 +66,8 @@ async function rateLimit() {
   lastRequestAt = Date.now();
 }
 
+function ts() { return new Date().toLocaleTimeString('pt-BR', { hour12: false }); }
+
 async function withRetry(fn, label, attempts = 5) {
   let lastErr;
   for (let i = 0; i < attempts; i++) {
@@ -73,11 +75,10 @@ async function withRetry(fn, label, attempts = 5) {
     try { return await fn(); }
     catch (e) {
       lastErr = e;
-      // Backoff exponencial maior pra 429
       const is429 = e.message?.includes('429');
       const wait = is429 ? 5000 * (i + 1) : 1500 * (i + 1);
       if (i === attempts - 1 || !is429) {
-        console.warn(`  [retry ${i + 1}/${attempts}] ${label}: ${e.message}`);
+        console.warn(`  [${ts()}] [retry ${i + 1}/${attempts}] ${label}: ${e.message}`);
       }
       await new Promise(r => setTimeout(r, wait));
     }
@@ -120,13 +121,13 @@ async function main() {
 
   for (let mi = 0; mi < marcasFiltered.length; mi++) {
     const marca = marcasFiltered[mi];
-    console.log(`[${mi + 1}/${marcasFiltered.length}] ${marca.nome}`);
+    console.log(`[${ts()}] [${mi + 1}/${marcasFiltered.length}] ${marca.nome}`);
 
     let modelos;
     try {
       modelos = await withRetry(() => getModelos(marca.codigo), `getModelos ${marca.nome}`);
     } catch (e) {
-      console.warn(`  ⚠ falha definitiva em modelos: ${e.message}`);
+      console.warn(`  [${ts()}] ⚠ falha definitiva em modelos: ${e.message}`);
       errosTotal++;
       continue;
     }
@@ -180,7 +181,8 @@ async function main() {
       }));
       results.forEach(entries => brandEntries.push(...entries));
       if ((bi + BATCH) % 10 === 0 || bi + BATCH >= modelos.length) {
-        console.log(`    ${Math.min(bi + BATCH, modelos.length)}/${modelos.length} modelos · +${brandEntries.length} entries (cat total: ${catalog.length + brandEntries.length})`);
+        const cur = slice[slice.length - 1];
+        console.log(`    [${ts()}] ${Math.min(bi + BATCH, modelos.length)}/${modelos.length} modelos · modelo atual: ${cur.nome} · +${brandEntries.length} entries (cat total: ${catalog.length + brandEntries.length})`);
       }
     }
 
