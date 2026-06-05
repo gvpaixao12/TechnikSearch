@@ -12,9 +12,7 @@ const API_BASE = window.API_BASE !== undefined
 
 const NAV = [
   { id: 'new',     label: 'Nova consulta', icon: <Icon.Plus />,   badge: '⌘N' },
-  { id: 'clients', label: 'Clientes',      icon: <Icon.Users />,  badge: '128' },
   { id: 'history', label: 'Histórico',     icon: <Icon.History /> },
-  { id: 'reports', label: 'Relatórios',    icon: <Icon.Reports /> },
   { id: 'settings',label: 'Ajustes',       icon: <Icon.Settings /> },
 ];
 
@@ -39,23 +37,44 @@ function App() {
   const [activeNav, setActiveNav] = useState('new');
   const [stage, setStage] = useState('form'); // form | loading | results
 
-  // Form state
-  const [client, setClient] = useState({ name: 'Mariana Coutinho', segment: 'Família 4 + 1 cão' });
-  const [budget, setBudget]   = useState([180, 320]); // R$ mil
+  // Form state — começa em branco para o consultor preencher
+  const [client, setClient] = useState({ name: '', segment: '' });
+  const [budget, setBudget]   = useState([50, 600]); // R$ mil
   const [seats, setSeats]     = useState(5);
   const [seatsAny, setSeatsAny] = useState(true);
   const [trunk, setTrunk]     = useState(420); // litros
   const [trunkAny, setTrunkAny] = useState(true);
-  const [yearMin, setYearMin] = useState(2022);
-  const [types, setTypes]     = useState(['suv']);
-  const [fuels, setFuels]     = useState(['flex','hybrid']);
-  const [lifestyle, setLifestyle] = useState(['family','travel']);
-  const [priorities, setPriorities] = useState(['safety','comfort','economy']);
-  const [notes, setNotes]     = useState('Cliente viaja para a serra duas vezes por mês. Prioriza espaço e segurança ativa.');
+  const [yearMin, setYearMin] = useState(2005);
+  const [types, setTypes]     = useState([]);
+  const [fuels, setFuels]     = useState([]);
+  const [lifestyle, setLifestyle] = useState([]);
+  const [priorities, setPriorities] = useState([]);
+  const [notes, setNotes]     = useState('');
   const [notesAny, setNotesAny] = useState(true);
 
   function toggle(setter, list, id) {
     setter(list.includes(id) ? list.filter(x => x !== id) : [...list, id]);
+  }
+
+  // Zera o formulário inteiro (usado pela ação "Nova consulta")
+  function resetForm() {
+    setClient({ name: '', segment: '' });
+    setBudget([50, 600]);
+    setSeats(5); setSeatsAny(true);
+    setTrunk(420); setTrunkAny(true);
+    setYearMin(2005);
+    setTypes([]); setFuels([]); setLifestyle([]); setPriorities([]);
+    setNotes(''); setNotesAny(true);
+  }
+
+  function handleNav(id) {
+    setActiveNav(id);
+    if (id === 'new') {
+      resetForm();
+      setRecommendation(null);
+      setLoadError(null);
+      setStage('form');
+    }
   }
 
   // Loading flow + real backend call
@@ -123,7 +142,7 @@ function App() {
           {NAV.map(n => (
             <button key={n.id}
               className={`tk-side__item ${activeNav === n.id ? 'is-active' : ''}`}
-              onClick={() => setActiveNav(n.id)}>
+              onClick={() => handleNav(n.id)}>
               {n.icon}
               <span>{n.label}</span>
               {n.badge && <span className="tk-side__badge">{n.badge}</span>}
@@ -173,8 +192,6 @@ function App() {
             {stage === 'results' && (
               <>
                 <button className="tk-btn tk-btn-ghost" onClick={() => setStage('form')}>← Editar briefing</button>
-                <button className="tk-btn tk-btn-ghost"><Icon.Download /> Exportar PDF</button>
-                <button className="tk-btn tk-btn-primary"><Icon.Sparkle /> Enviar ao cliente</button>
               </>
             )}
           </div>
@@ -382,7 +399,7 @@ function FormView(props) {
               <label className="tk-label">Nome do cliente</label>
               <input className="tk-input" value={client.name}
                 onChange={e => setClient({ ...client, name: e.target.value })}
-                placeholder="Ex.: Mariana Coutinho" />
+                placeholder="Ex.: Nome Cliente" />
             </div>
             <div className="q2__field">
               <label className="tk-label">Perfil resumido <span className="tk-help">opcional</span></label>
@@ -581,33 +598,6 @@ function FormView(props) {
             <strong style={{ textAlign: 'right', maxWidth: '60%' }}>{priorities.length ? priorities.map(p => PRIORITY_OPTIONS.find(o=>o.id===p).label).join(', ') : '—'}</strong>
           </div>
 
-          <span className="tk-eyebrow" style={{ display: 'block', margin: '24px 0 10px' }}>Pré-match no estoque</span>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {CARS.slice(0, 3).map(c => (
-              <div key={c.id} style={{
-                display: 'flex', alignItems: 'center', gap: 10,
-                padding: '10px 12px', background: 'var(--tk-paper)',
-                border: '1px solid var(--tk-line)', borderRadius: 10
-              }}>
-                <div style={{ width: 44, height: 28, color: 'var(--tk-secondary)' }}>
-                  <CarSilhouette type={c.type} sw={1.5} />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--tk-primary)' }}>{c.brand} {c.model}</div>
-                  <div style={{ fontSize: 11, color: 'var(--tk-muted)' }}>{c.price}</div>
-                </div>
-                <MatchRing pct={c.match} size={36} />
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="q2__side-foot">
-          <button className="tk-btn tk-btn-primary" style={{ width: '100%', justifyContent: 'center' }}>
-            <Icon.Sparkle /> Cruzar com 1.200 opções
-          </button>
-          <span className="tk-help" style={{ display: 'block', textAlign: 'center', marginTop: 8 }}>
-            Estoque atualizado há 14 minutos
-          </span>
         </div>
       </aside>
     </div>
@@ -727,8 +717,6 @@ function LoadingView({ step, error, onRetry, onCancel }) {
               <div className="tk-porsche-fill"></div>
               <div className="tk-porsche-shine"></div>
             </div>
-            <div className="tk-porsche-wheel front"></div>
-            <div className="tk-porsche-wheel rear"></div>
           </div>
         </div>
         <ul className="tk-loading__steps">
@@ -748,6 +736,8 @@ function LoadingView({ step, error, onRetry, onCancel }) {
 function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing, diagnostico }) {
   const [filter, setFilter] = useState('all');
   const [compare, setCompare] = useState([]);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState('');
 
   const TYPE_LABEL = { suv: 'SUV', sedan: 'Sedan', hatch: 'Hatch', pickup: 'Picape', coupe: 'Esportivo', minivan: 'Minivan' };
   const counts = useMemo(() => {
@@ -763,7 +753,12 @@ function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing, d
     return opts;
   }, [cars, counts]);
 
-  const filtered = filter === 'all' ? cars : cars.filter(c => c.type === filter);
+  const q = query.trim().toLowerCase();
+  const filtered = cars.filter(c => {
+    const typeOk = filter === 'all' || c.type === filter;
+    const queryOk = !q || `${c.brand} ${c.model}`.toLowerCase().includes(q);
+    return typeOk && queryOk;
+  });
   const top = cars[0];
 
   function toggleCompare(id) {
@@ -806,7 +801,7 @@ function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing, d
         </div>
         <div className="tk-results__client">
           <span className="tk-eyebrow" style={{ display: 'block', marginBottom: 10 }}>Cliente</span>
-          <div style={{ fontFamily: 'Exo', fontSize: 18, fontWeight: 700, color: 'var(--tk-primary)', letterSpacing: '-0.01em' }}>{client.name}</div>
+          <div style={{ fontFamily: 'Exo', fontSize: 18, fontWeight: 700, color: 'var(--tk-ink)', letterSpacing: '-0.01em' }}>{client.name}</div>
           <div className="tk-help" style={{ marginBottom: 10 }}>{client.segment}</div>
           {briefing && (
             <>
@@ -839,21 +834,42 @@ function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing, d
             </button>
           ))}
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button className="tk-icobtn"><Icon.Filter /></button>
-          <button className="tk-icobtn"><Icon.Eye /></button>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {searchOpen && (
+            <input
+              type="text"
+              className="tk-search-inline"
+              autoFocus
+              placeholder="Marca ou modelo…"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Escape') { setQuery(''); setSearchOpen(false); } }}
+            />
+          )}
+          <button
+            className={`tk-icobtn ${searchOpen || q ? 'is-active' : ''}`}
+            title="Filtrar por marca ou modelo"
+            onClick={() => setSearchOpen(o => !o)}>
+            <Icon.Filter />
+          </button>
         </div>
       </div>
 
       {/* Grid — todos os carros lado a lado, sem destaque */}
-      <div className="tk-results__grid">
-        {filtered.map((c, i) => (
-          <CarCard key={c.id} car={c} rank={i + 1}
-            isComparing={compare.includes(c.id)}
-            onCompare={() => toggleCompare(c.id)}
-            variant={cardStyle} />
-        ))}
-      </div>
+      {filtered.length === 0 ? (
+        <div className="tk-help" style={{ padding: '28px 4px' }}>
+          Nenhum carro corresponde {q ? <>a “<strong>{query.trim()}</strong>”</> : 'ao filtro'}.
+        </div>
+      ) : (
+        <div className="tk-results__grid">
+          {filtered.map((c, i) => (
+            <CarCard key={c.id} car={c} rank={i + 1}
+              isComparing={compare.includes(c.id)}
+              onCompare={() => toggleCompare(c.id)}
+              variant={cardStyle} />
+          ))}
+        </div>
+      )}
 
       {showCompareBar && compare.length > 0 && (
         <div className="tk-compare-bar">
@@ -880,9 +896,9 @@ function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing, d
 function SpecRow({ label, value }) {
   if (!value) return null;
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 0', fontSize: 12, borderBottom: '1px dashed var(--tk-border, rgba(0,0,0,0.08))' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 0', fontSize: 12, borderBottom: '1px dashed var(--tk-line)' }}>
       <span style={{ color: 'var(--tk-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600, fontSize: 10 }}>{label}</span>
-      <span style={{ fontWeight: 600, color: 'var(--tk-primary)', textAlign: 'right' }}>{value}</span>
+      <span style={{ fontWeight: 600, color: 'var(--tk-ink)', textAlign: 'right' }}>{value}</span>
     </div>
   );
 }
