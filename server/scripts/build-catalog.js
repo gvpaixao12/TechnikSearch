@@ -68,7 +68,7 @@ async function rateLimit() {
 
 function ts() { return new Date().toLocaleTimeString('pt-BR', { hour12: false }); }
 
-async function withRetry(fn, label, attempts = 5) {
+async function withRetry(fn, label, attempts = 2) {
   let lastErr;
   for (let i = 0; i < attempts; i++) {
     await rateLimit();
@@ -76,10 +76,8 @@ async function withRetry(fn, label, attempts = 5) {
     catch (e) {
       lastErr = e;
       const is429 = e.message?.includes('429');
-      const wait = is429 ? 5000 * (i + 1) : 1500 * (i + 1);
-      if (i === attempts - 1 || !is429) {
-        console.warn(`  [${ts()}] [retry ${i + 1}/${attempts}] ${label}: ${e.message}`);
-      }
+      const wait = is429 ? 3000 * (i + 1) : 1000 * (i + 1);
+      console.warn(`  [${ts()}] [retry ${i + 1}/${attempts}] ${label}: ${e.message}`);
       await new Promise(r => setTimeout(r, wait));
     }
   }
