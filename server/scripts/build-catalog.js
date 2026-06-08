@@ -66,7 +66,10 @@ async function rateLimit() {
   lastRequestAt = Date.now();
 }
 
-function ts() { return new Date().toLocaleTimeString('pt-BR', { hour12: false }); }
+function ts() {
+  const d = new Date();
+  return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour12: false });
+}
 
 async function withRetry(fn, label, attempts = 2) {
   let lastErr;
@@ -114,7 +117,12 @@ async function main() {
     console.log('(sem catálogo prévio — começando do zero)\n');
   }
 
-  let modelosTotal = 0, anosTotal = 0, errosTotal = 0;
+  // Índice de entradas já no catálogo — pula getPreco se marcaId|modeloId|anoId já existir.
+  // Permite retomada sem repetir requests que já tiveram sucesso.
+  const existingKeys = new Set(catalog.map(e => `${e.marcaId}|${e.modeloId}|${e.anoId}`));
+  console.log(`  (${existingKeys.size} combinações já indexadas — serão puladas)\n`);
+
+  let modelosTotal = 0, anosTotal = 0, errosTotal = 0, pulados = 0;
   const tipoStats = {};
 
   for (let mi = 0; mi < marcasFiltered.length; mi++) {
@@ -150,8 +158,12 @@ async function main() {
           .filter(a => a.year !== null && a.year >= ANO_MIN);
 
         const entries = [];
-        // getPreco SEQUENCIAL dentro do mesmo modelo pra não estourar rate limit do FIPE
         for (const ano of anosUsados) {
+          // Pula se já temos esse modelo/ano no catálogo (retomada)
+          if (existingKeys.has(`${marca.codigo}|${md.codigo}|${ano.codigo}`)) {
+            const cached = catalog.find(e => e.marcaId === marca.codigo && e.modeloId === md.codigo && e.anoId === ano.codigo);
+            if (cached) { entries.push(cached); pulados++; continue; }
+          }
           let preco;
           try {
             preco = await withRetry(() => getPreco(marca.codigo, md.codigo, ano.codigo), `getPreco ${marca.nome}/${md.nome}/${ano.nome}`);
@@ -203,6 +215,7 @@ async function main() {
   console.log(`  ${modelosTotal} modelos consultados`);
   console.log(`  ${anosTotal} anos consultados`);
   console.log(`  ${errosTotal} erros`);
+  console.log(`  ${pulados} pulados (já estavam no catálogo)`);
   console.log('  tipos:', tipoStats);
   console.log(`  arquivo: ${OUT_FILE}`);
 }
