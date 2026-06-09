@@ -22,7 +22,8 @@ const ALL_BRANDS = process.argv.includes('--all-brands');
 // Top marcas vendidas no BR — cobre ~95% do mercado
 // Ordem: populares primeiro (menores e mais úteis), premium depois (catálogo grande)
 const TOP_BRANDS_ORDERED = [
-  'vw - volkswagen', 'volkswagen',
+  // Marcas populares/premium primeiro — VW vai por último por ter 547 modelos
+  // e esgotar o rate limit da FIPE antes das outras marcas serem processadas.
   'fiat',
   'gm - chevrolet', 'chevrolet',
   'hyundai', 'toyota', 'honda',
@@ -35,6 +36,7 @@ const TOP_BRANDS_ORDERED = [
   'bmw', 'audi', 'mercedes-benz',
   'porsche', 'lexus', 'jaguar',
   'subaru', 'ssangyong',
+  'vw - volkswagen', 'volkswagen', // por último — muitos modelos, consome rate limit
 ];
 const TOP_BRANDS = new Set(TOP_BRANDS_ORDERED);
 
