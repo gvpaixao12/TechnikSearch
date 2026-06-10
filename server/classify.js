@@ -56,6 +56,8 @@ const TYPE_RULES = [
     /\bevoque\b/i, /\bvelar\b/i, /\bdiscovery\b/i, /\bdefender\b/i, /\bsport\s*lr/i, /\brange\s*rover\b/i,
     // Porsche
     /\bmacan\b/i, /\bcayenne\b/i,
+    // Exóticos / premium SUV
+    /\burus\b/i, /\bdbx\b/i, /\bbentayga\b/i, /\bcullinan\b/i, /\blevante\b/i, /\bgrecale\b/i, /\bpurosangue\b/i, /\beletre\b/i,
     // Ford (Mustang Mach-E é SUV elétrico, não confundir com Mustang coupé)
     /\bterritory\b/i, /\bbronco\b/i, /\bedge\b/i, /\becosport\b/i,
     /\bmustang\s*mach[ -]?e\b/i,
@@ -97,6 +99,9 @@ const TYPE_RULES = [
     /\bf-?type\b/i,
     // Kia Stinger
     /\bstinger\b/i,
+    // Exóticos GT/coupé explícitos (com sedans/SUVs já capturados nas regras acima)
+    /\bgranturismo\b/i, /\bgrancabrio\b/i, /\bmc20\b/i,
+    /\bcontinental\s*gt\b/i, /\bwraith\b/i, /\bdawn\b/i, /\bspectre\b/i,
   ]},
 
   // ─── SEDAN ─────────────────────────────────────────────────────────────
@@ -138,6 +143,9 @@ const TYPE_RULES = [
     /\bsonata\b/i, /\bk[34]\b/i, /\bgenesis\b/i,
     /\barteon\b/i, /\bpassat\b/i, /\bbora\b/i,
     /\bfocus\s*sed/i, /\bfusion\b/i,
+    // Premium / exóticos 4 portas (Porsche Panamera/Taycan, Maserati, Bentley, Rolls, Aston)
+    /\bpanamera\b/i, /\btaycan\b/i, /\bquattroporte\b/i, /\bghibli\b/i,
+    /\bflying\s*spur\b/i, /\bghost\b/i, /\bphantom\b/i, /\brapide\b/i,
   ]},
 
   // ─── HATCH ─────────────────────────────────────────────────────────────
@@ -173,6 +181,13 @@ const TYPE_RULES = [
     /\btouran\b/i, /\bodyssey\b/i, /\bsienna\b/i, /\balphard\b/i,
     /\bjumpy\b/i, /\bexpert\b/i, /\bducato\b/i, /\bscudo\b/i,
     /\bmpv\b/i, /\bvan\b/i, /\bminibus\b/i,
+  ]},
+
+  // ─── FALLBACK: marcas esportivas puras → coupé ─────────────────────────
+  // Última regra: SUV (Urus, DBX, Purosangue…) e sedan (Rapide) já foram
+  // capturados acima; o que sobra dessas marcas é coupé/GT.
+  { type: 'coupe', patterns: [
+    /\bferrari\b/i, /\blamborghini\b/i, /\bmclaren\b/i, /\blotus\b/i, /\baston\s*martin\b/i,
   ]},
 ];
 

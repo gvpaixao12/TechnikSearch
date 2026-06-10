@@ -36,9 +36,19 @@ const TOP_BRANDS_ORDERED = [
   'bmw', 'audi', 'mercedes-benz',
   'porsche', 'lexus', 'jaguar',
   'subaru', 'ssangyong',
+  // Premium/exóticas (segmento 1mi+) — catálogos pequenos, ficam no fim
+  'ferrari', 'lamborghini', 'mclaren', 'aston martin', 'maserati', 'lotus', 'rolls-royce',
   'vw - volkswagen', 'volkswagen', // por último — muitos modelos, consome rate limit
 ];
 const TOP_BRANDS = new Set(TOP_BRANDS_ORDERED);
+
+// Build direcionado: --brands=porsche,ferrari,... processa só essas marcas
+// (casa pelo nome exato em minúsculas da FIPE). Útil pra preencher um segmento
+// sem revarrer o catálogo inteiro. Sobrepõe a lista TOP_BRANDS.
+const BRANDS_ARG = (process.argv.find(a => a.startsWith('--brands=')) || '').slice('--brands='.length);
+const BRANDS_FILTER = BRANDS_ARG
+  ? new Set(BRANDS_ARG.split(',').map(s => s.trim().toLowerCase()).filter(Boolean))
+  : null;
 
 // (regras movidas pra ../classify.js — compartilhadas com build-catalog-from-cache.js)
 
@@ -95,7 +105,10 @@ async function main() {
 
   const marcas = await getMarcas();
   let marcasFiltered;
-  if (ALL_BRANDS) {
+  if (BRANDS_FILTER) {
+    marcasFiltered = marcas.filter(m => BRANDS_FILTER.has(m.nome.toLowerCase()));
+    console.log(`Build direcionado: ${marcasFiltered.map(m => m.nome).join(', ') || '(nenhuma marca casou)'}`);
+  } else if (ALL_BRANDS) {
     marcasFiltered = marcas;
   } else {
     // Ordena pela posição em TOP_BRANDS_ORDERED — populares primeiro
