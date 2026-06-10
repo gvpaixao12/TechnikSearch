@@ -76,9 +76,10 @@ Rejeite a foto se qualquer um abaixo for verdade:
 - Imagem 3D/render/CAD/desenho (queremos foto real)
 - Marca d'água ou logo GRANDE cobrindo parte significativa do carro (mais de ~10% da área)
 - Miniatura, brinquedo, peça solta
+- **ANÚNCIO DE CONCESSIONÁRIA / CLASSIFICADO**: foto com TARJA, FAIXA, MOLDURA, RODAPÉ ou BORDA contendo NÚMERO DE TELEFONE, nome de loja/revenda/seminovos, endereço, lista de cidades, "R$"/preço, KM, ou logo de revenda em destaque — REJEITE SEMPRE, mesmo que o carro em si esteja limpo. Queremos a foto MAIS LIMPA POSSÍVEL, sem qualquer texto de contato, telefone ou marca de loja. Em caso de qualquer telefone visível na imagem, REJEITE.
 - **THUMBNAIL DE VÍDEO / CHAMADA DE MATÉRIA**: capa de YouTube, headline sobreposta ("MELHOR HATCH 2024?", "TESTE COMPLETO"), preço ou número grande em destaque sobre o carro — REJEITE.
 - Colagem / montagem com várias fotos numa só (antes/depois, comparativo).
-- Logo ou URL PEQUENO e discreto num canto (ex: marca d'água sutil de site, logo de concessionária) é ACEITÁVEL — não rejeite por isso.
+- Uma marca d'água de SITE realmente PEQUENA e discreta num canto (ex: "autoesporte.com" sutil) é tolerável. Mas logo de concessionária, telefone, nome de revenda ou faixa promocional NÃO são — esses sempre reprovam.
 - Foto com várias imagens montadas (colagem, antes/depois, comparativo).
 
 ${diversityHint}

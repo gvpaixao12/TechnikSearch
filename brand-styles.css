@@ -808,3 +808,15 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--tk-bg); font
   color: var(--tk-ink);
 }
 .tk-compare-bar__avs > div:first-child { margin-left: 0; }
+
+/* Linha do histórico de consultas */
+.tk-hist-row { transition: border-color .15s ease, background .15s ease, transform .12s ease, box-shadow .15s ease; }
+.tk-hist-row:hover {
+  border-color: var(--tk-primary);
+  background: var(--tk-bg-2);
+  box-shadow: var(--tk-shadow-md);
+  transform: translateY(-1px);
+}
+.tk-hist-row:active { transform: translateY(0); }
+.tk-hist-row svg { transition: transform .15s ease; }
+.tk-hist-row:hover svg { transform: translateX(3px); }

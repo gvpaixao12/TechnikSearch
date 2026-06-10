@@ -13,6 +13,8 @@ import { normalizeBriefing } from './briefing.js';
 import { recommend } from './recommend.js';
 import { loadCatalog, clearCatalogCache } from './catalog.js';
 import { getOrBuildImages } from './imageCache.js';
+import { saveConsulta, listConsultas, getConsulta, getStats } from './history.js';
+import { saveRascunho, listRascunhos, getRascunho, deleteRascunho } from './rascunhos.js';
 import { spawn } from 'node:child_process';
 
 const app = express();
@@ -86,7 +88,80 @@ app.post('/api/recommend', async (req, res, next) => {
   try {
     const result = await recommend(req.body || {});
     res.json(result);
+    // Grava no histórico depois de responder — save nunca atrasa nem quebra
+    // a recomendação (erros são engolidos dentro de saveConsulta).
+    saveConsulta({ client: req.body?.client, result });
   } catch (e) { next(e); }
+});
+
+// ─── Histórico de consultas ──────────────────────────────────────
+app.get('/api/consultas/stats', async (_req, res) => {
+  try {
+    res.json({ ok: true, stats: await getStats() });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+app.get('/api/consultas', async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    res.json({ ok: true, consultas: await listConsultas({ limit }) });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+app.get('/api/consultas/:id', async (req, res) => {
+  try {
+    const consulta = await getConsulta(req.params.id);
+    if (!consulta) return res.status(404).json({ ok: false, reason: 'Consulta não encontrada' });
+    res.json({ ok: true, consulta });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+// ─── Rascunhos de briefing ───────────────────────────────────────
+app.post('/api/rascunhos', async (req, res) => {
+  try {
+    const { id, client_name, form } = req.body || {};
+    if (!form || typeof form !== 'object') {
+      return res.status(400).json({ ok: false, reason: 'form é obrigatório' });
+    }
+    const savedId = await saveRascunho({ id, client_name, form });
+    res.json({ ok: true, id: savedId });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+app.get('/api/rascunhos', async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    res.json({ ok: true, rascunhos: await listRascunhos({ limit }) });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+app.get('/api/rascunhos/:id', async (req, res) => {
+  try {
+    const rascunho = await getRascunho(req.params.id);
+    if (!rascunho) return res.status(404).json({ ok: false, reason: 'Rascunho não encontrado' });
+    res.json({ ok: true, rascunho });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+app.delete('/api/rascunhos/:id', async (req, res) => {
+  try {
+    await deleteRascunho(req.params.id);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
 });
 
 // Info do catálogo: contagens, build date, distribuição por tipo

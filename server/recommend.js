@@ -54,6 +54,7 @@ async function recommendFromCatalog(briefing, log) {
   const combsPedidas = (briefing.combustiveisAceitos || []).map(normFuel);
   const orc = briefing.orcamentoReais;
   const anoMin = briefing.anoMin;
+  const anoMax = briefing.anoMax;
 
   const reasonsCount = { ano: 0, tipo: 0, comb: 0, orcamento: 0, semPreco: 0 };
 
@@ -61,9 +62,10 @@ async function recommendFromCatalog(briefing, log) {
   let pool = catalog.entries.filter(e => {
     if (!e.preco) { reasonsCount.semPreco++; return false; }
     if (anoMin && e.ano < Number(anoMin)) { reasonsCount.ano++; return false; }
+    if (anoMax && e.ano > Number(anoMax)) { reasonsCount.ano++; return false; }
     if (tiposPedidos.length && !tiposPedidos.includes(e.tipo)) { reasonsCount.tipo++; return false; }
     if (combsPedidas.length && !combMatch(combsPedidas, e.combustivel)) { reasonsCount.comb++; return false; }
-    if (e.preco < orc.min * 0.95 || e.preco > orc.max * 1.05) { reasonsCount.orcamento++; return false; }
+    if (e.preco < orc.min * 0.95 || (orc.max != null && e.preco > orc.max * 1.05)) { reasonsCount.orcamento++; return false; }
     return true;
   });
 
@@ -74,9 +76,10 @@ async function recommendFromCatalog(briefing, log) {
     pool = catalog.entries.filter(e => {
       if (!e.preco) return false;
       if (anoMin && e.ano < Number(anoMin)) return false;
+      if (anoMax && e.ano > Number(anoMax)) return false;
       if (tiposPedidos.length && !tiposPedidos.includes(e.tipo)) return false;
       if (combsPedidas.length && !combMatch(combsPedidas, e.combustivel)) return false;
-      if (e.preco < orc.min * 0.9 || e.preco > orc.max * 1.10) return false;
+      if (e.preco < orc.min * 0.9 || (orc.max != null && e.preco > orc.max * 1.10)) return false;
       return true;
     });
     log('catalog-relaxed', { count: pool.length });
@@ -93,7 +96,7 @@ async function recommendFromCatalog(briefing, log) {
   if (pool.length === 0) {
     return {
       ok: false,
-      reason: `Não encontrei opções no catálogo que respeitem o briefing (ano>=${anoMin}, tipo(s) ${briefing.tiposDesejados.join(', ')}, combustível(is) ${briefing.combustiveisAceitos.join(', ')}, R$ ${orc.min.toLocaleString('pt-BR')}-${orc.max.toLocaleString('pt-BR')}). Tente refinar critérios.`,
+      reason: `Não encontrei opções no catálogo que respeitem o briefing (ano>=${anoMin}${anoMax ? ` e <=${anoMax}` : ''}, tipo(s) ${briefing.tiposDesejados.join(', ')}, combustível(is) ${briefing.combustiveisAceitos.join(', ')}, R$ ${orc.min.toLocaleString('pt-BR')}-${orc.max == null ? 'sem teto' : orc.max.toLocaleString('pt-BR')}). Tente refinar critérios.`,
       diagnostico: { catalogTotal: catalog.entries.length, descartesPorEtapa: reasonsCount },
     };
   }
@@ -219,15 +222,17 @@ async function recommendLegacy(briefing, log) {
 
   const orc = briefing.orcamentoReais;
   const anoMin = briefing.anoMin;
+  const anoMax = briefing.anoMax;
   const tiposPedidosSlug = (briefing.tiposDesejados || []).map(t => TIPO_TO_SLUG[t]).filter(Boolean);
   const combsOK = (briefing.combustiveisAceitos || []).map(normFuel);
 
   let pool = matched.filter(p => {
     const f = p.res.fipe;
     if (anoMin && Number(f.anoModelo) < Number(anoMin)) return false;
+    if (anoMax && Number(f.anoModelo) > Number(anoMax)) return false;
     if (tiposPedidosSlug.length && !tiposPedidosSlug.includes(tipoSlug(p.cand.tipo))) return false;
     if (combsOK.length && !combMatch(combsOK, f.combustivel)) return false;
-    if (f.preco < orc.min * 0.85 || f.preco > orc.max * 1.05) return false;
+    if (f.preco < orc.min * 0.85 || (orc.max != null && f.preco > orc.max * 1.05)) return false;
     return true;
   });
 

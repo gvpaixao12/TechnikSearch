@@ -83,7 +83,7 @@ function selectHeuristic(byView, perView = HEURISTIC_PER_VIEW) {
 }
 
 let _supabase = null;
-function getSupabase() {
+export function getSupabase() {
   if (_supabase) return _supabase;
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_KEY;

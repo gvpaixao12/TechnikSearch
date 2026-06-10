@@ -20,6 +20,15 @@ function fmtBRL(n) {
   return 'R$ ' + n.toLocaleString('pt-BR');
 }
 
+// Faixa de orçamento (em MILHARES de R$). O campo de digitação aceita qualquer
+// valor até BUDGET_MAX (R$ 5 mi) — só no talo a faixa vira "sem teto" e o backend
+// ignora o limite superior. A barra usa um teto BASE (600) que cresce sozinho
+// quando o valor digitado passa dele: assim ranges premium (700k–1mi) continuam
+// ajustáveis na barra sem travar em 600.
+const BUDGET_MIN = 50;
+const BUDGET_MAX = 5000;        // teto do campo (R$ 5 mi); no talo = "sem teto"
+const BUDGET_SLIDER_BASE = 600; // teto padrão da barra (cresce se digitar mais)
+
 function App() {
   const [t, setTweak] = useTweaks(/*EDITMODE-BEGIN*/{
     "darkMode": false,
@@ -45,6 +54,8 @@ function App() {
   const [trunk, setTrunk]     = useState(420); // litros
   const [trunkAny, setTrunkAny] = useState(true);
   const [yearMin, setYearMin] = useState(2005);
+  const [yearMax, setYearMax] = useState(2025);
+  const [yearMaxAny, setYearMaxAny] = useState(true); // default: sem teto de ano
   const [types, setTypes]     = useState([]);
   const [fuels, setFuels]     = useState([]);
   const [lifestyle, setLifestyle] = useState([]);
@@ -52,8 +63,76 @@ function App() {
   const [notes, setNotes]     = useState('');
   const [notesAny, setNotesAny] = useState(true);
 
+  // Rascunho em edição: se veio de um rascunho salvo, guardamos o id pra que
+  // "Salvar rascunho" ATUALIZE o mesmo registro em vez de criar duplicatas.
+  const [draftId, setDraftId] = useState(null);
+  // 'idle' | 'saving' | 'saved' | 'error' — feedback do botão Salvar rascunho.
+  const [draftState, setDraftState] = useState('idle');
+
   function toggle(setter, list, id) {
     setter(list.includes(id) ? list.filter(x => x !== id) : [...list, id]);
+  }
+
+  // Snapshot do formulário inteiro (o que vai pro rascunho).
+  function collectForm() {
+    return {
+      client, budget, seats, seatsAny, trunk, trunkAny,
+      yearMin, yearMax, yearMaxAny,
+      types, fuels, lifestyle, priorities, notes, notesAny,
+    };
+  }
+
+  // Restaura o formulário a partir de um snapshot salvo. Defensivo: cada campo
+  // cai no default se o rascunho for antigo/incompleto.
+  function applyForm(f = {}) {
+    setClient(f.client || { name: '', segment: '' });
+    setBudget(Array.isArray(f.budget) ? f.budget : [50, 600]);
+    setSeats(f.seats ?? 5); setSeatsAny(f.seatsAny ?? true);
+    setTrunk(f.trunk ?? 420); setTrunkAny(f.trunkAny ?? true);
+    setYearMin(f.yearMin ?? 2005);
+    setYearMax(f.yearMax ?? 2025); setYearMaxAny(f.yearMaxAny ?? true);
+    setTypes(f.types || []); setFuels(f.fuels || []);
+    setLifestyle(f.lifestyle || []); setPriorities(f.priorities || []);
+    setNotes(f.notes || ''); setNotesAny(f.notesAny ?? true);
+  }
+
+  // Salva (ou atualiza, se já veio de um rascunho) o formulário atual.
+  async function saveDraft() {
+    setDraftState('saving');
+    try {
+      const r = await fetch(`${API_BASE}/api/rascunhos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: draftId, client_name: client.name, form: collectForm() }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.reason || `HTTP ${r.status}`);
+      setDraftId(j.id);
+      setDraftState('saved');
+      setTimeout(() => setDraftState('idle'), 2500);
+    } catch (e) {
+      console.warn('[saveDraft]', e);
+      setDraftState('error');
+      setTimeout(() => setDraftState('idle'), 4000);
+    }
+  }
+
+  // Reabre um rascunho do histórico: restaura o formulário e volta pra edição.
+  async function resumeDraft(id) {
+    try {
+      const r = await fetch(`${API_BASE}/api/rascunhos/${id}`);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.reason || 'Falha ao abrir rascunho');
+      applyForm(j.rascunho.form || {});
+      setDraftId(id);
+      setRecommendation(null);
+      setLoadError(null);
+      setActiveNav('new');
+      setStage('form');
+    } catch (e) {
+      console.warn('[resumeDraft]', e);
+      alert('Não consegui abrir esse rascunho: ' + e.message);
+    }
   }
 
   // Zera o formulário inteiro (usado pela ação "Nova consulta")
@@ -63,8 +142,10 @@ function App() {
     setSeats(5); setSeatsAny(true);
     setTrunk(420); setTrunkAny(true);
     setYearMin(2005);
+    setYearMax(2025); setYearMaxAny(true);
     setTypes([]); setFuels([]); setLifestyle([]); setPriorities([]);
     setNotes(''); setNotesAny(true);
+    setDraftId(null); setDraftState('idle');
   }
 
   function handleNav(id) {
@@ -74,6 +155,26 @@ function App() {
       setRecommendation(null);
       setLoadError(null);
       setStage('form');
+    }
+  }
+
+  // Reabre uma consulta do histórico: recarrega o resultado salvo e volta
+  // pra tela de resultados, exatamente como foi entregue ao cliente.
+  async function openConsulta(id) {
+    try {
+      const r = await fetch(`${API_BASE}/api/consultas/${id}`);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.reason || 'Falha ao abrir consulta');
+      const c = j.consulta;
+      setClient({ name: c.client_name || '', segment: c.client_segment || '' });
+      setRecommendation({ top: c.top || [], briefing: c.briefing, diagnostico: c.diagnostico });
+      setLoadError(null);
+      setDraftId(null);
+      setActiveNav('new');
+      setStage('results');
+    } catch (e) {
+      console.warn('[openConsulta]', e);
+      alert('Não consegui abrir essa consulta: ' + e.message);
     }
   }
 
@@ -98,7 +199,10 @@ function App() {
 
     const ctrl = new AbortController();
     const briefing = {
-      client, budget, yearMin,
+      client, budget,
+      budgetOpen: budget[1] >= BUDGET_MAX, // teto no talo (R$ 5 mi) = sem teto
+      yearMin,
+      yearMax: yearMaxAny ? null : yearMax,
       seats: seatsAny ? null : seats,
       trunk: trunkAny ? null : trunk,
       types, fuels, lifestyle, priorities,
@@ -169,27 +273,39 @@ function App() {
         <header className="tk-topbar">
           <div className="tk-topbar__title">
             <span className="tk-eyebrow">
-              {stage === 'form' && 'Nova consulta · etapa 1/2'}
-              {stage === 'loading' && 'Calculando recomendações'}
-              {stage === 'results' && 'Recomendações · entrega ao cliente'}
+              {activeNav === 'history' && 'Atendimentos salvos'}
+              {activeNav !== 'history' && stage === 'form' && 'Nova consulta · etapa 1/2'}
+              {activeNav !== 'history' && stage === 'loading' && 'Calculando recomendações'}
+              {activeNav !== 'history' && stage === 'results' && 'Recomendações · entrega ao cliente'}
             </span>
             <h1>
-              {stage === 'form' && 'Briefing do perfil'}
-              {stage === 'loading' && 'Cruzando catálogo'}
-              {stage === 'results' && `Top 10 para ${client.name.split(' ')[0]}`}
+              {activeNav === 'history' && 'Histórico de consultas'}
+              {activeNav !== 'history' && stage === 'form' && 'Briefing do perfil'}
+              {activeNav !== 'history' && stage === 'loading' && 'Cruzando catálogo'}
+              {activeNav !== 'history' && stage === 'results' && `Top 10 para ${client.name.split(' ')[0]}`}
             </h1>
           </div>
           <div className="tk-topbar__actions">
-            {stage === 'form' && (
+            {activeNav !== 'history' && stage === 'form' && (
               <>
-                <button className="tk-btn tk-btn-ghost"><Icon.Bookmark /> Salvar rascunho</button>
+                <button className="tk-btn tk-btn-ghost" onClick={saveDraft}
+                  disabled={draftState === 'saving'}
+                  style={draftState === 'error' ? { color: '#c0392b', borderColor: '#c0392b' } : undefined}>
+                  {draftState === 'saved'
+                    ? (<><Icon.Check /> Rascunho salvo</>)
+                    : draftState === 'saving'
+                    ? (<><Icon.Bookmark /> Salvando…</>)
+                    : draftState === 'error'
+                    ? (<><Icon.Bookmark /> Falhou — tentar de novo</>)
+                    : (<><Icon.Bookmark /> {draftId ? 'Atualizar rascunho' : 'Salvar rascunho'}</>)}
+                </button>
                 <button className="tk-btn tk-btn-primary"
                   onClick={() => setStage('loading')}>
                   Buscar recomendações <Icon.ChevronRight />
                 </button>
               </>
             )}
-            {stage === 'results' && (
+            {activeNav !== 'history' && stage === 'results' && (
               <>
                 <button className="tk-btn tk-btn-ghost" onClick={() => setStage('form')}>← Editar briefing</button>
               </>
@@ -197,6 +313,10 @@ function App() {
           </div>
         </header>
 
+        {activeNav === 'history' ? (
+          <HistoryView onOpen={openConsulta} onNew={() => handleNav('new')} onResumeDraft={resumeDraft} />
+        ) : (
+          <>
         {stage === 'form' && (
           <FormView
             client={client} setClient={setClient}
@@ -206,6 +326,8 @@ function App() {
             trunk={trunk} setTrunk={setTrunk}
             trunkAny={trunkAny} setTrunkAny={setTrunkAny}
             yearMin={yearMin} setYearMin={setYearMin}
+            yearMax={yearMax} setYearMax={setYearMax}
+            yearMaxAny={yearMaxAny} setYearMaxAny={setYearMaxAny}
             types={types} setTypes={setTypes}
             fuels={fuels} setFuels={setFuels}
             lifestyle={lifestyle} setLifestyle={setLifestyle}
@@ -234,6 +356,8 @@ function App() {
             briefing={recommendation.briefing}
             diagnostico={recommendation.diagnostico}
           />
+        )}
+          </>
         )}
       </section>
 
@@ -361,7 +485,8 @@ function FormView(props) {
   const { client, setClient, budget, setBudget,
           seats, setSeats, seatsAny, setSeatsAny,
           trunk, setTrunk, trunkAny, setTrunkAny,
-          yearMin, setYearMin, types, setTypes, fuels, setFuels,
+          yearMin, setYearMin, yearMax, setYearMax, yearMaxAny, setYearMaxAny,
+          types, setTypes, fuels, setFuels,
           lifestyle, setLifestyle, priorities, setPriorities,
           notes, setNotes, notesAny, setNotesAny, toggle } = props;
 
@@ -374,6 +499,17 @@ function FormView(props) {
     (priorities.length ? 1 : 0)
   );
   const completion = Math.round((total / 6) * 100);
+
+  // Teto da barra: fica em 600 por padrão e cresce (com ~15% de folga, alinhado
+  // ao step de 5) pra acompanhar valores digitados acima de 600 — sem ultrapassar
+  // o teto do campo. Assim o thumb do máximo nunca fica colado na borda.
+  const sliderCeil = Math.ceil(budget[1] / 5) * 5 <= BUDGET_SLIDER_BASE
+    ? BUDGET_SLIDER_BASE
+    : Math.min(BUDGET_MAX, Math.ceil((budget[1] * 1.15) / 5) * 5);
+  const kLabel = v => v >= 1000
+    ? `R$ ${(v / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}mi`
+    : `R$ ${v}k`;
+  const budgetTicks = [0, 1, 2, 3].map(i => Math.round((BUDGET_MIN + (sliderCeil - BUDGET_MIN) * i / 3) / 5) * 5);
 
   return (
     <div className="q2">
@@ -438,11 +574,19 @@ function FormView(props) {
             <div className="q2__field">
               <label className="tk-label">
                 <span>Faixa de preço</span>
-                <span className="tk-mono">{fmtBRL(budget[0]*1000)} — {fmtBRL(budget[1]*1000)}</span>
               </label>
-              <DualRange min={50} max={600} step={5} value={budget} onChange={setBudget} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <BudgetInput value={budget[0]} min={BUDGET_MIN} max={budget[1] - 5}
+                  onCommit={v => setBudget([v, budget[1]])} />
+                <span style={{ color: 'var(--tk-muted)', flexShrink: 0 }}>—</span>
+                <BudgetInput value={budget[1]} min={budget[0] + 5} max={BUDGET_MAX} openAtMax
+                  onCommit={v => setBudget([budget[0], v])} />
+              </div>
+              <DualRange min={BUDGET_MIN} max={sliderCeil} step={5} value={budget} onChange={setBudget} />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--tk-muted)', marginTop: 4 }}>
-                <span>R$ 50k</span><span>R$ 200k</span><span>R$ 400k</span><span>R$ 600k+</span>
+                {budgetTicks.map((v, i) => (
+                  <span key={i}>{kLabel(v)}{i === budgetTicks.length - 1 && sliderCeil >= BUDGET_MAX ? '+' : ''}</span>
+                ))}
               </div>
             </div>
             <div className="q2__field">
@@ -473,14 +617,36 @@ function FormView(props) {
               )}
             </div>
           </div>
-          <div className="q2__field" style={{ marginTop: 16, maxWidth: 380 }}>
-            <label className="tk-label">
-              <span>Ano mínimo</span>
-              <span className="tk-mono">≥ {yearMin}</span>
-            </label>
-            <input type="range" min={2005} max={2024} step={1} value={yearMin}
-              className="tk-range"
-              onChange={e => setYearMin(+e.target.value)} />
+          <div className="q2__row" style={{ gridTemplateColumns: '1fr 1fr', marginTop: 16, maxWidth: 560 }}>
+            <div className="q2__field">
+              <label className="tk-label">
+                <span>Ano mínimo</span>
+                <span className="tk-mono">≥ {yearMin}</span>
+              </label>
+              <input type="range" min={2005} max={2025} step={1} value={yearMin}
+                className="tk-range"
+                onChange={e => {
+                  const v = +e.target.value;
+                  setYearMin(v);
+                  if (!yearMaxAny && yearMax < v) setYearMax(v); // máx nunca abaixo do mín
+                }} />
+            </div>
+            <div className="q2__field">
+              <label className="tk-label">
+                <span>Ano máximo</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  {!yearMaxAny && <span className="tk-mono">≤ {yearMax}</span>}
+                  <AnyToggle on={yearMaxAny} onChange={setYearMaxAny} />
+                </span>
+              </label>
+              {yearMaxAny ? (
+                <div style={{ padding: '10px 0', color: 'var(--tk-muted)', fontStyle: 'italic', fontSize: 13 }}>Sem teto de ano</div>
+              ) : (
+                <input type="range" min={yearMin} max={2025} step={1} value={Math.max(yearMax, yearMin)}
+                  className="tk-range"
+                  onChange={e => setYearMax(Math.max(+e.target.value, yearMin))} />
+              )}
+            </div>
           </div>
         </div>
 
@@ -574,7 +740,7 @@ function FormView(props) {
           </div>
           <div className="q2__preview-row">
             <span>Orçamento</span>
-            <strong>{fmtBRL(budget[0]*1000)} — {fmtBRL(budget[1]*1000)}</strong>
+            <strong>{fmtBRL(budget[0]*1000)} — {budget[1] >= BUDGET_MAX ? `${fmtBRL(budget[1]*1000)}+` : fmtBRL(budget[1]*1000)}</strong>
           </div>
           <div className="q2__preview-row">
             <span>Lugares</span><strong>{seatsAny ? 'Indiferente' : seats}</strong>
@@ -583,7 +749,7 @@ function FormView(props) {
             <span>Porta-malas</span><strong>{trunkAny ? 'Indiferente' : `≥ ${trunk} L`}</strong>
           </div>
           <div className="q2__preview-row">
-            <span>Ano mínimo</span><strong>{yearMin}</strong>
+            <span>Ano</span><strong>{yearMaxAny ? `≥ ${yearMin}` : `${yearMin} – ${yearMax}`}</strong>
           </div>
           <div className="q2__preview-row">
             <span>Combustível</span>
@@ -635,6 +801,49 @@ function AnyToggle({ on, onChange }) {
 }
 
 // ─── DUAL RANGE SLIDER ────────────────────────────────────────
+// Caixa editável de orçamento (em R$ cheios). value/min/max chegam em MILHARES.
+// A barra acompanha em tempo real: cada dígito digitado já chama onCommit com o
+// valor (arredondado p/ múltiplo de 5 e travado entre min/max). Enquanto o campo
+// está focado, mostra o rascunho cru pra não brigar com a digitação; ao sair,
+// normaliza pro valor canônico.
+function BudgetInput({ value, min, max, onCommit, openAtMax = false }) {
+  const [draft, setDraft] = React.useState('');
+  const [focused, setFocused] = React.useState(false);
+  // Topo aberto: no máximo, mostra "600.000+" (sem teto). Ao focar, edita normal.
+  const isOpen = openAtMax && value >= max;
+  const display = focused
+    ? draft
+    : (value * 1000).toLocaleString('pt-BR') + (isOpen ? '+' : '');
+
+  function commitDigits(digits) {
+    if (digits === '') return;
+    let mil = Math.round(Number(digits) / 1000 / 5) * 5;     // alinha ao step da barra
+    mil = Math.max(min, Math.min(max, mil));
+    onCommit(mil);
+  }
+
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4, flex: 1, minWidth: 0,
+      border: '1px solid var(--tk-bg-3)', borderRadius: 8, padding: '7px 10px',
+      background: 'var(--tk-bg-2, var(--tk-bg))',
+    }}>
+      <span style={{ color: 'var(--tk-muted)', fontSize: 13, flexShrink: 0 }}>R$</span>
+      <input
+        inputMode="numeric"
+        value={display}
+        onFocus={() => { setFocused(true); setDraft(String(value * 1000)); }}
+        onBlur={() => { commitDigits(draft.replace(/\D/g, '')); setFocused(false); }}
+        onChange={e => { const d = e.target.value.replace(/\D/g, ''); setDraft(d); commitDigits(d); }}
+        onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+        style={{
+          border: 'none', outline: 'none', background: 'transparent', width: '100%',
+          minWidth: 0, fontFamily: 'inherit', fontSize: 13, color: 'var(--tk-fg, inherit)',
+        }} />
+    </span>
+  );
+}
+
 function DualRange({ min, max, step, value, onChange }) {
   const [lo, hi] = value;
   const pctLo = ((lo - min) / (max - min)) * 100;
@@ -732,10 +941,212 @@ function LoadingView({ step, error, onRetry, onCancel }) {
   );
 }
 
+// ─── HISTORY VIEW ─────────────────────────────────────────────
+// Lista os atendimentos salvos (resumo) com filtro por cliente.
+// Clicar numa consulta chama onOpen(id) → o App recarrega o resultado salvo.
+function HistoryView({ onOpen, onNew, onResumeDraft }) {
+  const [state, setState] = useState({ loading: true, error: null, consultas: [] });
+  const [drafts, setDrafts] = useState([]);
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ loading: true, error: null, consultas: [] });
+
+    fetch(`${API_BASE}/api/consultas?limit=100`)
+      .then(r => r.json())
+      .then(j => {
+        if (cancelled) return;
+        if (!j.ok) throw new Error(j.reason || 'Falha ao carregar histórico');
+        setState({ loading: false, error: null, consultas: j.consultas });
+      })
+      .catch(e => { if (!cancelled) setState({ loading: false, error: e.message, consultas: [] }); });
+
+    // Rascunhos: independente do histórico — se a tabela não existir, só não aparece.
+    fetch(`${API_BASE}/api/rascunhos?limit=100`)
+      .then(r => r.json())
+      .then(j => { if (!cancelled && j.ok) setDrafts(j.rascunhos); })
+      .catch(() => { /* rascunhos indisponíveis — ignora */ });
+
+    return () => { cancelled = true; };
+  }, []);
+
+  async function removeDraft(id) {
+    if (!window.confirm('Excluir este rascunho?')) return;
+    setDrafts(ds => ds.filter(d => d.id !== id)); // otimista
+    try {
+      const r = await fetch(`${API_BASE}/api/rascunhos/${id}`, { method: 'DELETE' });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.reason);
+    } catch (e) {
+      console.warn('[removeDraft]', e);
+      alert('Não consegui excluir o rascunho: ' + e.message);
+    }
+  }
+
+  const TYPE_LABEL = { suv: 'SUV', sedan: 'Sedan', hatch: 'Hatch', pickup: 'Picape', coupe: 'Esportivo', minivan: 'Minivan' };
+  const fmtDate = (s) => new Date(s).toLocaleString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+  // Filtro por cliente: casa nome ou perfil resumido.
+  const q = query.trim().toLowerCase();
+  const filtered = useMemo(() => {
+    if (!q) return state.consultas;
+    return state.consultas.filter(c =>
+      `${c.client_name || ''} ${c.client_segment || ''}`.toLowerCase().includes(q)
+    );
+  }, [state.consultas, q]);
+
+  if (state.loading) {
+    return <div className="tk-results tk-scroll"><div className="tk-help" style={{ padding: 28 }}>Carregando histórico…</div></div>;
+  }
+
+  if (state.error) {
+    return (
+      <div className="tk-results tk-scroll">
+        <div className="tk-results__hero">
+          <div>
+            <span className="tk-eyebrow" style={{ color: '#c0392b' }}>Histórico indisponível</span>
+            <h1>Não consegui carregar o histórico.</h1>
+            <p style={{ color: 'var(--tk-muted)' }}><strong>Detalhe:</strong> {state.error}</p>
+            <p style={{ color: 'var(--tk-muted)', fontSize: 13 }}>
+              Confirme que a tabela <code>consultas</code> existe no Supabase (rode <code>server/scripts/consultas-schema.sql</code> no SQL Editor) e que o backend tem as chaves Supabase no <code>.env</code>.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="tk-results tk-scroll">
+      <div className="tk-results__hero">
+        <div>
+          <span className="tk-eyebrow">Atendimentos salvos</span>
+          <h1>{state.consultas.length} consulta{state.consultas.length !== 1 ? 's' : ''} no histórico.</h1>
+          <p>Cada recomendação entregue fica registrada aqui. Clique pra reabrir os resultados exatamente como foram apresentados ao cliente.</p>
+        </div>
+      </div>
+
+      {drafts.length > 0 && (
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <Icon.Bookmark style={{ color: 'var(--tk-secondary)' }} />
+            <span className="tk-eyebrow" style={{ margin: 0 }}>Rascunhos · {drafts.length}</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {drafts.map(d => (
+              <div key={d.id}
+                style={{
+                  display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12, alignItems: 'center',
+                  padding: '13px 16px', borderRadius: 12,
+                  border: '1px dashed var(--tk-line)', background: 'var(--tk-bg)',
+                }}>
+                <button onClick={() => onResumeDraft(d.id)}
+                  title="Retomar este rascunho"
+                  style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', font: 'inherit', color: 'var(--tk-ink)', padding: 0 }}>
+                  <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: '-0.01em' }}>{d.client_name || 'Sem nome'}</span>
+                  <span style={{ fontFamily: 'var(--tk-font-mono)', fontSize: 11, color: 'var(--tk-muted)' }}>
+                    Editado {fmtDate(d.updated_at || d.created_at)}
+                  </span>
+                </button>
+                <button onClick={() => onResumeDraft(d.id)} className="tk-btn tk-btn-ghost" style={{ padding: '6px 12px', fontSize: 13 }}>
+                  Retomar <Icon.ChevronRight />
+                </button>
+                <button onClick={() => removeDraft(d.id)} title="Excluir rascunho"
+                  style={{ width: 34, height: 34, borderRadius: 8, border: '1px solid var(--tk-line)', background: 'var(--tk-bg)', color: 'var(--tk-muted)', cursor: 'pointer', display: 'grid', placeItems: 'center' }}>
+                  <Icon.Trash />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {state.consultas.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+          <div style={{ position: 'relative', flex: '1 1 320px', maxWidth: 420 }}>
+            <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--tk-muted)', display: 'flex', pointerEvents: 'none' }}>
+              <Icon.Search />
+            </span>
+            <input
+              type="text"
+              className="tk-input"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Escape') setQuery(''); }}
+              placeholder="Filtrar por cliente…"
+              style={{ paddingLeft: 38, paddingRight: query ? 34 : 14 }}
+            />
+            {query && (
+              <button onClick={() => setQuery('')} title="Limpar filtro"
+                style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', width: 22, height: 22, borderRadius: '50%', border: 'none', background: 'var(--tk-bg-3)', color: 'var(--tk-ink)', cursor: 'pointer', fontSize: 15, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
+            )}
+          </div>
+          {q && (
+            <span className="tk-help" style={{ fontFamily: 'var(--tk-font-mono)', fontSize: 11 }}>
+              {filtered.length} de {state.consultas.length}
+            </span>
+          )}
+        </div>
+      )}
+
+      {state.consultas.length === 0 ? (
+        <div className="tk-help" style={{ padding: '28px 4px' }}>
+          Nenhuma consulta salva ainda.{' '}
+          <button onClick={onNew} style={{ background: 'none', border: 'none', color: 'var(--tk-primary)', cursor: 'pointer', textDecoration: 'underline', font: 'inherit' }}>Fazer a primeira</button>.
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="tk-help" style={{ padding: '28px 4px' }}>
+          Nenhum cliente corresponde a “<strong>{query.trim()}</strong>”.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {filtered.map(c => (
+            <button key={c.id} onClick={() => onOpen(c.id)} className="tk-hist-row"
+              style={{
+                display: 'grid', gridTemplateColumns: '1fr auto', gap: 14, alignItems: 'center',
+                textAlign: 'left', padding: '15px 18px', borderRadius: 12,
+                border: '1px solid var(--tk-line)', background: 'var(--tk-bg)', cursor: 'pointer',
+                fontFamily: 'var(--tk-font)', color: 'var(--tk-ink)',
+              }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, flexWrap: 'wrap' }}>
+                  <span style={{ fontFamily: 'var(--tk-font)', fontWeight: 700, fontSize: 16, letterSpacing: '-0.01em', color: 'var(--tk-ink)' }}>{c.client_name || 'Sem nome'}</span>
+                  {c.client_segment && <span style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--tk-secondary)' }}>{c.client_segment}</span>}
+                  {!c.ok && <span style={{ fontSize: 9.5, fontWeight: 700, color: '#c0392b', textTransform: 'uppercase', letterSpacing: '0.08em', border: '1px solid currentColor', borderRadius: 4, padding: '1px 5px' }}>sem resultado</span>}
+                </div>
+                <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, fontFamily: 'var(--tk-font-mono)', fontSize: 11, color: 'var(--tk-muted)', letterSpacing: '0.01em' }}>
+                  <span>{fmtDate(c.created_at)}</span>
+                  <span style={{ opacity: 0.4 }}>·</span>
+                  <span style={{ color: 'var(--tk-secondary)', fontWeight: 500 }}>{c.total_resultados} resultado{c.total_resultados !== 1 ? 's' : ''}</span>
+                  {(c.orcamento_min != null && c.orcamento_max != null) && (
+                    <><span style={{ opacity: 0.4 }}>·</span><span>{fmtBRL(c.orcamento_min)}–{fmtBRL(c.orcamento_max)}</span></>
+                  )}
+                  {c.tipos?.length > 0 && (
+                    <><span style={{ opacity: 0.4 }}>·</span><span>{c.tipos.map(t => TYPE_LABEL[t] || t).join(', ')}</span></>
+                  )}
+                </div>
+                {c.top_models?.length > 0 && (
+                  <div style={{ marginTop: 7, fontSize: 13, fontWeight: 500, lineHeight: 1.35, color: 'var(--tk-ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {c.top_models.slice(0, 3).join('  ·  ')}
+                    {c.top_models.length > 3 && <span style={{ color: 'var(--tk-muted)', fontWeight: 600 }}>{`  +${c.top_models.length - 3}`}</span>}
+                  </div>
+                )}
+              </div>
+              <Icon.ChevronRight style={{ color: 'var(--tk-muted)' }} />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── RESULTS ──────────────────────────────────────────────────
 function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing, diagnostico }) {
   const [filter, setFilter] = useState('all');
   const [compare, setCompare] = useState([]);
+  const [compareOpen, setCompareOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
 
@@ -761,9 +1172,14 @@ function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing, d
   });
   const top = cars[0];
 
+  // Por enquanto a comparação é entre 2 carros. Ao selecionar um terceiro,
+  // o mais antigo sai pra dar lugar ao novo (a seleção sempre mira nos 2 atuais).
   function toggleCompare(id) {
-    if (compare.includes(id)) setCompare(compare.filter(x => x !== id));
-    else if (compare.length < 3) setCompare([...compare, id]);
+    setCompare(prev => {
+      if (prev.includes(id)) return prev.filter(x => x !== id);
+      if (prev.length >= 2) return [prev[1], id];
+      return [...prev, id];
+    });
   }
 
   if (!cars.length) {
@@ -871,25 +1287,145 @@ function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing, d
         </div>
       )}
 
-      {showCompareBar && compare.length > 0 && (
-        <div className="tk-compare-bar">
-          <div className="tk-compare-bar__avs">
-            {compare.map((id, i) => {
-              const c = CARS.find(x => x.id === id);
-              return <div key={id}>{c.brand[0]}{c.model[0]}</div>;
-            })}
+      {showCompareBar && compare.length > 0 && (() => {
+        // Resolve os ids selecionados nos carros reais vindos do backend
+        // (antes lia do array estático CARS, que não bate com o catálogo real).
+        const picked = compare.map(id => cars.find(c => c.id === id)).filter(Boolean);
+        const ready = picked.length >= 2;
+        return (
+          <div className="tk-compare-bar">
+            <div className="tk-compare-bar__avs">
+              {picked.map(c => (
+                <div key={c.id} title={`${c.brand} ${c.model}`}>{c.brand[0]}{c.model[0]}</div>
+              ))}
+            </div>
+            <span style={{ fontSize: 13, fontWeight: 500 }}>
+              {ready
+                ? 'Pronto para comparar'
+                : 'Selecione mais 1 carro para comparar'}
+            </span>
+            <button className="tk-btn"
+              style={{ background: '#fff', color: 'var(--tk-primary)', padding: '8px 14px', opacity: ready ? 1 : 0.5, cursor: ready ? 'pointer' : 'not-allowed' }}
+              disabled={!ready}
+              onClick={() => ready && setCompareOpen(true)}>
+              <Icon.Compare /> Comparar
+            </button>
+            <button className="tk-icobtn" style={{ background: 'transparent', borderColor: 'rgba(255,255,255,0.2)', color: '#fff' }}
+              onClick={() => setCompare([])}>×</button>
           </div>
-          <span style={{ fontSize: 13, fontWeight: 500 }}>
-            {compare.length} carro{compare.length > 1 ? 's' : ''} para comparar
-          </span>
-          <button className="tk-btn" style={{ background: '#fff', color: 'var(--tk-primary)', padding: '8px 14px' }}>
-            <Icon.Compare /> Comparar
-          </button>
-          <button className="tk-icobtn" style={{ background: 'transparent', borderColor: 'rgba(255,255,255,0.2)', color: '#fff' }}
-            onClick={() => setCompare([])}>×</button>
-        </div>
+        );
+      })()}
+
+      {compareOpen && (
+        <CompareModal
+          cars={compare.map(id => cars.find(c => c.id === id)).filter(Boolean)}
+          onClose={() => setCompareOpen(false)}
+        />
       )}
     </div>
+  );
+}
+
+// ─── COMPARE MODAL (2 carros lado a lado) ─────────────────────
+// Recebe os 2 carros já selecionados e mostra foto, identificação e a ficha
+// técnica alinhada linha a linha. Onde os dois diferem, marca com um ponto.
+function CompareModal({ cars = [], onClose }) {
+  const TYPE_LABEL = { suv: 'SUV', sedan: 'Sedan', hatch: 'Hatch', pickup: 'Picape', coupe: 'Esportivo', minivan: 'Minivan' };
+
+  useEffect(() => {
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener('keydown', onKey);
+    };
+  }, []);
+
+  // Mesma ordem/rótulos da FichaTecnica do card, mais preço/ano/tipo no topo.
+  const specs = [
+    { label: 'Preço', get: c => c.price, strong: true },
+    { label: 'Ano', get: c => c.year ? String(c.year) : '' },
+    { label: 'Tipo', get: c => TYPE_LABEL[c.type] || c.type || '' },
+    { label: 'Motor', get: c => c.fichaTecnica?.motor },
+    { label: 'Câmbio', get: c => c.fichaTecnica?.cambio },
+    { label: 'Potência', get: c => c.fichaTecnica?.potencia },
+    { label: 'Torque', get: c => c.fichaTecnica?.torque },
+    { label: 'Tração', get: c => c.fichaTecnica?.tracao },
+    { label: 'Consumo cidade', get: c => c.fichaTecnica?.consumoCidade },
+    { label: 'Consumo estrada', get: c => c.fichaTecnica?.consumoEstrada },
+    { label: 'Porta-malas', get: c => c.fichaTecnica?.porta_malas },
+    { label: 'Lugares', get: c => c.fichaTecnica?.lugares > 0 ? `${c.fichaTecnica.lugares} lugares` : '' },
+  ];
+
+  const val = v => (v === undefined || v === null || v === '') ? '—' : v;
+
+  return ReactDOM.createPortal(
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 999999,
+      background: 'rgba(10,10,25,0.66)', backdropFilter: 'blur(3px)',
+      display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+      padding: '40px 20px', overflowY: 'auto',
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--tk-bg)', borderRadius: 16, width: '100%', maxWidth: 760,
+        boxShadow: '0 40px 120px rgba(0,0,0,0.45)', overflow: 'hidden',
+      }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: '1px solid var(--tk-line)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--tk-ink)' }}>
+            <Icon.Compare />
+            <span style={{ fontFamily: 'Exo', fontWeight: 700, fontSize: 16 }}>Comparativo</span>
+          </div>
+          <button onClick={onClose} aria-label="Fechar" style={{ width: 36, height: 36, borderRadius: '50%', border: 'none', background: 'var(--tk-bg-2)', color: 'var(--tk-ink)', fontSize: 22, cursor: 'pointer', lineHeight: 1 }}>×</button>
+        </div>
+
+        {/* Grade: coluna de rótulos + 1 coluna por carro */}
+        <div style={{ display: 'grid', gridTemplateColumns: '124px 1fr 1fr' }}>
+          {/* Cabeçalho: foto + identificação */}
+          <div />
+          {cars.map(c => (
+            <div key={c.id} style={{ padding: 14, borderLeft: '1px solid var(--tk-line)' }}>
+              <div style={{ borderRadius: 8, overflow: 'hidden', marginBottom: 10 }}>
+                <CarPhoto brand={c.brand} model={c.model} year={c.year} type={c.type} rounded aspect="4 / 3" />
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--tk-muted)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>{c.brand} · {c.year}</div>
+              <div style={{ fontFamily: 'Exo', fontWeight: 700, fontSize: 15, color: 'var(--tk-ink)', lineHeight: 1.2 }}>{c.model}</div>
+            </div>
+          ))}
+
+          {/* Linhas de especificação */}
+          {specs.map((s, i) => {
+            const vals = cars.map(c => val(s.get(c)));
+            const diff = vals.length === 2 && vals[0] !== vals[1] && vals[0] !== '—' && vals[1] !== '—';
+            const zebra = i % 2 === 0 ? 'var(--tk-bg-2)' : 'transparent';
+            return (
+              <React.Fragment key={s.label}>
+                <div style={{ padding: '10px 14px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600, color: 'var(--tk-muted)', background: zebra, display: 'flex', alignItems: 'center' }}>{s.label}</div>
+                {vals.map((v, j) => (
+                  <div key={j} style={{
+                    padding: '10px 14px', fontSize: s.strong ? 15 : 13,
+                    fontWeight: s.strong ? 700 : (diff ? 600 : 500),
+                    color: v === '—' ? 'var(--tk-muted)' : (s.strong ? 'var(--tk-primary)' : 'var(--tk-ink)'),
+                    background: zebra, borderLeft: '1px solid var(--tk-line)',
+                    display: 'flex', alignItems: 'center', gap: 6,
+                  }}>
+                    {diff && v !== '—' && <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--tk-gold, #f0b429)', flexShrink: 0 }} />}
+                    {v}
+                  </div>
+                ))}
+              </React.Fragment>
+            );
+          })}
+        </div>
+
+        <div style={{ padding: '10px 16px', fontSize: 11, color: 'var(--tk-muted)', borderTop: '1px solid var(--tk-line)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--tk-gold, #f0b429)' }} /> ponto marca onde os dois diferem
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 

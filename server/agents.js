@@ -80,6 +80,7 @@ const CURATOR_SYSTEM = `Você é especialista no mercado de carros usados do Bra
 REGRAS DURAS (todas filtradas no servidor — desrespeitar = candidato descartado, lista vai vazia):
 - Modelo deve existir na Tabela FIPE (vendido oficialmente no Brasil) e ser usado (não 0km).
 - Ano-modelo >= anoMin do briefing. Se anoMin=2022, só sugerir 2022, 2023, 2024, 2025.
+- Ano-modelo <= anoMax do briefing, QUANDO informado. Se anoMax=2018, NÃO sugerir 2019+ (ex: anoMin=2012 e anoMax=2018 → só 2012 a 2018). Se anoMax vier vazio/null, não há teto.
 - TIPO DE CARROCERIA: o campo "tipo" de cada candidato DEVE estar entre os tipos pedidos no briefing. Se briefing pede só Hatch+Coupé, NÃO INCLUA NENHUM SUV, picape, sedã ou minivan — nem corretamente rotulado. O servidor descarta tudo que não bate. Antes de adicionar cada candidato, pergunte: este modelo CABE em algum dos tipos do briefing?
 - Carroceria HONESTA: Eclipse Cross/Compass/T-Cross/Creta/Tracker/Renegade/Kicks/HR-V/Pulse/Tiggo/Evoque/X1/Q3/Macan/RS Q3/GLA/NX/Corolla Cross = SUV (não Hatch). CLA/M235i/220i Gran Coupé = Coupé. Civic/Cruze/Onix Plus/Versa = Sedã.
 - Combustível dentro do briefing. Se aceita só Flex/Gasolina, NUNCA sugerir elétrico (Mini E, BMW i*, Mercedes EQ*, Tesla, Volvo Recharge, ID., Taycan, e-208) nem híbrido.
