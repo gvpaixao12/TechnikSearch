@@ -211,8 +211,18 @@ async function main() {
       }
     }
 
-    // MERGE: remove entries antigas dessa marca, adiciona as novas
-    catalog = catalog.filter(e => e.marcaId !== marca.codigo).concat(brandEntries);
+    // MERGE (upsert, NÃO-destrutivo): nunca remove entries existentes — só
+    // insere/atualiza as buscadas nesta rodada, indexando por marca|modelo|ano.
+    // Assim, se um modelo falhar (ex.: 429 no getAnos), os carros dele que já
+    // estão no catálogo são PRESERVADOS em vez de sumirem. (O merge antigo fazia
+    // "remove a marca → põe o que buscou"; sob 429 isso erodia o catálogo.)
+    // Pra um rebuild limpo do zero, apague o catalog.json antes de rodar.
+    if (brandEntries.length) {
+      const ukey = e => `${e.marcaId}|${e.modeloId}|${e.anoId}`;
+      const byKey = new Map(catalog.map(e => [ukey(e), e]));
+      for (const e of brandEntries) byKey.set(ukey(e), e);
+      catalog = [...byKey.values()];
+    }
 
     // Salva incrementalmente a cada marca pra não perder progresso
     await fs.writeFile(OUT_FILE, JSON.stringify({
