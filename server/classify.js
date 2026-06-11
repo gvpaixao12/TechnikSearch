@@ -191,6 +191,30 @@ const TYPE_RULES = [
   ]},
 ];
 
+// Separa a string de modelo da FIPE em { versao, motor }.
+// A FIPE entrega tudo grudado: "Grand Siena ESSENCE 1.6 Flex 16V" — onde
+// "Grand Siena ESSENCE" é a versão (modelo + acabamento/trim, que o comprador
+// lê pra saber o nível de equipamento) e "1.6 Flex 16V" é a parte técnica.
+// Corta no PRIMEIRO marcador de especificação. Modelos sem motor na string
+// (ex.: "Macan", "911 Carrera", "Taycan") voltam inteiros como versao.
+//
+// IMPORTANTE: isto NÃO inventa equipamento — só fatia a string que já existe.
+// Coerente com a regra "ficha não-inventada": melhor mostrar o trim cru
+// ("ESSENCE") do que afirmar "tem teto solar".
+const SPEC_MARKER = /\s+(?:\d[.,]\d|\d{1,2}p\b|\d{1,2}[vV]\b|\(El[eé]trico\)|\(H[ií]brido\)|\bV\d{1,2}\b|\bBI-?TB\b|\bTB\b|\bTSI\b|\bTDI\b|\bTurbo\b|\bFlex\b|\bDiesel\b|\bGasolina\b|\bmpi\b|\bAut\.?\b|\bMec\.?\b)/i;
+
+export function splitModelo(modelo) {
+  const raw = (modelo || '').trim();
+  if (!raw) return { versao: '', motor: '' };
+  const m = raw.match(SPEC_MARKER);
+  if (!m) return { versao: raw.replace(/\s+/g, ' '), motor: '' };
+  const versao = raw.slice(0, m.index).replace(/\s+/g, ' ').trim();
+  const motor = raw.slice(m.index).replace(/\s+/g, ' ').trim();
+  // Se o corte deixou a versão vazia (string começa por spec), devolve cru.
+  if (!versao) return { versao: raw.replace(/\s+/g, ' '), motor: '' };
+  return { versao, motor };
+}
+
 export function classifyTipo(marcaModelo) {
   for (const rule of TYPE_RULES) {
     if (rule.patterns.some(p => p.test(marcaModelo))) return rule.type;

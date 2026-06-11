@@ -2,6 +2,7 @@ import { normalizeBriefing } from './briefing.js';
 import { runCurator, runVendor, runCuradorLeve } from './agents.js';
 import { resolveCandidates } from './match.js';
 import { loadCatalog } from './catalog.js';
+import { splitModelo } from './classify.js';
 
 const TIPO_TO_SLUG = {
   'Hatch': 'hatch',
@@ -140,12 +141,15 @@ async function recommendFromCatalog(briefing, log) {
       if (seenInTop.has(t.candidatoId) || seenInTop.has(`fipe:${f.codigoFipe}`)) return null;
       seenInTop.add(t.candidatoId);
       seenInTop.add(`fipe:${f.codigoFipe}`);
+      const { versao, motor } = splitModelo(f.modelo);
       return {
         id: slugifyId(f.marca, f.modelo, f.anoModelo),
         rank: t.rank,
         fichaTecnica: t.fichaTecnica || {},
         brand: f.marca,
         model: f.modelo,
+        versao,
+        motor,
         year: f.anoModelo,
         type: pair.cand.tipo,
         fuel: f.combustivel,
@@ -249,11 +253,12 @@ async function recommendLegacy(briefing, log) {
       const pair = byId.get(t.candidatoId);
       if (!pair) return null;
       const f = pair.res.fipe;
+      const { versao, motor } = splitModelo(f.modelo);
       return {
         id: slugifyId(f.marca, f.modelo, f.anoModelo),
         rank: t.rank,
         fichaTecnica: t.fichaTecnica || {},
-        brand: f.marca, model: f.modelo, year: f.anoModelo,
+        brand: f.marca, model: f.modelo, versao, motor, year: f.anoModelo,
         type: tipoSlug(pair.cand.tipo),
         fuel: f.combustivel,
         price: f.precoTexto, priceN: f.preco,

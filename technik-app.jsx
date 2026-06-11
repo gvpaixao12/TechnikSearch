@@ -1391,7 +1391,8 @@ function CompareModal({ cars = [], onClose }) {
                 <CarPhoto brand={c.brand} model={c.model} year={c.year} type={c.type} rounded aspect="4 / 3" />
               </div>
               <div style={{ fontSize: 10, color: 'var(--tk-muted)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>{c.brand} · {c.year}</div>
-              <div style={{ fontFamily: 'Exo', fontWeight: 700, fontSize: 15, color: 'var(--tk-ink)', lineHeight: 1.2 }}>{c.model}</div>
+              <div style={{ fontFamily: 'Exo', fontWeight: 700, fontSize: 15, color: 'var(--tk-ink)', lineHeight: 1.2 }}>{c.versao || c.model}</div>
+              {c.motor && <div style={{ fontSize: 11, color: 'var(--tk-muted)', marginTop: 2 }}>{c.motor}</div>}
             </div>
           ))}
 
@@ -1476,7 +1477,8 @@ function CarCard({ car, rank, isComparing, onCompare, variant = 'editorial' }) {
       <div className="tk-cc" onClick={openGallery} title="Ver todas as fotos" style={{ borderRadius: 10, cursor: 'pointer' }}>
         <div style={{ padding: '14px 16px 0' }}>
           <div className="tk-cc__brand">{car.brand} · {car.year}</div>
-          <div className="tk-cc__model" style={{ fontSize: 18 }}>{car.model}</div>
+          <div className="tk-cc__model" style={{ fontSize: 18 }}>{car.versao || car.model}</div>
+          {car.motor && <div style={{ fontSize: 12, color: 'var(--tk-muted)', marginTop: 2 }}>{car.motor}</div>}
           <div style={{ height: 100, margin: '12px 0', overflow: 'hidden', borderRadius: 6 }}>
             <CarPhoto brand={car.brand} model={car.model} year={car.year} type={car.type} openSignal={openSignal} />
           </div>
@@ -1499,7 +1501,8 @@ function CarCard({ car, rank, isComparing, onCompare, variant = 'editorial' }) {
       </div>
       <div className="tk-cc__body">
         <div className="tk-cc__brand">{car.brand} · {car.year}</div>
-        <div className="tk-cc__model">{car.model}</div>
+        <div className="tk-cc__model">{car.versao || car.model}</div>
+        {car.motor && <div style={{ fontSize: 12, color: 'var(--tk-muted)', marginTop: 2 }}>{car.motor}</div>}
         <FichaTecnica ficha={car.fichaTecnica} />
       </div>
       <div className="tk-cc__foot">
