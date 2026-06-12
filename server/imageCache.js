@@ -373,6 +373,26 @@ function releaseBuildSlot() {
 // não dispara 5 builds — todas aguardam o mesmo build).
 const _inFlight = new Map();
 
+// Revalidações em background já disparadas. Cooldown em memória pra não re-disparar
+// a mesma key a cada page-load enquanto a anterior roda — ou se ela preservar a
+// heurística (visão aprovou <2 e mantém as fotos atuais sem flag `vision`).
+const _revalidateCooldown = new Map();
+const REVALIDATE_COOLDOWN_MS = 10 * 60 * 1000;
+
+// Dispara revalidateExisting sem bloquear (fire-and-forget). Usado pelo caminho
+// web: serve as fotos heurísticas que já temos NA HORA e deixa a visão limpar a
+// entrada pro próximo visitante. Portão de visão fica "eventualmente consistente".
+function scheduleRevalidate({ marca, modelo, ano, key, images }) {
+  if (_inFlight.has(key)) return;
+  const last = _revalidateCooldown.get(key) || 0;
+  if (Date.now() - last < REVALIDATE_COOLDOWN_MS) return;
+  _revalidateCooldown.set(key, Date.now());
+  const p = revalidateExisting({ marca, modelo, ano, key, images })
+    .catch(e => console.warn(`[revalida-bg] ${key}: ${e.message}`))
+    .finally(() => _inFlight.delete(key));
+  _inFlight.set(key, p);
+}
+
 // Uma entry é "vision-validada" se alguma das fotos foi marcada com `vision`.
 // (Flag persistido por foto dentro de `images`, já que não há coluna própria.)
 function isVisionValidated(cached) {
@@ -425,7 +445,7 @@ async function revalidateExisting({ marca, modelo, ano, key, images }) {
 // allowUpgrade: o caminho web (skipVision rápido) liga isso pra que o upgrade
 // vision rode em background na visita seguinte. O bg script deixa desligado
 // (não quer disparar vision pro catálogo inteiro).
-export async function getOrBuildImages({ marca, modelo, ano, skipVision = false, allowUpgrade = false }) {
+export async function getOrBuildImages({ marca, modelo, ano, skipVision = false, allowUpgrade = false, revalidateInBackground = false }) {
   if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
   const supabase = getSupabase();
   const key = makeKey({ marca, modelo, ano });
@@ -433,11 +453,16 @@ export async function getOrBuildImages({ marca, modelo, ano, skipVision = false,
   const cached = await readCache(supabase, key);
   if (cached) {
     const imgs = cached.images || [];
-    // Portão de visão: no caminho web (skipVision=false) só servimos fotos já
-    // aprovadas pela visão. Entrada heurística (sem flag `vision`) com fotos é
-    // RE-VALIDADA usando as fotos que já temos (sem nova busca → independe do
-    // Serper). Entradas vazias ou já-validadas voltam direto.
+    // Entradas vazias ou já-validadas na visão voltam direto.
     if (skipVision || isVisionValidated(cached) || imgs.length === 0) {
+      return { key, images: imgs, validated: !!cached.validated, cached: true };
+    }
+    // Entrada heurística com fotos. revalidateInBackground (caminho web): serve as
+    // fotos atuais NA HORA e revalida em background — sem delay no top. Sem a flag
+    // (script de bg): aguarda a revalidação, que limpa europeu/mão-inglesa/geração
+    // errada usando as fotos que já temos (sem nova busca → independe do Serper).
+    if (revalidateInBackground) {
+      scheduleRevalidate({ marca, modelo, ano, key, images: imgs });
       return { key, images: imgs, validated: !!cached.validated, cached: true };
     }
     if (_inFlight.has(key)) return _inFlight.get(key);

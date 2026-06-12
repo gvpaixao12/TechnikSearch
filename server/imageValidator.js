@@ -146,30 +146,39 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
   }
 }
 
-// Valida as 4 views. Retorna { front, rear, side, interior } com até
-// APPROVED_PER_VIEW[view] fotos. Como o modelo aceita ≤5 imagens/chamada,
-// lote os candidatos em grupos de MAX_IMAGES_PER_CALL e mescla as aprovadas até
-// o alvo da view. Se TPD/TPM estourar no meio, fica com o que já aprovou.
-export async function validateImages({ marca, modelo, ano, byView }) {
-  const out = { front: [], rear: [], side: [], interior: [] };
-  for (const view of ['front', 'rear', 'side', 'interior']) {
-    const target = APPROVED_PER_VIEW[view] || DEFAULT_APPROVED;
-    const candidates = (byView[view] || []).slice(0, MAX_CANDIDATES_TO_VALIDATE);
-    if (candidates.length === 0) continue;
+// Valida uma view: lote os candidatos em grupos de MAX_IMAGES_PER_CALL e mescla
+// as aprovadas até o alvo da view. Se TPD/TPM estourar no meio, fica com o que
+// já aprovou.
+async function validateView({ marca, modelo, ano, view, byView }) {
+  const target = APPROVED_PER_VIEW[view] || DEFAULT_APPROVED;
+  const candidates = (byView[view] || []).slice(0, MAX_CANDIDATES_TO_VALIDATE);
+  if (candidates.length === 0) return [];
 
-    const approved = [];
-    for (let start = 0; start < candidates.length && approved.length < target; start += MAX_IMAGES_PER_CALL) {
-      const batch = candidates.slice(start, start + MAX_IMAGES_PER_CALL);
-      const remaining = target - approved.length;
-      try {
-        const okIdx = await validateBatch({ marca, modelo, ano, view, images: batch, maxApproved: remaining });
-        for (const i of okIdx) approved.push(batch[i]);
-      } catch (e) {
-        console.warn(`[validator] ${view} lote (offset ${start}) falhou: ${e.message} — encerrando view`);
-        break; // TPD/TPM ou erro: preserva o que já foi aprovado
-      }
+  const approved = [];
+  for (let start = 0; start < candidates.length && approved.length < target; start += MAX_IMAGES_PER_CALL) {
+    const batch = candidates.slice(start, start + MAX_IMAGES_PER_CALL);
+    const remaining = target - approved.length;
+    try {
+      const okIdx = await validateBatch({ marca, modelo, ano, view, images: batch, maxApproved: remaining });
+      for (const i of okIdx) approved.push(batch[i]);
+    } catch (e) {
+      console.warn(`[validator] ${view} lote (offset ${start}) falhou: ${e.message} — encerrando view`);
+      break; // TPD/TPM ou erro: preserva o que já foi aprovado
     }
-    out[view] = approved.slice(0, target);
   }
+  return approved.slice(0, target);
+}
+
+// Valida as 4 views EM PARALELO. Retorna { front, rear, side, interior } com até
+// APPROVED_PER_VIEW[view] fotos. As views são independentes, então rodar em
+// paralelo corta a latência ~4x (o gpt-4o-mini não tem teto por minuto que
+// inviabilize isso). O semáforo de builds em imageCache limita o fan-out total.
+export async function validateImages({ marca, modelo, ano, byView }) {
+  const views = ['front', 'rear', 'side', 'interior'];
+  const results = await Promise.all(
+    views.map(view => validateView({ marca, modelo, ano, view, byView }))
+  );
+  const out = { front: [], rear: [], side: [], interior: [] };
+  views.forEach((v, i) => { out[v] = results[i]; });
   return out;
 }

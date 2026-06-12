@@ -227,6 +227,9 @@ app.get('/api/images/:marca/:modelo/:ano', async (req, res, next) => {
       modelo: req.params.modelo,
       ano,
       skipVision: false,
+      // Não bloqueia o card: entrada heurística é servida na hora e revalidada
+      // na visão em background pro próximo visitante (sem delay no top).
+      revalidateInBackground: true,
     });
     res.json(result);
   } catch (e) { next(e); }

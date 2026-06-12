@@ -1,23 +1,39 @@
 // Builda o cache de imagens em background, percorrendo o catálogo.
-// SEM vision (free tier da Groq não comporta) — usa heurísticas:
-//   - Commons > Serper
-//   - Blacklist de YouTube e títulos com palavras de review
-//   - Maior resolução primeiro
+//
+// Modo VISÃO (default agora que a visão é gpt-4o-mini, sem teto diário):
+//   valida cada foto com o LLM de visão e persiste a flag `vision`. Assim o
+//   caminho web nunca paga visão em runtime → fim do delay no top.
+// Modo HEURÍSTICO (--heuristic): sem LLM, só Commons>Serper + blacklist.
+//
+// Roda em paralelo com um pool de workers (--concurrency=N, default 4). O limite
+// real é o rate limit do Commons (429, com retry embutido) e o semáforo de builds
+// em imageCache. Carros que já têm fotos VALIDADAS na visão são pulados; os que só
+// têm heurística são re-validados (modo visão).
 //
 // Roda com:
-//   cd server && node scripts/build-images-background.js
+//   cd server && node scripts/build-images-background.js                 # visão, conc=4
+//   cd server && node scripts/build-images-background.js --concurrency=6
+//   cd server && node scripts/build-images-background.js --heuristic     # sem LLM
 //
-// Pode interromper com Ctrl+C — próxima execução pula os que já estão cacheados.
+// Pode interromper com Ctrl+C — termina os carros em voo e sai; a próxima execução
+// pula os que já estão prontos.
 
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 import { loadCatalog } from '../catalog.js';
 import { getOrBuildImages, makeKey, KEY_PREFIX } from '../imageCache.js';
 
-const SLEEP_MS = 2500;        // pausa entre carros — evita estourar Commons rate limit
+const ARGS = process.argv.slice(2);
+const PRUNE_OLD = ARGS.includes('--prune-old');
+const USE_VISION = !ARGS.includes('--heuristic');
+const CONCURRENCY = (() => {
+  const a = ARGS.find(x => x.startsWith('--concurrency='));
+  const n = a ? parseInt(a.split('=')[1], 10) : 4;
+  return Number.isFinite(n) && n > 0 ? n : 4;
+})();
+const STAGGER_MS = 300;       // atraso entre largadas de cada worker (suaviza Commons)
 const PROGRESS_EVERY = 10;    // print de resumo a cada N carros
 const BUCKET = 'car-images';
-const PRUNE_OLD = process.argv.slice(2).includes('--prune-old');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function fmtTime(ms) {
@@ -82,6 +98,7 @@ async function main() {
 
   if (PRUNE_OLD) await pruneOldVersions(supabase);
 
+  console.log(`[bg] modo ${USE_VISION ? 'VISÃO (gpt-4o-mini)' : 'HEURÍSTICO'} · concorrência ${CONCURRENCY}`);
   const catalog = await loadCatalog();
   console.log(`[bg] catálogo: ${catalog.entries.length} entries`);
 
@@ -96,9 +113,14 @@ async function main() {
   }
   console.log(`[bg] ${cars.length} carros com FIPE válido (deduplicado)`);
 
-  // Quais já têm cache COM FOTOS? (entradas vazias serão refeitas)
+  // Estado de cada key no cache:
+  //   - "pronto": tem fotos e (modo heurístico: basta ter foto; modo visão: tem
+  //     pelo menos 1 foto com flag `vision`) → pula.
+  //   - "heurístico": tem fotos mas nenhuma validada na visão → em modo visão
+  //     entra no todo pra ser revalidado; em modo heurístico já está pronto.
+  //   - "vazio": 0 fotos → apaga pra getOrBuildImages refazer.
   const allKeys = cars.map(c => makeKey({ marca: c.marca, modelo: c.modelo, ano: c.ano }));
-  const cachedKeysWithPhotos = new Set();
+  const doneKeys = new Set();
   const emptyKeys = [];
   // Supabase tem limite no .in() — quebra em chunks de 200
   for (let i = 0; i < allKeys.length; i += 200) {
@@ -109,9 +131,11 @@ async function main() {
       .in('key', chunk);
     if (error) { console.warn('[bg] erro lendo cache:', error.message); continue; }
     for (const row of (data || [])) {
-      const n = Array.isArray(row.images) ? row.images.length : 0;
-      if (n > 0) cachedKeysWithPhotos.add(row.key);
-      else emptyKeys.push(row.key);
+      const imgs = Array.isArray(row.images) ? row.images : [];
+      if (imgs.length === 0) { emptyKeys.push(row.key); continue; }
+      const visionOk = imgs.some(im => im && im.vision === true);
+      if (!USE_VISION || visionOk) doneKeys.add(row.key);
+      // modo visão + heurístico → fica de fora de doneKeys → entra no todo
     }
   }
 
@@ -125,52 +149,61 @@ async function main() {
     }
   }
 
-  const todo = cars.filter(c => !cachedKeysWithPhotos.has(makeKey({ marca: c.marca, modelo: c.modelo, ano: c.ano })));
-  console.log(`[bg] ${cachedKeysWithPhotos.size} já no cache com fotos, ${todo.length} pra construir\n`);
+  const todo = cars.filter(c => !doneKeys.has(makeKey({ marca: c.marca, modelo: c.modelo, ano: c.ano })));
+  console.log(`[bg] ${doneKeys.size} já prontos, ${todo.length} pra ${USE_VISION ? 'validar/construir' : 'construir'}\n`);
 
   if (todo.length === 0) { console.log('Nada a fazer.'); return; }
 
   const t0 = Date.now();
-  let ok = 0, fail = 0, withPhotos = 0, zeroPhotos = 0;
-  let lastReport = Date.now();
+  let ok = 0, fail = 0, withPhotos = 0, zeroPhotos = 0, processed = 0;
 
   // Handler de SIGINT pra resumir antes de sair
   let stop = false;
   process.on('SIGINT', () => {
-    console.log('\n[bg] Ctrl+C recebido, terminando após carro atual…');
+    console.log('\n[bg] Ctrl+C recebido, terminando os carros em voo…');
     stop = true;
   });
 
-  for (let i = 0; i < todo.length; i++) {
-    if (stop) break;
-    const c = todo[i];
-    const cs = Date.now();
-    try {
-      const r = await getOrBuildImages({
-        marca: c.marca,
-        modelo: c.modelo,
-        ano: c.ano,
-        skipVision: true,
-      });
-      const n = r.images?.length || 0;
-      if (n > 0) withPhotos++; else zeroPhotos++;
-      ok++;
-      console.log(`[bg ${String(i+1).padStart(4)}/${todo.length}] ${(c.marca+' '+c.modelo).slice(0, 50).padEnd(50)} ${c.ano}  ${String(n).padStart(2)} fotos · ${fmtTime(Date.now()-cs)}`);
-    } catch (e) {
-      fail++;
-      console.warn(`[bg ${String(i+1).padStart(4)}/${todo.length}] ${c.marca} ${c.modelo} ${c.ano} FAIL: ${e.message}`);
-    }
+  // Pool de workers: cada worker pega o próximo índice livre da fila. A
+  // concorrência fica capada também pelo semáforo de builds em imageCache.
+  let next = 0;
+  async function worker(workerId) {
+    // Largada escalonada pra não bater no Commons todos ao mesmo tempo.
+    await sleep(workerId * STAGGER_MS);
+    while (!stop) {
+      const i = next++;
+      if (i >= todo.length) break;
+      const c = todo[i];
+      const cs = Date.now();
+      try {
+        const r = await getOrBuildImages({
+          marca: c.marca,
+          modelo: c.modelo,
+          ano: c.ano,
+          skipVision: !USE_VISION,
+        });
+        const n = r.images?.length || 0;
+        if (n > 0) withPhotos++; else zeroPhotos++;
+        ok++;
+        console.log(`[bg ${String(i+1).padStart(4)}/${todo.length}] ${(c.marca+' '+c.modelo).slice(0, 50).padEnd(50)} ${c.ano}  ${String(n).padStart(2)} fotos · ${fmtTime(Date.now()-cs)}`);
+      } catch (e) {
+        fail++;
+        console.warn(`[bg ${String(i+1).padStart(4)}/${todo.length}] ${c.marca} ${c.modelo} ${c.ano} FAIL: ${e.message}`);
+      }
 
-    if ((i + 1) % PROGRESS_EVERY === 0) {
-      const elapsed = Date.now() - t0;
-      const avgMs = elapsed / (i + 1);
-      const remainingMs = Math.round(avgMs * (todo.length - i - 1));
-      console.log(`\n  ── progress: ${i+1}/${todo.length} · ${ok} ok (${withPhotos} c/ foto · ${zeroPhotos} vazios) · ${fail} fail · ETA ${fmtTime(remainingMs)}\n`);
-      lastReport = Date.now();
+      processed++;
+      if (processed % PROGRESS_EVERY === 0) {
+        const elapsed = Date.now() - t0;
+        const avgMs = elapsed / processed;
+        const remainingMs = Math.round(avgMs * (todo.length - processed));
+        console.log(`\n  ── progress: ${processed}/${todo.length} · ${ok} ok (${withPhotos} c/ foto · ${zeroPhotos} vazios) · ${fail} fail · ETA ${fmtTime(remainingMs)}\n`);
+      }
     }
-
-    if (i < todo.length - 1 && !stop) await sleep(SLEEP_MS);
   }
+
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, todo.length) }, (_, id) => worker(id))
+  );
 
   const elapsed = Date.now() - t0;
   console.log('\n' + '═'.repeat(78));
