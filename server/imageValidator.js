@@ -33,6 +33,24 @@ function getClient() {
   return _client;
 }
 
+// Teto GLOBAL de chamadas de visão simultâneas. Desacopla do nº de builds e de
+// views em paralelo — sem isso, builds×4 views estouram o TPM da conta (200k
+// tokens/min no tier 1 da OpenAI) e as views desistem com 429. Cada chamada
+// gasta ~2.2k tokens; com 2 em voo e a latência do LLM, fica ~90k/min, dentro do
+// teto. Suba VISION_CONCURRENCY se o tier da conta for maior.
+const VISION_CONCURRENCY = Number(process.env.VISION_CONCURRENCY) || 2;
+let _activeVision = 0;
+const _visionWaiters = [];
+function acquireVision() {
+  if (_activeVision < VISION_CONCURRENCY) { _activeVision++; return Promise.resolve(); }
+  return new Promise(resolve => _visionWaiters.push(resolve));
+}
+function releaseVision() {
+  _activeVision--;
+  const next = _visionWaiters.shift();
+  if (next) { _activeVision++; next(); }
+}
+
 const VIEW_LABEL = {
   front: 'frente (vista frontal externa)',
   rear: 'traseira (vista traseira externa)',
@@ -48,7 +66,7 @@ const DEFAULT_APPROVED = 4;
 // Teto de candidatos enviados ao vision por view (segura quota: ~2 lotes/view).
 const MAX_CANDIDATES_TO_VALIDATE = 10;
 
-async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3, retries = 2 }) {
+async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3, retries = 5 }) {
   if (images.length === 0) return [];
   const client = getClient();
   const cap = Math.min(maxApproved, images.length);
@@ -100,6 +118,7 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
   }
 
   let completion;
+  await acquireVision();
   try {
     completion = await client.chat.completions.create({
       model: VISION_MODEL,
@@ -111,26 +130,32 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
   } catch (e) {
     const msg = String(e.message || '');
     const is429 = /429|rate.limit|too many/i.test(msg);
-    const isTPD = /tokens per day|TPD/i.test(msg);
+    const isTPD = /tokens per day|TPD|requests per day|RPD/i.test(msg);
 
     // TPD esgotou → marca a sessão e desiste deste view.
     if (is429 && isTPD) {
-      const minMatch = msg.match(/(\d+)m/i);
+      const minMatch = msg.match(/(\d+)m(?!s)/i);
       const secMatch = msg.match(/(\d+(?:\.\d+)?)s/i);
       const totalSec = (minMatch ? parseInt(minMatch[1]) * 60 : 0) + (secMatch ? parseFloat(secMatch[1]) : 0);
       markTpdExhausted(totalSec || 3600);
       throw new Error('TPD esgotado');
     }
 
-    // TPM (por minuto) → aguarda o tempo que a Groq pediu e retenta.
+    // TPM (por minuto) → aguarda o tempo que a OpenAI pediu e retenta. A dica de
+    // espera pode vir em ms ("657ms") ou s ("1.2s"); cobre os dois.
     if (retries > 0 && is429) {
+      const msMatch = msg.match(/try again in (\d+(?:\.\d+)?)ms/i);
       const secMatch = msg.match(/try again in (\d+(?:\.\d+)?)s/i);
-      const waitMs = secMatch ? Math.ceil(parseFloat(secMatch[1]) * 1000) + 250 : 2500;
-      console.warn(`[validator] TPM 429 em ${view}, aguardando ${waitMs}ms`);
+      const waitMs = msMatch ? Math.ceil(parseFloat(msMatch[1])) + 300
+        : secMatch ? Math.ceil(parseFloat(secMatch[1]) * 1000) + 300
+        : 2000;
+      console.warn(`[validator] TPM 429 em ${view}, aguardando ${waitMs}ms (retries restantes: ${retries - 1})`);
       await new Promise(r => setTimeout(r, waitMs));
       return validateBatch({ marca, modelo, ano, view, images, maxApproved, retries: retries - 1 });
     }
     throw e;
+  } finally {
+    releaseVision();
   }
 
   const text = completion.choices?.[0]?.message?.content || '{}';
