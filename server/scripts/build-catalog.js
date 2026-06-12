@@ -10,7 +10,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getMarcas, getModelos, getAnos, getPreco } from '../fipe.js';
-import { classifyTipo, classifyFuel } from '../classify.js';
+import { classifyTipo, classifyFuel, isComercial } from '../classify.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = path.join(__dirname, '..', 'data');
@@ -162,6 +162,9 @@ async function main() {
     for (let bi = 0; bi < modelos.length; bi += BATCH) {
       const slice = modelos.slice(bi, bi + BATCH);
       const results = await Promise.all(slice.map(async md => {
+        // Pula comercial (caminhão/ônibus/furgão) — fora do escopo. Skip aqui
+        // economiza getAnos + getPreco do modelo inteiro.
+        if (isComercial(`${marca.nome} ${md.nome}`)) return [];
         let anos;
         try {
           anos = await withRetry(() => getAnos(marca.codigo, md.codigo), `getAnos ${marca.nome}/${md.nome}`);

@@ -191,6 +191,18 @@ const TYPE_RULES = [
   ]},
 ];
 
+// Veículos COMERCIAIS (caminhão, ônibus, furgão/van de carga) — fora do escopo
+// do negócio (carros de passeio + caminhonetes). O build pula estes e eles são
+// removidos do catálogo. Mira em nomes inequívocos de carga/transporte; NÃO casa
+// picape (Strada/Hilux CD/CS — "cabine"/"CD"/"CS" não estão aqui) nem MPV de
+// passeio (Spin, Zafira, Doblo passageiro). Ducato/Doblo só pelo sufixo "Cargo".
+const COMERCIAL_RE = /furg[ãa]o|\bvan\b|delivery|\bexpress\b|sprinter|ducato|\bdaily\b|\bmaster\b|\bboxer\b|jumper|crafter|\bkombi\b|\btransit\b|\btrafic\b|caminh|atego|accelo|\baxor\b|actros|constellation|\bworker\b|\btector\b|stralis|\bcargo\b|[ôo]nibus|volksbus|\bbus\b|chassi|marcopolo|\bof-?\d|\bo-?\d{3}/i;
+
+// Recebe `${marca} ${modelo}`. true = comercial (deve ficar fora do catálogo).
+export function isComercial(marcaModelo) {
+  return COMERCIAL_RE.test(marcaModelo || '');
+}
+
 // Separa a string de modelo da FIPE em { versao, motor }.
 // A FIPE entrega tudo grudado: "Grand Siena ESSENCE 1.6 Flex 16V" — onde
 // "Grand Siena ESSENCE" é a versão (modelo + acabamento/trim, que o comprador
