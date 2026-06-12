@@ -77,8 +77,12 @@ const TYPE_RULES = [
 
   // ─── COUPÉ / ESPORTIVO ─────────────────────────────────────────────────
   { type: 'coupe', patterns: [
-    /\bcoupe\b|\bcoupé\b/i, /\bcabriolet\b/i, /\bcabrio\b/i, /\bspyder\b/i, /\bconvertible\b/i,
-    /\bgran\s*coupe\b/i, /\bgrancoupe\b/i, /\bgran\s*coupé\b/i,
+    // coup[eé] sem \b final: o \b depois de "é" (não-ASCII) falha e deixava
+    // "135iA Coupé"/"428i Gran Coupé" caírem em unknown.
+    /\bcoup[eé]/i, /\bcabriolet\b/i, /\bcabrio\b/i, /\bspyder\b/i, /\bconvertible\b/i,
+    /\bgran\s*coup[eé]/i, /\bgrancoup[eé]/i,
+    // BMW 4/6/8-series (coupé/Gran Coupé/cabrio), número cru tipo "650iA"
+    /\b[468][2-9]\di/i,
     /\broadster\b/i, /\b z\d\b/i, /\bz4\b/i, /\bz3\b/i,
     // Esportivos clássicos (Mustang só o coupé tradicional — Mach-E é SUV elétrico, vai pra SUV)
     /\bmustang\b(?!\s*mach)/i, /\bcamaro\b/i, /\bchallenger\b/i, /\bcorvette\b/i,
@@ -128,8 +132,11 @@ const TYPE_RULES = [
     /\brs4\s+\d/i, /\brs4\s+avant/i,
     // Audi E-TRON GT (sedan elétrico 4p, 4 portas)
     /\be-tron\s+gt\b/i,
-    // BMW
-    /\bbmw\s*3[2-3]0i\b/i, /\b3[2-3]0i\b/i, /\bm340/i, /\bm550/i,
+    // BMW 3/5/7-series sedan — número cru tipo "320iA", "530i", "740iA", e os
+    // híbridos terminados em "e" ("330e", "530e"). 2º dígito [1-9] exclui o
+    // Fiat "500e" (2º dígito 0). Coupé já foi capturado pela regra de coupé.
+    /\b[357][1-9]\d[ie]/i,
+    /\bbmw\s*3[2-3]0i\b/i, /\bm340/i, /\bm550/i,
     /\bbmw\s*série\s*3\b/i, /\bbmw\s*serie\s*3\b/i,
     // Mercedes Classe C
     /\bc[ -]?1[8-9]0\b|\bc[ -]?2[0-3]0\b|\bc[ -]?3[0-3]0\b|\bc[ -]?4[03]\b/i,
@@ -157,6 +164,7 @@ const TYPE_RULES = [
     /\bhb20\b(?!s)/i, /\bi30\b/i, /\bveloster\b/i,
     /\bcity\s*hatch\b/i, /\bfit\b/i, /\bjazz\b/i,
     /\bargo\b/i, /\bmobi\b/i, /\bpalio\b/i, /\buno\b/i, /\bbravo\b/i, /\bpunto\b/i, /\bidea\b/i,
+    /\b500e\b/i, /\bfiat\s*500\b/i,  // Fiat 500 (cidade) — 500X/500L têm sufixo, não casam
     /\bclio\b/i, /\bsandero\b(?!\s*sed)/i, /\bkwid\b/i, /\bzoe\b/i,
     /\bmarch\b/i, /\bversa\s*hatch\b/i,
     /\b208\b/i, /\b207\b/i, /\b206\b/i, /\b308\b/i,
@@ -164,9 +172,10 @@ const TYPE_RULES = [
     /\byaris\b(?!\s*cross|\s*gr)/i, /\betios\b/i, /\bagya\b/i,
     /\brio\b(?!\s*sed)/i, /\bsoul\b/i, /\bpicanto\b/i,
     /\bcooper\b/i, /\bclubman\b/i,
-    // BMW Série 1 hatch
+    // BMW Série 1 hatch — número cru tipo "118iA", "120iA", "130iA" (o \b...i\b
+    // antigo falhava no sufixo "A"). 135i Coupé já vai pra coupé antes.
+    /\b1[1-4]\di/i,
     /\bbmw\s*1\b/i, /\bseries?\s*1\b/i, /\b1\s*series\b/i,
-    /\b118i\b/i, /\b120i\b/i, /\b125i\b/i, /\b135i\b/i, /\b140i\b/i,
     // Audi A1 / A3 hatch (Sportback é hatch 5p)
     /\baudi\s*a1\b/i, /\ba1\s*sportb/i,
     /\baudi\s*a3\b/i, /\ba3\s*sportb/i,
@@ -181,6 +190,8 @@ const TYPE_RULES = [
     /\btouran\b/i, /\bodyssey\b/i, /\bsienna\b/i, /\balphard\b/i,
     /\bjumpy\b/i, /\bexpert\b/i, /\bducato\b/i, /\bscudo\b/i,
     /\bmpv\b/i, /\bvan\b/i, /\bminibus\b/i,
+    // BMW 2-series Active/Gran Tourer (MPV compacto)
+    /active\s*tourer|gran\s*tourer/i,
   ]},
 
   // ─── FALLBACK: marcas esportivas puras → coupé ─────────────────────────
