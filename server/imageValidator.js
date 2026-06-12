@@ -25,6 +25,15 @@ function markTpdExhausted(seconds) {
   console.warn(`[validator] TPD esgotado por ${Math.round(ms/60000)} min — pulando validações até reset`);
 }
 
+// Disjuntor: se o rate limit virar uma parede (N chamadas 429 SEGUIDAS, sem
+// nenhum sucesso no meio), aborta de vez — não adianta martelar a noite toda
+// gerando carro com 0 foto. Qualquer chamada bem-sucedida zera o contador. O
+// passe de background checa isVisionAborted() e para o pool. Tunável por env.
+const ABORT_AFTER_429 = Number(process.env.VISION_ABORT_AFTER) || 10;
+let _consec429 = 0;
+let _visionAborted = false;
+export function isVisionAborted() { return _visionAborted; }
+
 let _client = null;
 function getClient() {
   if (_client) return _client;
@@ -112,7 +121,8 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
     })),
   ];
 
-  // Curto-circuito: se TPD já esgotou nesta sessão, nem chama Groq.
+  // Curto-circuito: TPD esgotado ou disjuntor de 429 disparado → nem chama.
+  if (_visionAborted) throw new Error('visão abortada (muitos 429) — pulando');
   if (isTpdExhausted()) {
     throw new Error('TPD esgotado — pulando validação');
   }
@@ -141,6 +151,16 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
       throw new Error('TPD esgotado');
     }
 
+    // Disjuntor: 429 seguidos demais → para tudo (o bg checa isVisionAborted()).
+    if (is429) {
+      _consec429++;
+      if (_consec429 >= ABORT_AFTER_429) {
+        _visionAborted = true;
+        console.error(`[validator] ⛔ ${_consec429} 429 SEGUIDOS — abortando a visão (rate limit virou parede)`);
+        throw new Error('visão abortada: muitos 429 seguidos');
+      }
+    }
+
     // TPM (por minuto) → aguarda o tempo que a OpenAI pediu e retenta. A dica de
     // espera pode vir em ms ("657ms") ou s ("1.2s"); cobre os dois.
     if (retries > 0 && is429) {
@@ -157,6 +177,9 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
   } finally {
     releaseVision();
   }
+
+  // Sucesso: zera a contagem de 429 seguidos.
+  _consec429 = 0;
 
   const text = completion.choices?.[0]?.message?.content || '{}';
   try {

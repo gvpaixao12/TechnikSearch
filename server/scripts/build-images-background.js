@@ -22,6 +22,7 @@ import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 import { loadCatalog } from '../catalog.js';
 import { getOrBuildImages, makeKey, KEY_PREFIX } from '../imageCache.js';
+import { isVisionAborted } from '../imageValidator.js';
 
 const ARGS = process.argv.slice(2);
 const PRUNE_OLD = ARGS.includes('--prune-old');
@@ -171,6 +172,12 @@ async function main() {
     // Largada escalonada pra não bater no Commons todos ao mesmo tempo.
     await sleep(workerId * STAGGER_MS);
     while (!stop) {
+      // Disjuntor: 429 da OpenAI virou parede → para o pool inteiro.
+      if (isVisionAborted()) {
+        if (!stop) console.error('\n[bg] ⛔ ABORTADO: muitos 429 seguidos da OpenAI (rate limit). Parando o passe — rode de novo mais tarde (pula o que já ficou pronto).');
+        stop = true;
+        break;
+      }
       const i = next++;
       if (i >= todo.length) break;
       const c = todo[i];
@@ -210,7 +217,8 @@ async function main() {
   console.log(`Total processado: ${ok + fail}/${todo.length} · ${fmtTime(elapsed)}`);
   console.log(`OK: ${ok}  (${withPhotos} c/ foto · ${zeroPhotos} vazios)`);
   console.log(`Falhou: ${fail}`);
-  if (stop) console.log('Interrompido pelo usuário.');
+  if (isVisionAborted()) console.log('⛔ ABORTADO pelo disjuntor de 429 (rate limit). Rode de novo mais tarde.');
+  else if (stop) console.log('Interrompido pelo usuário.');
 }
 
 main().catch(e => {
