@@ -68,8 +68,9 @@ function parseAnoFromCode(code) {
   return Number.isFinite(y) ? y : null;
 }
 
-// Rate limiter global: max 3 requests/segundo (FIPE Parallelum limita ~5 req/s, deixa margem)
-const RATE_INTERVAL_MS = 1500;
+// Rate limiter global. Padrão 1500ms; afrouxa em builds grandes via FIPE_RATE_MS
+// (ex.: FIPE_RATE_MS=4000) pra reduzir o risco de ban por volume acumulado.
+const RATE_INTERVAL_MS = parseInt(process.env.FIPE_RATE_MS || '', 10) || 1500;
 let lastRequestAt = 0;
 async function rateLimit() {
   const now = Date.now();

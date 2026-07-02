@@ -94,6 +94,276 @@ export function getSupabase() {
   return _supabase;
 }
 
+// Lista todas as entradas do cache de imagens — o "catálogo no Supabase". Cada
+// linha é um marca/modelo/ano com suas fotos já cacheadas. Usado pela aba
+// Ajustes → Catálogo pra ver o que está cadastrado e o que tem/não tem foto.
+// Pagina de 1000 em 1000 (limite do PostgREST) por segurança.
+export async function listCachedCars() {
+  const supabase = getSupabase();
+  const PAGE = 1000;
+  const rows = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('car_images_cache')
+      .select('key, marca, modelo, ano, images, validated, expires_at')
+      .order('marca', { ascending: true })
+      .order('modelo', { ascending: true })
+      .order('ano', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(error.message);
+    if (!data || data.length === 0) break;
+    rows.push(...data);
+    if (data.length < PAGE) break;
+  }
+  const now = new Date();
+  return rows.map(r => ({
+    key: r.key,
+    marca: r.marca,
+    modelo: r.modelo,
+    ano: r.ano,
+    photoCount: Array.isArray(r.images) ? r.images.length : 0,
+    views: viewCounts(r.images),
+    validated: !!r.validated,
+    expired: r.expires_at ? new Date(r.expires_at) < now : false,
+  }));
+}
+
+// As 4 vistas que compõem uma galeria completa.
+export const VIEW_KEYS = ['front', 'rear', 'side', 'interior'];
+
+// Conta quantas fotos existem por vista. Serve pra saber o que está completo
+// (as 4 vistas com foto) e o que está incompleto (tem foto, mas falta vista).
+export function viewCounts(images) {
+  const out = { front: 0, rear: 0, side: 0, interior: 0 };
+  for (const im of (Array.isArray(images) ? images : [])) {
+    if (im && out[im.view] !== undefined) out[im.view]++;
+  }
+  return out;
+}
+
+// Converte um data URL (base64, vindo do upload manual) em Buffer. Aceita só
+// imagens; devolve null se não bater o formato ou passar do teto de tamanho.
+const MANUAL_MAX_BYTES = 25 * 1024 * 1024; // 25 MB por foto (será redimensionada)
+function dataUrlToBuffer(dataUrl) {
+  if (typeof dataUrl !== 'string') return null;
+  const m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(dataUrl.trim());
+  if (!m) return null;
+  try {
+    const buf = Buffer.from(m[2], 'base64');
+    if (buf.length === 0 || buf.length > MANUAL_MAX_BYTES) return null;
+    return buf;
+  } catch { return null; }
+}
+
+// Lê a linha crua do cache (mesmo expirada) — pra fazer merge com fotos já
+// existentes no upload manual sem descartá-las por TTL.
+async function readCacheRow(supabase, key) {
+  const { data } = await supabase
+    .from('car_images_cache')
+    .select('*')
+    .eq('key', key)
+    .maybeSingle();
+  return data || null;
+}
+
+// Insere fotos manuais (upload do usuário) direto no bucket + índice, SEM passar
+// pela visão — inserção manual é confiada. Faz merge com o que já existe na
+// entrada e marca cada foto com view:'manual'/manual:true pra distinguir das
+// buscadas. Renova o TTL como entrada validada.
+export async function addManualImages({ marca, modelo, ano, dataUrls, view }) {
+  if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
+  if (!Array.isArray(dataUrls) || dataUrls.length === 0) throw new Error('nenhuma imagem enviada');
+  if (!VIEW_KEYS.includes(view)) throw new Error(`vista inválida: use ${VIEW_KEYS.join(', ')}`);
+  const supabase = getSupabase();
+  const key = makeKey({ marca, modelo, ano });
+
+  const existing = await readCacheRow(supabase, key);
+  const current = Array.isArray(existing?.images) ? existing.images : [];
+  // idx continua a numeração de arquivos já existentes NESTA vista (front-01,
+  // front-02…) pra não sobrescrever fotos anteriores da mesma vista.
+  let idx = current.filter(im => im && im.view === view).length;
+
+  const uploaded = [];
+  for (const dataUrl of dataUrls) {
+    const buffer = dataUrlToBuffer(dataUrl);
+    if (!buffer) continue;
+    try {
+      const publicUrl = await uploadOne({ supabase, key, view, idx, buffer });
+      uploaded.push({ url: publicUrl, view, sourcePage: null, vision: false, manual: true });
+      idx++;
+    } catch (e) {
+      console.warn(`[manual] upload ${key} ${view} #${idx}: ${e.message}`);
+    }
+  }
+  if (uploaded.length === 0) throw new Error('nenhuma imagem válida no upload (formato ou tamanho)');
+
+  const images = [...current, ...uploaded];
+  const validated = images.length >= 2;
+  await writeCache(supabase, {
+    key, marca, modelo, ano, images, validated,
+    expires_at: new Date(Date.now() + TTL_VALIDATED_DAYS * 86400_000).toISOString(),
+  });
+  console.log(`[manual] ${key}: +${uploaded.length} foto(s) manuais em '${view}' (total ${images.length})`);
+  return { key, added: uploaded.length, photoCount: images.length, views: viewCounts(images), validated };
+}
+
+// Deriva o caminho no bucket a partir da URL pública
+// (…/object/public/car-images/<path>). Usado pra excluir o arquivo certo.
+function storagePathFromUrl(url) {
+  const marker = `/object/public/${BUCKET}/`;
+  const i = String(url || '').indexOf(marker);
+  return i >= 0 ? decodeURIComponent(String(url).slice(i + marker.length)) : null;
+}
+
+// Remove os objetos do bucket sob a pasta da key (usado na varredura full).
+// `keepPaths` preserva fotos favoritadas — elas não são apagadas no refazer.
+async function deleteKeyObjects(supabase, key, keepPaths = []) {
+  const { data: listed } = await supabase.storage.from(BUCKET).list(key);
+  if (listed && listed.length) {
+    const keep = new Set(keepPaths);
+    const toRemove = listed.map(o => `${key}/${o.name}`).filter(p => !keep.has(p));
+    if (toRemove.length) await supabase.storage.from(BUCKET).remove(toRemove);
+  }
+}
+
+// Marca/desmarca uma foto como favorita. Favorita = protegida da varredura
+// completa (não é apagada no refazer). Preserva o resto do registro.
+export async function setPhotoFavorite({ marca, modelo, ano, url, favorite }) {
+  if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
+  if (!url) throw new Error('url da foto é obrigatória');
+  const supabase = getSupabase();
+  const key = makeKey({ marca, modelo, ano });
+  const row = await readCacheRow(supabase, key);
+  const images = Array.isArray(row?.images) ? row.images : [];
+  if (!images.some(im => im.url === url)) throw new Error('foto não encontrada nesse carro');
+  const next = images.map(im => im.url === url ? { ...im, favorite: !!favorite } : im);
+  const ttlDays = next.length >= 2 ? TTL_VALIDATED_DAYS : TTL_FAILED_DAYS;
+  await writeCache(supabase, {
+    key, marca, modelo, ano, images: next, validated: next.length >= 2,
+    expires_at: new Date(Date.now() + ttlDays * 86400_000).toISOString(),
+  });
+  return { key, images: next, photoCount: next.length, views: viewCounts(next), validated: next.length >= 2 };
+}
+
+// Lê as fotos atuais de um carro (galeria), pra exibir/gerenciar na tela de Ajustes.
+export async function getCarPhotos({ marca, modelo, ano }) {
+  if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
+  const supabase = getSupabase();
+  const key = makeKey({ marca, modelo, ano });
+  const row = await readCacheRow(supabase, key);
+  const images = Array.isArray(row?.images) ? row.images : [];
+  return { key, images, photoCount: images.length, views: viewCounts(images), validated: !!row?.validated };
+}
+
+// Exclui UMA foto específica de um carro (por URL): remove do bucket e do índice.
+export async function deleteCarPhoto({ marca, modelo, ano, url }) {
+  if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
+  if (!url) throw new Error('url da foto é obrigatória');
+  const supabase = getSupabase();
+  const key = makeKey({ marca, modelo, ano });
+  const row = await readCacheRow(supabase, key);
+  const images = Array.isArray(row?.images) ? row.images : [];
+  if (!images.some(im => im.url === url)) throw new Error('foto não encontrada nesse carro');
+
+  const path = storagePathFromUrl(url);
+  if (path) {
+    const { error } = await supabase.storage.from(BUCKET).remove([path]);
+    if (error) console.warn(`[delete-photo] ${key}: bucket remove falhou (${error.message}) — segue removendo do índice`);
+  }
+  const remaining = images.filter(im => im.url !== url);
+  const validated = remaining.length >= 2;
+  const ttlDays = remaining.length > 0 ? TTL_VALIDATED_DAYS : TTL_FAILED_DAYS;
+  await writeCache(supabase, {
+    key, marca, modelo, ano, images: remaining, validated,
+    expires_at: new Date(Date.now() + ttlDays * 86400_000).toISOString(),
+  });
+  console.log(`[delete-photo] ${key}: 1 removida (restam ${remaining.length})`);
+  return { key, images: remaining, photoCount: remaining.length, views: viewCounts(remaining), validated };
+}
+
+// Rebuild com IA (portão de visão) de um carro específico:
+//   scope 'full'    → apaga TUDO desse carro (bucket + índice) e refaz as 4 vistas.
+//   scope 'missing' → busca só as vistas sem foto e faz merge com as existentes.
+export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', onProgress = () => {} }) {
+  if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
+  onProgress({ stage: 'queue' });
+  await acquireBuildSlot();
+  try {
+    const supabase = getSupabase();
+    const key = makeKey({ marca, modelo, ano });
+    const allViews = ['front', 'rear', 'side', 'interior'];
+
+    let targetViews = allViews;
+    let existingImages = [];
+    let favorited = []; // fotos protegidas na varredura completa (com estrela)
+    if (scope === 'missing') {
+      const row = await readCacheRow(supabase, key);
+      existingImages = Array.isArray(row?.images) ? row.images : [];
+      const counts = viewCounts(existingImages);
+      targetViews = allViews.filter(v => (counts[v] || 0) === 0);
+      if (targetViews.length === 0) {
+        return { key, images: existingImages, photoCount: existingImages.length, views: viewCounts(existingImages), validated: existingImages.length >= 2, added: 0, scope };
+      }
+    } else {
+      // full: apaga o acervo antes de refazer, MAS preserva as fotos favoritadas.
+      const row = await readCacheRow(supabase, key);
+      const prev = Array.isArray(row?.images) ? row.images : [];
+      favorited = prev.filter(im => im && im.favorite);
+      const keepPaths = favorited.map(im => storagePathFromUrl(im.url)).filter(Boolean);
+      await deleteKeyObjects(supabase, key, keepPaths);
+    }
+
+    // Nos uploads da varredura completa, o idx tem que começar DEPOIS do maior
+    // índice já ocupado por um favorito na mesma vista, senão o upsert sobrescreve
+    // o arquivo preservado (nomes são `<vista>-NN.webp`).
+    const startIdx = { front: 0, rear: 0, side: 0, interior: 0 };
+    for (const im of favorited) {
+      const m = (storagePathFromUrl(im.url) || '').match(/-(\d+)\.webp$/i);
+      if (m && startIdx[im.view] !== undefined) startIdx[im.view] = Math.max(startIdx[im.view], parseInt(m[1], 10));
+    }
+
+    onProgress({ stage: 'search' });
+    const byViewRaw = await searchByView({ marca, modelo, ano, rich: true });
+    onProgress({ stage: 'download' });
+    const byView = await downloadByView(byViewRaw, targetViews);
+    const totalCand = targetViews.reduce((s, v) => s + (byView[v]?.length || 0), 0);
+
+    let approved = { front: [], rear: [], side: [], interior: [] };
+    if (totalCand > 0) {
+      onProgress({ stage: 'validate' });
+      approved = await validateImages({ marca, modelo, ano, byView });
+    }
+
+    onProgress({ stage: 'upload' });
+    const uploaded = [];
+    for (const view of targetViews) {
+      let idx = scope === 'full' ? (startIdx[view] || 0) : 0;
+      for (const img of (approved[view] || [])) {
+        try {
+          const publicUrl = await uploadOne({ supabase, key, view, idx, buffer: img.buffer });
+          uploaded.push({ url: publicUrl, view, sourcePage: img.page || null, vision: true });
+          idx++;
+        } catch (e) {
+          console.warn(`[rebuild] ${key} ${view}#${idx}: ${e.message}`);
+        }
+      }
+    }
+
+    // full preserva as favoritas; missing faz merge com tudo que já existia.
+    const images = scope === 'missing' ? [...existingImages, ...uploaded] : [...favorited, ...uploaded];
+    const validated = images.length >= 2;
+    const ttlDays = validated ? TTL_VALIDATED_DAYS : TTL_FAILED_DAYS;
+    await writeCache(supabase, {
+      key, marca, modelo, ano, images, validated,
+      expires_at: new Date(Date.now() + ttlDays * 86400_000).toISOString(),
+    });
+    console.log(`[rebuild] ${key}: scope=${scope} +${uploaded.length} (total ${images.length})`);
+    return { key, images, photoCount: images.length, views: viewCounts(images), validated, added: uploaded.length, scope };
+  } finally {
+    releaseBuildSlot();
+  }
+}
+
 function slug(s) {
   return String(s || '').toLowerCase()
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -445,12 +715,14 @@ async function revalidateExisting({ marca, modelo, ano, key, images }) {
 // allowUpgrade: o caminho web (skipVision rápido) liga isso pra que o upgrade
 // vision rode em background na visita seguinte. O bg script deixa desligado
 // (não quer disparar vision pro catálogo inteiro).
-export async function getOrBuildImages({ marca, modelo, ano, skipVision = false, allowUpgrade = false, revalidateInBackground = false }) {
+export async function getOrBuildImages({ marca, modelo, ano, skipVision = false, allowUpgrade = false, revalidateInBackground = false, force = false }) {
   if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
   const supabase = getSupabase();
   const key = makeKey({ marca, modelo, ano });
 
-  const cached = await readCache(supabase, key);
+  // force: ignora o cache e reconstrói do zero (usado pelo "Buscar com IA" da
+  // tela de Ajustes — inclusive pra reprocessar entradas que estão sem foto).
+  const cached = force ? null : await readCache(supabase, key);
   if (cached) {
     const imgs = cached.images || [];
     // Entradas vazias ou já-validadas na visão voltam direto.

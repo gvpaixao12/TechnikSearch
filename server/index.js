@@ -12,13 +12,30 @@ import { runCurator } from './agents.js';
 import { normalizeBriefing } from './briefing.js';
 import { recommend } from './recommend.js';
 import { loadCatalog, clearCatalogCache } from './catalog.js';
-import { getOrBuildImages } from './imageCache.js';
+import { getOrBuildImages, listCachedCars, addManualImages, rebuildCarImages, getCarPhotos, deleteCarPhoto, setPhotoFavorite } from './imageCache.js';
 import { saveConsulta, listConsultas, getConsulta, getStats } from './history.js';
 import { saveRascunho, listRascunhos, getRascunho, deleteRascunho } from './rascunhos.js';
 import { spawn } from 'node:child_process';
 
 const app = express();
 app.use(cors());
+
+// Upload manual de fotos (base64): precisa de body grande. Parser dedicado,
+// registrado ANTES do parser global de 1mb pra não esbarrar no limite. Como o
+// handler responde e não chama next(), o parser global nunca roda nesta rota.
+app.post('/api/supabase/cars/manual-photos', express.json({ limit: '40mb' }), async (req, res) => {
+  try {
+    const { marca, modelo, ano, images, view } = req.body || {};
+    if (!marca || !modelo || !ano) {
+      return res.status(400).json({ ok: false, reason: 'marca, modelo e ano são obrigatórios' });
+    }
+    const result = await addManualImages({ marca, modelo, ano: Number(ano), dataUrls: images, view });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(400).json({ ok: false, reason: e.message });
+  }
+});
+
 app.use(express.json({ limit: '1mb' }));
 
 app.use(express.static(FRONTEND_DIR));
@@ -211,6 +228,112 @@ app.post('/api/catalog/rebuild-from-cache', async (_req, res) => {
       tipos: c.stats?.tipos || {},
     });
   });
+});
+
+// Catálogo no Supabase: lista tudo que está cadastrado no cache de imagens,
+// com contagem de fotos por carro. Alimenta a aba Ajustes → Catálogo.
+app.get('/api/supabase/cars', async (_req, res) => {
+  try {
+    res.json({ ok: true, cars: await listCachedCars() });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+// "Buscar com IA" pra um carro específico, com o portão de visão. Bloqueante
+// (~10-30s). scope: 'missing' (só as vistas sem foto, mantém o resto) ou 'full'
+// (apaga tudo e refaz do zero). marca/modelo no body pra evitar "/" na URL.
+app.post('/api/supabase/cars/fetch-ai', async (req, res) => {
+  try {
+    const { marca, modelo, ano, scope } = req.body || {};
+    if (!marca || !modelo || !ano) {
+      return res.status(400).json({ ok: false, reason: 'marca, modelo e ano são obrigatórios' });
+    }
+    const result = await rebuildCarImages({
+      marca, modelo, ano: Number(ano), scope: scope === 'missing' ? 'missing' : 'full',
+    });
+    res.json({ ok: true, key: result.key, photoCount: result.photoCount, views: result.views, added: result.added, validated: result.validated });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+// Versão SSE do fetch-ai: mesma busca, mas emite os estágios (queue → search →
+// download → validate → upload → done) ao vivo pro cliente desenhar a barra de
+// progresso. EventSource só faz GET, então os params vêm na query. O POST acima
+// continua existindo como fallback (uma única resposta, sem progresso).
+app.get('/api/supabase/cars/fetch-ai-stream', async (req, res) => {
+  const { marca, modelo, ano, scope } = req.query || {};
+  if (!marca || !modelo || !ano) {
+    return res.status(400).json({ ok: false, reason: 'marca, modelo e ano são obrigatórios' });
+  }
+  res.set({
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no', // nginx: não buffera SSE
+  });
+  res.flushHeaders?.();
+  const send = (event, data) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+  // Ping periódico: mantém a conexão viva através de proxies com idle timeout.
+  const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch {} }, 15000);
+  // Se o cliente desistir (fechou a aba/tray), paramos de tentar escrever.
+  let aborted = false;
+  req.on('close', () => { aborted = true; });
+  try {
+    const result = await rebuildCarImages({
+      marca, modelo, ano: Number(ano), scope: scope === 'missing' ? 'missing' : 'full',
+      onProgress: (p) => { if (!aborted) send('progress', p); },
+    });
+    if (!aborted) send('done', { ok: true, key: result.key, photoCount: result.photoCount, views: result.views, added: result.added, validated: result.validated });
+  } catch (e) {
+    if (!aborted) send('error', { ok: false, reason: e.message });
+  } finally {
+    clearInterval(ping);
+    res.end();
+  }
+});
+
+// Fotos atuais de um carro (galeria) pra exibir/gerenciar na tela de Ajustes.
+app.post('/api/supabase/cars/photos', async (req, res) => {
+  try {
+    const { marca, modelo, ano } = req.body || {};
+    if (!marca || !modelo || !ano) {
+      return res.status(400).json({ ok: false, reason: 'marca, modelo e ano são obrigatórios' });
+    }
+    res.json({ ok: true, ...(await getCarPhotos({ marca, modelo, ano: Number(ano) })) });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+// Exclui uma foto específica (por URL) de um carro.
+app.post('/api/supabase/cars/delete-photo', async (req, res) => {
+  try {
+    const { marca, modelo, ano, url } = req.body || {};
+    if (!marca || !modelo || !ano || !url) {
+      return res.status(400).json({ ok: false, reason: 'marca, modelo, ano e url são obrigatórios' });
+    }
+    res.json({ ok: true, ...(await deleteCarPhoto({ marca, modelo, ano: Number(ano), url })) });
+  } catch (e) {
+    res.status(400).json({ ok: false, reason: e.message });
+  }
+});
+
+// Marca/desmarca uma foto como favorita (protegida da varredura completa).
+app.post('/api/supabase/cars/favorite-photo', async (req, res) => {
+  try {
+    const { marca, modelo, ano, url, favorite } = req.body || {};
+    if (!marca || !modelo || !ano || !url) {
+      return res.status(400).json({ ok: false, reason: 'marca, modelo, ano e url são obrigatórios' });
+    }
+    res.json({ ok: true, ...(await setPhotoFavorite({ marca, modelo, ano: Number(ano), url, favorite })) });
+  } catch (e) {
+    res.status(400).json({ ok: false, reason: e.message });
+  }
 });
 
 // Imagens dos modelos: busca + valida + cacheia no Supabase.

@@ -29,6 +29,47 @@ const BUDGET_MIN = 50;
 const BUDGET_MAX = 5000;        // teto do campo (R$ 5 mi); no talo = "sem teto"
 const BUDGET_SLIDER_BASE = 600; // teto padrão da barra (cresce se digitar mais)
 
+// Reverte o briefing NORMALIZADO (rótulos em pt-BR de server/briefing.js) de volta
+// pro formato de formulário (códigos). Usado ao reabrir uma consulta do histórico
+// e clicar em "Editar briefing" — a consulta só guarda o briefing normalizado,
+// não o form cru. Mantenha em sincronia com os *_LABELS de server/briefing.js.
+const LABEL_TO_TYPE = {
+  'Hatch': 'hatch', 'Sedã': 'sedan', 'SUV': 'suv',
+  'Picape': 'pickup', 'Coupé': 'coupe', 'Minivan': 'minivan',
+};
+const LABEL_TO_FUEL = {
+  'Flex': 'flex', 'Gasolina': 'gas', 'Diesel': 'diesel',
+  'Híbrido': 'hybrid', 'Híbrido plug-in': 'plugin', 'Elétrico': 'electric',
+};
+const LABEL_TO_LIFESTYLE = {
+  'família': 'family', 'uso urbano': 'urban', 'viagens longas': 'travel',
+  'trabalho/carga': 'work', 'estradas de terra/off-road': 'offroad', 'uso esportivo': 'sport',
+};
+const LABEL_TO_PRIORITY = {
+  'segurança': 'safety', 'conforto': 'comfort', 'economia de combustível': 'economy',
+  'conectividade/tecnologia': 'tech', 'design': 'design', 'valor de revenda': 'resale',
+};
+
+function briefingToForm(b = {}, client) {
+  const rev = (list, dict) => (Array.isArray(list) ? list.map(s => dict[s]).filter(Boolean) : []);
+  const orc = b.orcamentoReais || {};
+  const min = Number.isFinite(orc.min) ? Math.round(orc.min / 1000) : BUDGET_MIN;
+  const max = orc.max == null ? BUDGET_MAX : Math.round(orc.max / 1000);
+  return {
+    client: client || { name: '', segment: '' },
+    budget: [min, max],
+    seats: b.lugaresMin ?? 5, seatsAny: b.lugaresMin == null,
+    trunk: b.portaMalasMinL ?? 420, trunkAny: b.portaMalasMinL == null,
+    yearMin: b.anoMin ?? 2005,
+    yearMax: b.anoMax ?? 2025, yearMaxAny: b.anoMax == null,
+    types: rev(b.tiposDesejados, LABEL_TO_TYPE),
+    fuels: rev(b.combustiveisAceitos, LABEL_TO_FUEL),
+    lifestyle: rev(b.estiloDeVida, LABEL_TO_LIFESTYLE),
+    priorities: rev(b.prioridades, LABEL_TO_PRIORITY),
+    notes: b.observacoes || '', notesAny: !b.observacoes,
+  };
+}
+
 function App() {
   const [t, setTweak] = useTweaks(/*EDITMODE-BEGIN*/{
     "darkMode": false,
@@ -166,7 +207,10 @@ function App() {
       const j = await r.json();
       if (!j.ok) throw new Error(j.reason || 'Falha ao abrir consulta');
       const c = j.consulta;
-      setClient({ name: c.client_name || '', segment: c.client_segment || '' });
+      const client = { name: c.client_name || '', segment: c.client_segment || '' };
+      // Repopula o formulário a partir do briefing salvo, pra que "Editar
+      // briefing" abra a tela já preenchida com o que o cliente pediu.
+      applyForm(briefingToForm(c.briefing || {}, client));
       setRecommendation({ top: c.top || [], briefing: c.briefing, diagnostico: c.diagnostico });
       setLoadError(null);
       setDraftId(null);
@@ -274,19 +318,21 @@ function App() {
           <div className="tk-topbar__title">
             <span className="tk-eyebrow">
               {activeNav === 'history' && 'Atendimentos salvos'}
-              {activeNav !== 'history' && stage === 'form' && 'Nova consulta · etapa 1/2'}
-              {activeNav !== 'history' && stage === 'loading' && 'Calculando recomendações'}
-              {activeNav !== 'history' && stage === 'results' && 'Recomendações · entrega ao cliente'}
+              {activeNav === 'settings' && 'Configurações'}
+              {activeNav === 'new' && stage === 'form' && 'Nova consulta · etapa 1/2'}
+              {activeNav === 'new' && stage === 'loading' && 'Calculando recomendações'}
+              {activeNav === 'new' && stage === 'results' && 'Recomendações · entrega ao cliente'}
             </span>
             <h1>
               {activeNav === 'history' && 'Histórico de consultas'}
-              {activeNav !== 'history' && stage === 'form' && 'Briefing do perfil'}
-              {activeNav !== 'history' && stage === 'loading' && 'Cruzando catálogo'}
-              {activeNav !== 'history' && stage === 'results' && `Top 10 para ${client.name.split(' ')[0]}`}
+              {activeNav === 'settings' && 'Ajustes'}
+              {activeNav === 'new' && stage === 'form' && 'Briefing do perfil'}
+              {activeNav === 'new' && stage === 'loading' && 'Cruzando catálogo'}
+              {activeNav === 'new' && stage === 'results' && `Top 10 para ${client.name.split(' ')[0]}`}
             </h1>
           </div>
           <div className="tk-topbar__actions">
-            {activeNav !== 'history' && stage === 'form' && (
+            {activeNav === 'new' && stage === 'form' && (
               <>
                 <button className="tk-btn tk-btn-ghost" onClick={saveDraft}
                   disabled={draftState === 'saving'}
@@ -305,7 +351,7 @@ function App() {
                 </button>
               </>
             )}
-            {activeNav !== 'history' && stage === 'results' && (
+            {activeNav === 'new' && stage === 'results' && (
               <>
                 <button className="tk-btn tk-btn-ghost" onClick={() => setStage('form')}>← Editar briefing</button>
               </>
@@ -315,6 +361,8 @@ function App() {
 
         {activeNav === 'history' ? (
           <HistoryView onOpen={openConsulta} onNew={() => handleNav('new')} onResumeDraft={resumeDraft} />
+        ) : activeNav === 'settings' ? (
+          <SettingsView />
         ) : (
           <>
         {stage === 'form' && (
@@ -477,6 +525,796 @@ function CatalogPanel() {
         </>
       )}
     </div>
+  );
+}
+
+// ─── SETTINGS ─────────────────────────────────────────────────
+// Tela de Ajustes com abas. Cada aba é uma área de configuração diferente;
+// por enquanto só "Catálogo no Supabase" (lista o que está cadastrado no cache
+// de imagens). Novas abas entram em SETTINGS_TABS + no switch de conteúdo.
+const SETTINGS_TABS = [
+  { id: 'catalog', label: 'Catálogo no Supabase' },
+];
+
+function SettingsView() {
+  const [tab, setTab] = useState('catalog');
+
+  return (
+    <div className="tk-results tk-scroll">
+      <div className="tk-results__hero" style={{ display: 'block' }}>
+        <span className="tk-eyebrow">Ajustes</span>
+        <h1>Configurações</h1>
+        <p>Área de administração da Technik. Comece pelo catálogo cadastrado no Supabase.</p>
+      </div>
+
+      {/* Abas */}
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--tk-line)', marginBottom: 24 }}>
+        {SETTINGS_TABS.map(t => (
+          <button key={t.id}
+            onClick={() => setTab(t.id)}
+            style={{
+              padding: '10px 16px', border: 'none', background: 'none',
+              cursor: 'pointer', font: 'inherit', fontSize: 14, fontWeight: 600,
+              color: tab === t.id ? 'var(--tk-primary)' : 'var(--tk-muted)',
+              borderBottom: tab === t.id ? '2px solid var(--tk-primary)' : '2px solid transparent',
+              marginBottom: -1,
+            }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'catalog' && <SupabaseCatalogTab />}
+    </div>
+  );
+}
+
+// Estágios macro da busca com IA (backend emite via SSE) → rótulo + % da barra.
+// Ordem: fila → busca → download → validação → upload → (done = 100%).
+const AI_STAGES = {
+  queue:    { pct: 8,  label: 'Na fila…' },
+  search:   { pct: 25, label: 'Buscando fotos…' },
+  download: { pct: 45, label: 'Baixando candidatos…' },
+  validate: { pct: 70, label: 'Validando com visão…' },
+  upload:   { pct: 90, label: 'Subindo aprovadas…' },
+};
+
+// Barrinha de progresso reutilizável (modal + bandeja de tarefas).
+function ProgressBar({ pct, label, tone = 'run', compact = false }) {
+  const fill = tone === 'err' ? '#c0392b' : tone === 'warn' ? 'var(--tk-accent)' : tone === 'ok' ? '#1a7a4a' : 'var(--tk-primary)';
+  return (
+    <div style={{ width: '100%' }}>
+      {label && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: compact ? 11 : 12, color: 'var(--tk-secondary)', marginBottom: 4 }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+          <span style={{ fontFamily: 'var(--tk-font-mono)', flexShrink: 0, marginLeft: 8 }}>{Math.round(pct)}%</span>
+        </div>
+      )}
+      <div style={{ height: compact ? 5 : 7, borderRadius: 999, background: 'var(--tk-bg-2)', overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: `${Math.max(0, Math.min(100, pct))}%`, background: fill, borderRadius: 999, transition: 'width .45s ease' }} />
+      </div>
+    </div>
+  );
+}
+
+// As 4 vistas que compõem uma galeria completa + helpers de status por carro.
+const PHOTO_VIEWS = [
+  { id: 'front', label: 'Frente' },
+  { id: 'rear', label: 'Traseira' },
+  { id: 'side', label: 'Lateral' },
+  { id: 'interior', label: 'Interior' },
+];
+function viewsPresent(views) {
+  return PHOTO_VIEWS.filter(pv => (views?.[pv.id] || 0) > 0).length;
+}
+function missingViews(views) {
+  return PHOTO_VIEWS.filter(pv => !((views?.[pv.id] || 0) > 0));
+}
+// Conta fotos por vista a partir da lista de imagens (client-side).
+function countViews(images) {
+  const o = { front: 0, rear: 0, side: 0, interior: 0 };
+  (images || []).forEach(im => { if (im && o[im.view] !== undefined) o[im.view]++; });
+  return o;
+}
+// 'without' (0 fotos) | 'incomplete' (tem foto, falta vista) | 'complete' (4 vistas)
+function carStatus(car) {
+  if (!car.photoCount) return 'without';
+  return viewsPresent(car.views) >= PHOTO_VIEWS.length ? 'complete' : 'incomplete';
+}
+
+// ─── ABA: CATÁLOGO NO SUPABASE ────────────────────────────────
+// Lista tudo que está cadastrado no cache de imagens (car_images_cache),
+// agrupado por marca → modelo → versões (ano). Mostra quem tem foto completa,
+// incompleta (falta alguma vista) ou nenhuma.
+function SupabaseCatalogTab() {
+  const [state, setState] = useState({ loading: true, error: null, cars: [] });
+  const [query, setQuery] = useState('');
+  const [photoFilter, setPhotoFilter] = useState('all'); // 'all' | 'complete' | 'incomplete' | 'without'
+  const [expanded, setExpanded] = useState({}); // { [marca]: true }
+  const [selected, setSelected] = useState(null); // carro aberto no modal de fotos
+  // Tarefas de busca com IA em segundo plano. Vivem AQUI (acima do modal) pra
+  // sobreviver ao fechar do modal — o usuário acompanha pela bandeja.
+  const [tasks, setTasks] = useState([]);
+  const esRef = React.useRef({}); // id da tarefa → EventSource aberto
+
+  // Fecha todos os streams ao desmontar (troca de aba/tela).
+  useEffect(() => () => {
+    Object.values(esRef.current).forEach(es => { try { es.close(); } catch {} });
+    esRef.current = {};
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ loading: true, error: null, cars: [] });
+    fetch(`${API_BASE}/api/supabase/cars`)
+      .then(r => r.json())
+      .then(j => {
+        if (cancelled) return;
+        if (!j.ok) throw new Error(j.reason || 'Falha ao carregar catálogo');
+        setState({ loading: false, error: null, cars: j.cars || [] });
+      })
+      .catch(e => { if (!cancelled) setState({ loading: false, error: e.message, cars: [] }); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const q = query.trim().toLowerCase();
+
+  // Agrupa: marca → modelo → [versões]. Aplica o filtro de busca por marca/modelo.
+  const grouped = useMemo(() => {
+    const brands = {};
+    for (const car of state.cars) {
+      if (q && !`${car.marca} ${car.modelo}`.toLowerCase().includes(q)) continue;
+      if (photoFilter !== 'all' && carStatus(car) !== photoFilter) continue;
+      const marca = car.marca || '—';
+      const modelo = car.modelo || '—';
+      if (!brands[marca]) brands[marca] = {};
+      if (!brands[marca][modelo]) brands[marca][modelo] = [];
+      brands[marca][modelo].push(car);
+    }
+    return Object.entries(brands)
+      .sort((a, b) => a[0].localeCompare(b[0], 'pt-BR'))
+      .map(([marca, models]) => {
+        const modelList = Object.entries(models)
+          .sort((a, b) => a[0].localeCompare(b[0], 'pt-BR'))
+          .map(([modelo, versions]) => ({
+            modelo,
+            versions: versions.slice().sort((a, b) => (a.ano || 0) - (b.ano || 0)),
+          }));
+        const cars = modelList.reduce((n, m) => n + m.versions.length, 0);
+        const complete = modelList.reduce((n, m) => n + m.versions.filter(v => carStatus(v) === 'complete').length, 0);
+        return { marca, models: modelList, cars, complete };
+      });
+  }, [state.cars, q, photoFilter]);
+
+  // Estatísticas globais (sobre o total, não sobre o filtro).
+  const stats = useMemo(() => {
+    let complete = 0, incomplete = 0, without = 0;
+    for (const c of state.cars) {
+      const s = carStatus(c);
+      if (s === 'complete') complete++;
+      else if (s === 'incomplete') incomplete++;
+      else without++;
+    }
+    const brands = new Set(state.cars.map(c => c.marca)).size;
+    return { total: state.cars.length, complete, incomplete, without, brands };
+  }, [state.cars]);
+
+  // Busca ou filtro de foto ativo → marcas começam abertas (mas dá pra fechar
+  // cada uma). Sem filtro → começam fechadas. `expanded` guarda só os overrides
+  // manuais do usuário; ao mudar busca/filtro, zeramos pra valer o novo default.
+  const defaultOpen = !!q || photoFilter !== 'all';
+  useEffect(() => { setExpanded({}); }, [q, photoFilter]);
+
+  function toggleBrand(marca) {
+    setExpanded(e => {
+      const cur = marca in e ? e[marca] : defaultOpen;
+      return { ...e, [marca]: !cur };
+    });
+  }
+
+  // Atualiza um carro na lista depois de buscar/inserir foto, pra o chip refletir
+  // o novo total na hora (e sair do filtro "sem foto", se for o caso).
+  function updateCar(key, patch) {
+    setState(s => ({ ...s, cars: s.cars.map(c => c.key === key ? { ...c, ...patch } : c) }));
+    setSelected(sel => sel && sel.key === key ? { ...sel, ...patch } : sel);
+  }
+
+  // Dispara uma busca com IA em segundo plano via SSE. A tarefa aparece na
+  // bandeja e progride sozinha; o modal pode ser fechado sem interromper.
+  function startPhotoTask(car, scope) {
+    const key = car.key;
+    // Um carro por vez: se já há tarefa rodando pra ele, ignora o clique.
+    if (tasks.some(t => t.key === key && t.status === 'running')) return;
+    const id = `${key}:${Date.now()}`;
+    const title = `${car.marca} ${car.modelo} · ${car.ano}`;
+    // Substitui qualquer resultado antigo do MESMO carro (mantém 1 cartão por carro).
+    setTasks(ts => [
+      ...ts.filter(t => t.key !== key),
+      { id, key, title, scope, stage: 'queue', pct: AI_STAGES.queue.pct, status: 'running', msg: null },
+    ]);
+
+    const params = new URLSearchParams({ marca: car.marca, modelo: car.modelo, ano: car.ano, scope });
+    const es = new EventSource(`${API_BASE}/api/supabase/cars/fetch-ai-stream?${params}`);
+    esRef.current[id] = es;
+    const cleanup = () => { try { es.close(); } catch {} delete esRef.current[id]; };
+
+    es.addEventListener('progress', (e) => {
+      try {
+        const { stage } = JSON.parse(e.data);
+        const ui = AI_STAGES[stage];
+        if (ui) setTasks(ts => ts.map(t => t.id === id ? { ...t, stage, pct: ui.pct } : t));
+      } catch {}
+    });
+    es.addEventListener('done', (e) => {
+      cleanup();
+      let j = {}; try { j = JSON.parse(e.data); } catch {}
+      const added = j.added != null ? j.added : j.photoCount;
+      const gotSomething = scope === 'full' ? j.photoCount > 0 : added > 0;
+      const msg = gotSomething
+        ? { tone: 'ok', text: scope === 'full'
+            ? `Refeito: ${j.photoCount} foto${j.photoCount !== 1 ? 's' : ''} validada${j.photoCount !== 1 ? 's' : ''}.`
+            : `Completou (+${added}). Total ${j.photoCount}.` }
+        : { tone: 'warn', text: 'Não achou foto boa o suficiente. Tente inserir manualmente.' };
+      setTasks(ts => ts.map(t => t.id === id ? { ...t, status: gotSomething ? 'done' : 'warn', pct: 100, msg } : t));
+      updateCar(key, { photoCount: j.photoCount, views: j.views, validated: j.validated });
+    });
+    es.addEventListener('error', (e) => {
+      // Evento nomeado do servidor traz .data; erro de conexão nativo não.
+      let text = 'Conexão perdida com o servidor.';
+      if (e && e.data) { try { text = JSON.parse(e.data).reason || text; } catch {} }
+      cleanup();
+      // Só marca erro se a tarefa ainda estava rodando (não sobrescreve um 'done').
+      setTasks(ts => ts.map(t => (t.id === id && t.status === 'running')
+        ? { ...t, status: 'error', msg: { tone: 'err', text } } : t));
+    });
+  }
+
+  function dismissTask(id) {
+    const es = esRef.current[id];
+    if (es) { try { es.close(); } catch {} delete esRef.current[id]; }
+    setTasks(ts => ts.filter(t => t.id !== id));
+  }
+
+  if (state.loading) {
+    return <div className="tk-help" style={{ padding: '28px 4px' }}>Carregando catálogo do Supabase…</div>;
+  }
+
+  if (state.error) {
+    return (
+      <div className="tk-help" style={{ padding: '20px 4px', maxWidth: 620 }}>
+        <div style={{ color: 'var(--tk-accent)', fontWeight: 600, marginBottom: 6 }}>Catálogo indisponível</div>
+        <div><strong>Detalhe:</strong> {state.error}</div>
+        <div style={{ marginTop: 8, fontSize: 13 }}>
+          Confirme que a tabela <code>car_images_cache</code> existe no Supabase e que o backend
+          tem <code>SUPABASE_URL</code>/<code>SUPABASE_SERVICE_KEY</code> no <code>.env</code>.
+        </div>
+      </div>
+    );
+  }
+
+  // Pill de resumo. Se receber `filter`, vira botão que liga/desliga aquele
+  // filtro de foto (clicar de novo volta pra "todos"). O pill ativo fica destacado.
+  const badge = (label, value, filter) => {
+    const active = filter && photoFilter === filter;
+    const clickable = !!filter;
+    return (
+      <button
+        type="button"
+        className="tk-results__pill"
+        onClick={clickable ? () => setPhotoFilter(f => f === filter ? 'all' : filter) : undefined}
+        style={{
+          border: 'none',
+          cursor: clickable ? 'pointer' : 'default',
+          background: active ? 'var(--tk-primary)' : 'var(--tk-bg-2)',
+          color: active ? '#fff' : 'var(--tk-ink)',
+          opacity: clickable ? 1 : 0.85,
+        }}>
+        {value} {label}
+      </button>
+    );
+  };
+
+  return (
+    <div>
+      {/* Resumo — pills de status filtram ao clicar; "carros" reseta */}
+      <div className="tk-results__pills" style={{ marginTop: 0, marginBottom: 18 }}>
+        {badge('carros', stats.total, 'all')}
+        {badge('marcas', stats.brands)}
+        {badge('completos', stats.complete, 'complete')}
+        {badge('incompletos', stats.incomplete, 'incomplete')}
+        {badge('sem foto', stats.without, 'without')}
+      </div>
+
+      {/* Busca */}
+      <div style={{ position: 'relative', maxWidth: 420, marginBottom: 18 }}>
+        <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--tk-muted)', display: 'flex', pointerEvents: 'none' }}>
+          <Icon.Search />
+        </span>
+        <input
+          type="text"
+          className="tk-input"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Escape') setQuery(''); }}
+          placeholder="Filtrar por marca ou modelo…"
+          style={{ paddingLeft: 38, paddingRight: query ? 34 : 14 }}
+        />
+        {query && (
+          <button onClick={() => setQuery('')} title="Limpar filtro"
+            style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', width: 22, height: 22, borderRadius: '50%', border: 'none', background: 'var(--tk-bg-3)', color: 'var(--tk-ink)', cursor: 'pointer', fontSize: 15, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
+        )}
+      </div>
+
+      {grouped.length === 0 ? (
+        <div className="tk-help" style={{ padding: '28px 4px' }}>
+          {state.cars.length === 0
+            ? 'Nenhum carro cadastrado no Supabase ainda.'
+            : q
+            ? <>Nenhuma marca/modelo corresponde a “<strong>{query.trim()}</strong>”.</>
+            : photoFilter === 'complete'
+            ? 'Nenhum carro com a galeria completa ainda.'
+            : photoFilter === 'incomplete'
+            ? 'Nenhum carro incompleto. 🎉'
+            : photoFilter === 'without'
+            ? 'Todos os carros têm ao menos uma foto. 🎉'
+            : 'Nenhum carro encontrado.'}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {grouped.map(brand => {
+            const open = brand.marca in expanded ? expanded[brand.marca] : defaultOpen;
+            return (
+              <div key={brand.marca} style={{ border: '1px solid var(--tk-line)', borderRadius: 12, overflow: 'hidden', background: 'var(--tk-bg)' }}>
+                {/* Cabeçalho da marca */}
+                <button onClick={() => toggleBrand(brand.marca)}
+                  style={{
+                    width: '100%', display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 12, alignItems: 'center',
+                    padding: '14px 16px', border: 'none', background: 'var(--tk-bg-2)', cursor: 'pointer',
+                    font: 'inherit', color: 'var(--tk-ink)', textAlign: 'left',
+                  }}>
+                  <span style={{ display: 'inline-flex', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s ease', color: 'var(--tk-muted)' }}>
+                    <Icon.ChevronRight />
+                  </span>
+                  <span style={{ fontWeight: 700, fontSize: 16, letterSpacing: '-0.01em' }}>{brand.marca}</span>
+                  <span style={{ display: 'flex', gap: 6, alignItems: 'center', fontFamily: 'var(--tk-font-mono)', fontSize: 11, color: 'var(--tk-muted)' }}>
+                    {brand.models.length} modelo{brand.models.length !== 1 ? 's' : ''} · {brand.cars} carro{brand.cars !== 1 ? 's' : ''}
+                    <span style={{ color: brand.complete === brand.cars ? '#1a7a4a' : 'var(--tk-muted)' }}>· {brand.complete}/{brand.cars} completos</span>
+                  </span>
+                </button>
+
+                {/* Modelos + versões */}
+                {open && (
+                  <div style={{ padding: '6px 16px 12px 44px' }}>
+                    {brand.models.map(m => (
+                      <div key={m.modelo} style={{ padding: '10px 0', borderBottom: '1px solid var(--tk-line)' }}>
+                        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6, color: 'var(--tk-ink)' }}>{m.modelo}</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {m.versions.map(v => {
+                            const status = carStatus(v);
+                            const miss = missingViews(v.views);
+                            const dot = status === 'complete' ? '#1a7a4a' : status === 'incomplete' ? '#c98a1a' : 'var(--tk-line-2)';
+                            const text = status === 'without'
+                              ? 'sem foto'
+                              : status === 'complete'
+                              ? `${v.photoCount} fotos · completo`
+                              : `${v.photoCount} foto${v.photoCount !== 1 ? 's' : ''} · falta ${miss.length === 1 ? miss[0].label.toLowerCase() : miss.length + ' vistas'}`;
+                            const title = status === 'complete'
+                              ? 'Galeria completa (frente, traseira, lateral, interior)'
+                              : status === 'incomplete'
+                              ? 'Falta: ' + miss.map(m2 => m2.label).join(', ')
+                              : 'Sem nenhuma foto';
+                            return (
+                              <button key={v.key} onClick={() => setSelected(v)} title={title}
+                                style={{
+                                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                                  padding: '4px 10px', borderRadius: 999, fontSize: 12,
+                                  border: '1px solid var(--tk-line-2)', cursor: 'pointer',
+                                  background: v.photoCount > 0 ? 'var(--tk-bg-2)' : 'transparent',
+                                  color: 'var(--tk-ink)', opacity: v.expired ? 0.55 : 1,
+                                  fontFamily: 'var(--tk-font)',
+                                }}>
+                                <span style={{ fontFamily: 'var(--tk-font-mono)', fontWeight: 600 }}>{v.ano}</span>
+                                <span style={{ width: 6, height: 6, borderRadius: '50%', background: dot }} />
+                                <span style={{ color: 'var(--tk-muted)', fontSize: 11 }}>{text}</span>
+                                <Icon.Camera width={13} height={13} style={{ color: 'var(--tk-muted)', marginLeft: 1 }} />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {selected && (
+        <CarPhotoModal
+          car={selected}
+          onClose={() => setSelected(null)}
+          onUpdated={updateCar}
+          task={tasks.find(t => t.key === selected.key) || null}
+          onStartTask={(scope) => startPhotoTask(selected, scope)}
+        />
+      )}
+
+      <TaskTray
+        tasks={tasks}
+        onDismiss={dismissTask}
+        onOpen={(key) => setSelected(state.cars.find(c => c.key === key) || null)}
+      />
+    </div>
+  );
+}
+
+// ─── CONFIRMAÇÃO (no estilo do projeto, não o confirm() do browser) ──────
+function ConfirmDialog({ title, message, confirmLabel = 'Confirmar', cancelLabel = 'Cancelar', danger = false, onConfirm, onCancel }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  return ReactDOM.createPortal(
+    <div onClick={onCancel} style={{
+      position: 'fixed', inset: 0, zIndex: 1000000,
+      background: 'rgba(10,10,25,0.55)', backdropFilter: 'blur(3px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--tk-bg)', borderRadius: 16, width: '100%', maxWidth: 400,
+        boxShadow: '0 40px 120px rgba(0,0,0,0.4)', overflow: 'hidden',
+      }}>
+        <div style={{ padding: '20px 22px' }}>
+          {title && <div style={{ fontFamily: 'var(--tk-font)', fontWeight: 700, fontSize: 17, color: 'var(--tk-ink)', marginBottom: 6 }}>{title}</div>}
+          <div style={{ fontSize: 14, color: 'var(--tk-secondary)', lineHeight: 1.5 }}>{message}</div>
+        </div>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', padding: '0 22px 20px' }}>
+          <button className="tk-btn tk-btn-ghost" onClick={onCancel}>{cancelLabel}</button>
+          <button className="tk-btn tk-btn-primary" onClick={onConfirm}
+            style={danger ? { background: '#c0392b', borderColor: '#c0392b', color: '#fff' } : undefined}>
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// ─── BANDEJA DE TAREFAS (canto superior direito) ──────────────
+// Mostra as buscas com IA rodando em segundo plano. O usuário pode fechar o
+// modal e continuar mexendo; cada tarefa guarda o desfecho (ok / não achou foto
+// boa / erro) pra ele ler depois e decidir. Clicar numa tarefa reabre o carro.
+function TaskTray({ tasks, onDismiss, onOpen }) {
+  if (!tasks || tasks.length === 0) return null;
+  const running = tasks.filter(t => t.status === 'running').length;
+  return ReactDOM.createPortal(
+    <div style={{
+      position: 'fixed', top: 16, right: 16, zIndex: 1000001,
+      width: 320, maxWidth: 'calc(100vw - 32px)', display: 'flex', flexDirection: 'column', gap: 8,
+    }}>
+      {tasks.map(t => {
+        const done = t.status !== 'running';
+        const tone = t.status === 'error' ? 'err' : t.status === 'warn' ? 'warn' : t.status === 'done' ? 'ok' : 'run';
+        const ui = AI_STAGES[t.stage] || { label: 'Trabalhando…' };
+        return (
+          <div key={t.id} style={{
+            background: 'var(--tk-bg)', border: '1px solid var(--tk-line)', borderRadius: 12,
+            boxShadow: '0 12px 40px rgba(0,0,0,0.18)', padding: '12px 14px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: done ? 4 : 8 }}>
+              <button onClick={() => onOpen(t.key)} title="Abrir este carro"
+                style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left', minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tk-ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
+                <div style={{ fontSize: 10, color: 'var(--tk-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                  {t.scope === 'full' ? 'varredura completa' : 'completar vistas'}
+                </div>
+              </button>
+              {done && (
+                <button onClick={() => onDismiss(t.id)} aria-label="Dispensar"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tk-muted)', fontSize: 16, lineHeight: 1, padding: 2, flexShrink: 0 }}>×</button>
+              )}
+            </div>
+            {done
+              ? <div style={{ fontSize: 12.5, fontWeight: 500, color: tone === 'err' ? '#c0392b' : tone === 'warn' ? 'var(--tk-accent)' : '#1a7a4a' }}>{t.msg?.text || (t.status === 'done' ? 'Concluído.' : '')}</div>
+              : <ProgressBar pct={t.pct} label={ui.label} tone="run" compact />}
+          </div>
+        );
+      })}
+      {running > 0 && (
+        <div style={{ fontSize: 10, color: 'var(--tk-muted)', textAlign: 'right', paddingRight: 4 }}>
+          {running} tarefa{running !== 1 ? 's' : ''} em andamento
+        </div>
+      )}
+    </div>,
+    document.body
+  );
+}
+
+// ─── MODAL: FOTOS DE UM CARRO ─────────────────────────────────
+// Por carro: buscar com IA (completa OU só as vistas que faltam), inserir foto
+// manual por vista, e remover foto específica. Mostra a galeria atual agrupada
+// por vista com botão de excluir em cada foto.
+function CarPhotoModal({ car, onClose, onUpdated, task, onStartTask }) {
+  const [busy, setBusy] = useState(null); // 'upload' | 'delete' | null (a IA roda como tarefa em segundo plano)
+  const [msg, setMsg] = useState(null);   // { tone: 'ok'|'warn'|'err', text }
+  const [view, setView] = useState('front'); // vista da foto no upload manual
+  const [aiChoosing, setAiChoosing] = useState(false); // mostrando escopo da IA?
+  const [photos, setPhotos] = useState(null); // null = carregando; array = carregado
+  const [confirm, setConfirm] = useState(null); // diálogo de confirmação pendente
+  const fileRef = React.useRef(null);
+
+  const post = (path, body) => fetch(`${API_BASE}${path}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ marca: car.marca, modelo: car.modelo, ano: car.ano, ...body }),
+  }).then(async r => { const j = await r.json(); if (!r.ok || !j.ok) throw new Error(j.reason || `HTTP ${r.status}`); return j; });
+
+  async function loadPhotos() {
+    try { const j = await post('/api/supabase/cars/photos'); setPhotos(j.images || []); }
+    catch { setPhotos([]); }
+  }
+  useEffect(() => { loadPhotos(); }, [car.key]);
+
+  // Quando a tarefa de IA deste carro termina (com o modal aberto), recarrega a
+  // galeria pra mostrar as fotos novas na hora.
+  const taskStatus = task?.status;
+  useEffect(() => {
+    if (taskStatus && taskStatus !== 'running') loadPhotos();
+  }, [taskStatus]);
+  const aiRunning = taskStatus === 'running';
+  const anyBusy = !!busy || aiRunning;
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !busy) onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [busy]);
+
+  // Contagens ao vivo: a partir das fotos carregadas (fonte da verdade após
+  // qualquer mutação); cai pro que veio na lista enquanto carrega.
+  const liveViews = photos ? countViews(photos) : (car.views || {});
+  const missCount = missingViews(liveViews).length;
+
+  // Dispara a busca como tarefa em segundo plano (roda na bandeja; o modal pode
+  // ser fechado). O progresso e o desfecho vêm pela prop `task`.
+  function runAI(scope) {
+    setAiChoosing(false); setMsg(null);
+    if (scope === 'full') {
+      setConfirm({
+        title: 'Varredura completa',
+        message: 'Isso apaga TODAS as fotos atuais deste carro (inclusive as inseridas manualmente) e refaz a busca do zero. Deseja continuar?',
+        confirmLabel: 'Apagar e refazer',
+        danger: true,
+        onConfirm: () => onStartTask('full'),
+      });
+      return;
+    }
+    onStartTask('missing');
+  }
+
+  function readAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = () => reject(new Error('não consegui ler ' + file.name));
+      fr.readAsDataURL(file);
+    });
+  }
+
+  async function onFilesChosen(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (files.length === 0) return;
+    setBusy('upload'); setMsg(null);
+    try {
+      const images = await Promise.all(files.map(readAsDataUrl));
+      const j = await post('/api/supabase/cars/manual-photos', { images, view });
+      onUpdated(car.key, { photoCount: j.photoCount, views: j.views, validated: j.validated });
+      await loadPhotos();
+      const viewLabel = (PHOTO_VIEWS.find(pv => pv.id === view) || {}).label || view;
+      setMsg({ tone: 'ok', text: `${j.added} foto${j.added !== 1 ? 's' : ''} de ${viewLabel.toLowerCase()} adicionada${j.added !== 1 ? 's' : ''} (total ${j.photoCount}).` });
+    } catch (e) {
+      setMsg({ tone: 'err', text: 'Falha no upload: ' + e.message });
+    } finally { setBusy(null); }
+  }
+
+  function deletePhoto(url) {
+    setConfirm({
+      message: 'Excluir esta foto?',
+      confirmLabel: 'Excluir',
+      danger: true,
+      onConfirm: () => doDeletePhoto(url),
+    });
+  }
+
+  async function doDeletePhoto(url) {
+    setBusy('delete'); setMsg(null);
+    try {
+      const j = await post('/api/supabase/cars/delete-photo', { url });
+      onUpdated(car.key, { photoCount: j.photoCount, views: j.views, validated: j.validated });
+      setPhotos(j.images || []);
+      setMsg({ tone: 'ok', text: 'Foto removida.' });
+    } catch (e) {
+      setMsg({ tone: 'err', text: 'Falha ao remover: ' + e.message });
+    } finally { setBusy(null); }
+  }
+
+  // Favoritar/desfavoritar: foto com estrela não é apagada na varredura completa.
+  // Atualização otimista da galeria; reverte se o backend falhar.
+  async function toggleFavorite(url, favorite) {
+    setPhotos(ps => (ps || []).map(p => p.url === url ? { ...p, favorite } : p));
+    try {
+      const j = await post('/api/supabase/cars/favorite-photo', { url, favorite });
+      setPhotos(j.images || []);
+    } catch (e) {
+      setPhotos(ps => (ps || []).map(p => p.url === url ? { ...p, favorite: !favorite } : p));
+      setMsg({ tone: 'err', text: 'Falha ao favoritar: ' + e.message });
+    }
+  }
+
+  const toneColor = { ok: '#1a7a4a', warn: 'var(--tk-accent)', err: '#c0392b' };
+
+  return (
+    <>
+    {ReactDOM.createPortal(
+    <div onClick={() => { if (!busy) onClose(); }} style={{
+      position: 'fixed', inset: 0, zIndex: 999999,
+      background: 'rgba(10,10,25,0.55)', backdropFilter: 'blur(3px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--tk-bg)', borderRadius: 16, width: '100%', maxWidth: 480,
+        maxHeight: '88vh', display: 'flex', flexDirection: 'column',
+        boxShadow: '0 40px 120px rgba(0,0,0,0.4)', overflow: 'hidden',
+      }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '18px 20px', borderBottom: '1px solid var(--tk-line)', flexShrink: 0 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 10, color: 'var(--tk-muted)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>
+              {car.marca} · {car.ano}
+            </div>
+            <div style={{ fontFamily: 'var(--tk-font)', fontWeight: 700, fontSize: 17, color: 'var(--tk-ink)', lineHeight: 1.2 }}>{car.modelo}</div>
+            {(() => {
+              const liveCount = photos ? photos.length : car.photoCount;
+              const status = !liveCount ? 'without' : (missingViews(liveViews).length === 0 ? 'complete' : 'incomplete');
+              const miss = missingViews(liveViews);
+              const color = status === 'complete' ? '#1a7a4a' : status === 'incomplete' ? '#c98a1a' : 'var(--tk-muted)';
+              const text = status === 'without'
+                ? 'sem foto no momento'
+                : status === 'complete'
+                ? `galeria completa · ${liveCount} foto${liveCount !== 1 ? 's' : ''}`
+                : `${liveCount} foto${liveCount !== 1 ? 's' : ''} · falta ${miss.map(m => m.label.toLowerCase()).join(', ')}`;
+              return <div style={{ marginTop: 4, fontSize: 12, color }}>{text}</div>;
+            })()}
+          </div>
+          <button onClick={() => { if (!busy) onClose(); }} aria-label="Fechar"
+            style={{ width: 34, height: 34, flexShrink: 0, borderRadius: '50%', border: 'none', background: 'var(--tk-bg-2)', color: 'var(--tk-ink)', fontSize: 20, cursor: busy ? 'not-allowed' : 'pointer', lineHeight: 1 }}>×</button>
+        </div>
+
+        {/* Corpo rolável */}
+        <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto' }}>
+          {/* Buscar com IA — escolhe escopo */}
+          {aiRunning ? (
+            <div style={{ padding: '12px 14px', border: '1px solid var(--tk-line)', borderRadius: 10, background: 'var(--tk-bg-2)' }}>
+              <ProgressBar pct={task.pct} label={(AI_STAGES[task.stage] || {}).label || 'Trabalhando…'} tone="run" />
+              <div className="tk-help" style={{ fontSize: 11, marginTop: 8 }}>
+                Pode fechar — a busca continua na bandeja do canto.
+              </div>
+            </div>
+          ) : !aiChoosing ? (
+            <button onClick={() => setAiChoosing(true)} disabled={!!busy}
+              className="tk-btn tk-btn-primary"
+              style={{ justifyContent: 'center', width: '100%', opacity: !!busy ? 0.5 : 1 }}>
+              <Icon.Sparkle /> Buscar com IA
+            </button>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12, border: '1px solid var(--tk-line)', borderRadius: 10, background: 'var(--tk-bg-2)' }}>
+              <div className="tk-help" style={{ fontSize: 11 }}>Como você quer buscar?</div>
+              <button onClick={() => runAI('missing')} disabled={missCount === 0}
+                className="tk-btn tk-btn-primary"
+                style={{ justifyContent: 'center', width: '100%', opacity: missCount === 0 ? 0.5 : 1 }}>
+                <Icon.Sparkle /> Só as vistas que faltam{missCount > 0 ? ` (${missCount})` : ''}
+              </button>
+              <button onClick={() => runAI('full')}
+                className="tk-btn tk-btn-ghost"
+                style={{ justifyContent: 'center', width: '100%', color: 'var(--tk-accent)', borderColor: 'var(--tk-accent)' }}>
+                <Icon.Sparkle /> Varredura completa (apaga tudo e refaz)
+              </button>
+              <button onClick={() => setAiChoosing(false)} className="tk-help"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, padding: 2 }}>Cancelar</button>
+            </div>
+          )}
+
+          <div style={{ height: 1, background: 'var(--tk-line)', margin: '2px 0' }} />
+
+          {/* Upload manual por vista */}
+          <div>
+            <div className="tk-help" style={{ fontSize: 11, marginBottom: 6 }}>Qual vista você vai subir?</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {PHOTO_VIEWS.map(pv => {
+                const n = liveViews?.[pv.id] || 0;
+                return (
+                  <button key={pv.id}
+                    className={`tk-chip ${view === pv.id ? 'is-active' : ''}`}
+                    onClick={() => setView(pv.id)} disabled={anyBusy}
+                    style={{ opacity: anyBusy ? 0.5 : 1 }}>
+                    {pv.label}
+                    <span style={{
+                      marginLeft: 6, fontFamily: 'var(--tk-font-mono)', fontSize: 10, fontWeight: 700,
+                      color: view === pv.id ? 'inherit' : (n > 0 ? '#1a7a4a' : '#c98a1a'),
+                    }}>{n > 0 ? n : '0'}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <button onClick={() => fileRef.current && fileRef.current.click()} disabled={anyBusy}
+            className="tk-btn tk-btn-ghost"
+            style={{ justifyContent: 'center', width: '100%', opacity: anyBusy && busy !== 'upload' ? 0.5 : 1 }}>
+            {busy === 'upload' ? 'Enviando…' : <><Icon.Upload /> Inserir foto de {(PHOTO_VIEWS.find(pv => pv.id === view) || {}).label?.toLowerCase()}</>}
+          </button>
+          <input ref={fileRef} type="file" accept="image/*" multiple onChange={onFilesChosen} style={{ display: 'none' }} />
+
+          {(() => {
+            // Prioriza a mensagem local (upload/delete); senão, o desfecho da
+            // última tarefa de IA deste carro (some enquanto ela ainda roda).
+            const shown = msg || (task && task.status !== 'running' ? task.msg : null);
+            return shown ? (
+              <div style={{ fontSize: 13, fontWeight: 500, color: toneColor[shown.tone] }}>{shown.text}</div>
+            ) : null;
+          })()}
+
+          {/* Galeria atual, por vista, com excluir */}
+          <div style={{ height: 1, background: 'var(--tk-line)', margin: '2px 0' }} />
+          <div className="tk-help" style={{ fontSize: 11 }}>Fotos atuais {photos ? `(${photos.length})` : ''}</div>
+          {photos === null ? (
+            <div className="tk-help" style={{ fontSize: 12 }}>Carregando fotos…</div>
+          ) : photos.length === 0 ? (
+            <div className="tk-help" style={{ fontSize: 12 }}>Nenhuma foto ainda.</div>
+          ) : (
+            PHOTO_VIEWS.filter(pv => photos.some(p => p.view === pv.id)).map(pv => (
+              <div key={pv.id}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--tk-muted)', margin: '4px 0' }}>{pv.label}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {photos.filter(p => p.view === pv.id).map(p => (
+                    <div key={p.url} style={{ position: 'relative', width: 74, height: 56, borderRadius: 8, overflow: 'hidden', border: p.favorite ? '2px solid #f5b301' : '1px solid var(--tk-line)' }}>
+                      <img src={p.url} alt={pv.label} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                      {p.manual && <span title="Inserida manualmente" style={{ position: 'absolute', left: 3, top: 3, fontSize: 8, fontWeight: 700, padding: '1px 4px', borderRadius: 4, background: 'rgba(0,0,0,0.6)', color: '#fff', letterSpacing: '0.04em' }}>MANUAL</span>}
+                      <button onClick={() => toggleFavorite(p.url, !p.favorite)} disabled={!!busy}
+                        title={p.favorite ? 'Favorita — protegida da varredura completa' : 'Favoritar (protege da varredura completa)'}
+                        style={{ position: 'absolute', right: 27, top: 3, width: 20, height: 20, borderRadius: '50%', border: 'none', background: 'rgba(0,0,0,0.5)', color: p.favorite ? '#f5b301' : 'rgba(255,255,255,0.7)', cursor: busy ? 'not-allowed' : 'pointer', display: 'grid', placeItems: 'center', padding: 0 }}>
+                        <Icon.Star width={11} height={11} />
+                      </button>
+                      <button onClick={() => deletePhoto(p.url)} disabled={!!busy} title="Excluir esta foto"
+                        style={{ position: 'absolute', right: 3, top: 3, width: 20, height: 20, borderRadius: '50%', border: 'none', background: 'rgba(192,57,43,0.92)', color: '#fff', cursor: busy ? 'not-allowed' : 'pointer', display: 'grid', placeItems: 'center', padding: 0 }}>
+                        <Icon.Trash width={11} height={11} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+    )}
+    {confirm && (
+      <ConfirmDialog
+        title={confirm.title}
+        message={confirm.message}
+        confirmLabel={confirm.confirmLabel}
+        danger={confirm.danger}
+        onConfirm={() => { const fn = confirm.onConfirm; setConfirm(null); if (fn) fn(); }}
+        onCancel={() => setConfirm(null)}
+      />
+    )}
+    </>
   );
 }
 
@@ -948,6 +1786,7 @@ function HistoryView({ onOpen, onNew, onResumeDraft }) {
   const [state, setState] = useState({ loading: true, error: null, consultas: [] });
   const [drafts, setDrafts] = useState([]);
   const [query, setQuery] = useState('');
+  const [expanded, setExpanded] = useState({}); // overrides manuais de abrir/fechar por cliente
 
   useEffect(() => {
     let cancelled = false;
@@ -995,6 +1834,38 @@ function HistoryView({ onOpen, onNew, onResumeDraft }) {
       `${c.client_name || ''} ${c.client_segment || ''}`.toLowerCase().includes(q)
     );
   }, [state.consultas, q]);
+
+  // Agrupa por nome de cliente (mesmo esquema de Ajustes: card colapsável por
+  // grupo). As consultas já chegam ordenadas por data desc da API; os grupos
+  // são ordenados pela consulta mais recente de cada cliente.
+  const groups = useMemo(() => {
+    const map = new Map();
+    for (const c of filtered) {
+      const name = (c.client_name || '').trim() || 'Sem nome';
+      if (!map.has(name)) map.set(name, []);
+      map.get(name).push(c);
+    }
+    return [...map.entries()]
+      .map(([name, items]) => ({
+        name,
+        items,
+        count: items.length,
+        latest: items.reduce((m, c) => (c.created_at > m ? c.created_at : m), items[0].created_at),
+        total: items.reduce((n, c) => n + (c.total_resultados || 0), 0),
+      }))
+      .sort((a, b) => String(b.latest).localeCompare(String(a.latest)));
+  }, [filtered]);
+
+  // Buscando → grupos abrem por padrão. Sem busca → começam fechados. `expanded`
+  // guarda só os overrides manuais; ao mudar a busca, zeramos pro novo default.
+  const defaultOpen = !!q;
+  useEffect(() => { setExpanded({}); }, [q]);
+  function toggleGroup(name) {
+    setExpanded(e => {
+      const cur = name in e ? e[name] : defaultOpen;
+      return { ...e, [name]: !cur };
+    });
+  }
 
   if (state.loading) {
     return <div className="tk-results tk-scroll"><div className="tk-help" style={{ padding: 28 }}>Carregando histórico…</div></div>;
@@ -1101,41 +1972,69 @@ function HistoryView({ onOpen, onNew, onResumeDraft }) {
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {filtered.map(c => (
-            <button key={c.id} onClick={() => onOpen(c.id)} className="tk-hist-row"
-              style={{
-                display: 'grid', gridTemplateColumns: '1fr auto', gap: 14, alignItems: 'center',
-                textAlign: 'left', padding: '15px 18px', borderRadius: 12,
-                border: '1px solid var(--tk-line)', background: 'var(--tk-bg)', cursor: 'pointer',
-                fontFamily: 'var(--tk-font)', color: 'var(--tk-ink)',
-              }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, flexWrap: 'wrap' }}>
-                  <span style={{ fontFamily: 'var(--tk-font)', fontWeight: 700, fontSize: 16, letterSpacing: '-0.01em', color: 'var(--tk-ink)' }}>{c.client_name || 'Sem nome'}</span>
-                  {c.client_segment && <span style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--tk-secondary)' }}>{c.client_segment}</span>}
-                  {!c.ok && <span style={{ fontSize: 9.5, fontWeight: 700, color: '#c0392b', textTransform: 'uppercase', letterSpacing: '0.08em', border: '1px solid currentColor', borderRadius: 4, padding: '1px 5px' }}>sem resultado</span>}
-                </div>
-                <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, fontFamily: 'var(--tk-font-mono)', fontSize: 11, color: 'var(--tk-muted)', letterSpacing: '0.01em' }}>
-                  <span>{fmtDate(c.created_at)}</span>
-                  <span style={{ opacity: 0.4 }}>·</span>
-                  <span style={{ color: 'var(--tk-secondary)', fontWeight: 500 }}>{c.total_resultados} resultado{c.total_resultados !== 1 ? 's' : ''}</span>
-                  {(c.orcamento_min != null && c.orcamento_max != null) && (
-                    <><span style={{ opacity: 0.4 }}>·</span><span>{fmtBRL(c.orcamento_min)}–{fmtBRL(c.orcamento_max)}</span></>
-                  )}
-                  {c.tipos?.length > 0 && (
-                    <><span style={{ opacity: 0.4 }}>·</span><span>{c.tipos.map(t => TYPE_LABEL[t] || t).join(', ')}</span></>
-                  )}
-                </div>
-                {c.top_models?.length > 0 && (
-                  <div style={{ marginTop: 7, fontSize: 13, fontWeight: 500, lineHeight: 1.35, color: 'var(--tk-ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {c.top_models.slice(0, 3).join('  ·  ')}
-                    {c.top_models.length > 3 && <span style={{ color: 'var(--tk-muted)', fontWeight: 600 }}>{`  +${c.top_models.length - 3}`}</span>}
+          {groups.map(g => {
+            const open = g.name in expanded ? expanded[g.name] : defaultOpen;
+            return (
+              <div key={g.name} style={{ border: '1px solid var(--tk-line)', borderRadius: 12, overflow: 'hidden', background: 'var(--tk-bg)' }}>
+                {/* Cabeçalho do cliente */}
+                <button onClick={() => toggleGroup(g.name)}
+                  style={{
+                    width: '100%', display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 12, alignItems: 'center',
+                    padding: '14px 16px', border: 'none', background: 'var(--tk-bg-2)', cursor: 'pointer',
+                    font: 'inherit', color: 'var(--tk-ink)', textAlign: 'left',
+                  }}>
+                  <span style={{ display: 'inline-flex', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s ease', color: 'var(--tk-muted)' }}>
+                    <Icon.ChevronRight />
+                  </span>
+                  <span style={{ fontWeight: 700, fontSize: 16, letterSpacing: '-0.01em' }}>{g.name}</span>
+                  <span style={{ display: 'flex', gap: 6, alignItems: 'center', fontFamily: 'var(--tk-font-mono)', fontSize: 11, color: 'var(--tk-muted)' }}>
+                    {g.count} consulta{g.count !== 1 ? 's' : ''}
+                    <span style={{ opacity: 0.4 }}>·</span>
+                    <span>última {fmtDate(g.latest)}</span>
+                  </span>
+                </button>
+
+                {/* Consultas do cliente */}
+                {open && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 16px 14px' }}>
+                    {g.items.map(c => (
+                      <button key={c.id} onClick={() => onOpen(c.id)} className="tk-hist-row"
+                        style={{
+                          display: 'grid', gridTemplateColumns: '1fr auto', gap: 14, alignItems: 'center',
+                          textAlign: 'left', padding: '15px 18px', borderRadius: 12,
+                          border: '1px solid var(--tk-line)', background: 'var(--tk-bg)', cursor: 'pointer',
+                          fontFamily: 'var(--tk-font)', color: 'var(--tk-ink)',
+                        }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, flexWrap: 'wrap' }}>
+                            <span style={{ fontFamily: 'var(--tk-font-mono)', fontWeight: 700, fontSize: 13, letterSpacing: '-0.01em', color: 'var(--tk-ink)' }}>{fmtDate(c.created_at)}</span>
+                            {c.client_segment && <span style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--tk-secondary)' }}>{c.client_segment}</span>}
+                            {!c.ok && <span style={{ fontSize: 9.5, fontWeight: 700, color: '#c0392b', textTransform: 'uppercase', letterSpacing: '0.08em', border: '1px solid currentColor', borderRadius: 4, padding: '1px 5px' }}>sem resultado</span>}
+                          </div>
+                          <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, fontFamily: 'var(--tk-font-mono)', fontSize: 11, color: 'var(--tk-muted)', letterSpacing: '0.01em' }}>
+                            <span style={{ color: 'var(--tk-secondary)', fontWeight: 500 }}>{c.total_resultados} resultado{c.total_resultados !== 1 ? 's' : ''}</span>
+                            {(c.orcamento_min != null && c.orcamento_max != null) && (
+                              <><span style={{ opacity: 0.4 }}>·</span><span>{fmtBRL(c.orcamento_min)}–{fmtBRL(c.orcamento_max)}</span></>
+                            )}
+                            {c.tipos?.length > 0 && (
+                              <><span style={{ opacity: 0.4 }}>·</span><span>{c.tipos.map(t => TYPE_LABEL[t] || t).join(', ')}</span></>
+                            )}
+                          </div>
+                          {c.top_models?.length > 0 && (
+                            <div style={{ marginTop: 7, fontSize: 13, fontWeight: 500, lineHeight: 1.35, color: 'var(--tk-ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {c.top_models.slice(0, 3).join('  ·  ')}
+                              {c.top_models.length > 3 && <span style={{ color: 'var(--tk-muted)', fontWeight: 600 }}>{`  +${c.top_models.length - 3}`}</span>}
+                            </div>
+                          )}
+                        </div>
+                        <Icon.ChevronRight style={{ color: 'var(--tk-muted)' }} />
+                      </button>
+                    ))}
                   </div>
                 )}
               </div>
-              <Icon.ChevronRight style={{ color: 'var(--tk-muted)' }} />
-            </button>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
