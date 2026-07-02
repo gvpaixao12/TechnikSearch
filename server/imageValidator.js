@@ -140,7 +140,10 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
   } catch (e) {
     const msg = String(e.message || '');
     const is429 = /429|rate.limit|too many/i.test(msg);
-    const isTPD = /tokens per day|TPD|requests per day|RPD/i.test(msg);
+    // TPD só quando a OpenAI diz explicitamente "per day" / (TPD) / (RPD) — e
+    // NUNCA numa mensagem de TPM (por minuto). Sem isso, um 429 de TPM casava por
+    // acidente (ex.: o "7m" do org-id) e marcava TPD falso, matando a rodada.
+    const isTPD = /per day|\(TPD\)|\(RPD\)/i.test(msg) && !/per min|\(TPM\)/i.test(msg);
 
     // TPD esgotou → marca a sessão e desiste deste view.
     if (is429 && isTPD) {
@@ -151,27 +154,33 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
       throw new Error('TPD esgotado');
     }
 
-    // Disjuntor: 429 seguidos demais → para tudo (o bg checa isVisionAborted()).
+    // TPM (por minuto) → aguarda o tempo que a OpenAI pediu e retenta ANTES de
+    // contar como falha. A dica de espera pode vir em ms ("657ms") ou s ("1.2s").
+    // Backoff cresce a cada retry (floor de 1s) pra não martelar a janela de TPM
+    // quando a dica vem curta demais sob pressão sustentada.
+    if (retries > 0 && is429) {
+      const msMatch = msg.match(/try again in (\d+(?:\.\d+)?)ms/i);
+      const secMatch = msg.match(/try again in (\d+(?:\.\d+)?)s/i);
+      const hintMs = msMatch ? Math.ceil(parseFloat(msMatch[1])) + 300
+        : secMatch ? Math.ceil(parseFloat(secMatch[1]) * 1000) + 300
+        : 2000;
+      const attempt = 6 - retries;                 // 1, 2, 3…
+      const waitMs = Math.max(hintMs, 1000 * attempt);
+      console.warn(`[validator] TPM 429 em ${view}, aguardando ${waitMs}ms (retries restantes: ${retries - 1})`);
+      await new Promise(r => setTimeout(r, waitMs));
+      return validateBatch({ marca, modelo, ano, view, images, maxApproved, retries: retries - 1 });
+    }
+
+    // Disjuntor: só conta quando os retries ESGOTARAM (falha real, não 429
+    // transitório que o retry resolveria). N chamadas realmente mortas em
+    // sequência → para tudo (o bg checa isVisionAborted()).
     if (is429) {
       _consec429++;
       if (_consec429 >= ABORT_AFTER_429) {
         _visionAborted = true;
-        console.error(`[validator] ⛔ ${_consec429} 429 SEGUIDOS — abortando a visão (rate limit virou parede)`);
+        console.error(`[validator] ⛔ ${_consec429} chamadas 429 SEGUIDAS (retries esgotados) — abortando a visão (rate limit virou parede)`);
         throw new Error('visão abortada: muitos 429 seguidos');
       }
-    }
-
-    // TPM (por minuto) → aguarda o tempo que a OpenAI pediu e retenta. A dica de
-    // espera pode vir em ms ("657ms") ou s ("1.2s"); cobre os dois.
-    if (retries > 0 && is429) {
-      const msMatch = msg.match(/try again in (\d+(?:\.\d+)?)ms/i);
-      const secMatch = msg.match(/try again in (\d+(?:\.\d+)?)s/i);
-      const waitMs = msMatch ? Math.ceil(parseFloat(msMatch[1])) + 300
-        : secMatch ? Math.ceil(parseFloat(secMatch[1]) * 1000) + 300
-        : 2000;
-      console.warn(`[validator] TPM 429 em ${view}, aguardando ${waitMs}ms (retries restantes: ${retries - 1})`);
-      await new Promise(r => setTimeout(r, waitMs));
-      return validateBatch({ marca, modelo, ano, view, images, maxApproved, retries: retries - 1 });
     }
     throw e;
   } finally {
