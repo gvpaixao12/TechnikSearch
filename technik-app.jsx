@@ -86,6 +86,7 @@ function App() {
 
   const [activeNav, setActiveNav] = useState('new');
   const [stage, setStage] = useState('form'); // form | loading | results
+  const [sidebarOpen, setSidebarOpen] = useState(false); // menu off-canvas no mobile
 
   // Form state — começa em branco para o consultor preencher
   const [client, setClient] = useState({ name: '', segment: '' });
@@ -191,6 +192,7 @@ function App() {
 
   function handleNav(id) {
     setActiveNav(id);
+    setSidebarOpen(false);
     if (id === 'new') {
       resetForm();
       setRecommendation(null);
@@ -281,10 +283,16 @@ function App() {
 
   return (
     <div className="tk-app">
+      {/* Overlay do menu no mobile */}
+      {sidebarOpen && <div className="tk-side-overlay" onClick={() => setSidebarOpen(false)} />}
+
       {/* Sidebar */}
-      <aside className="tk-side">
+      <aside className={`tk-side ${sidebarOpen ? 'is-open' : ''}`}>
         <div className="tk-side__brand">
           <TechnikLogoMark height={34} />
+          <button className="tk-side__close" onClick={() => setSidebarOpen(false)} aria-label="Fechar menu">
+            <Icon.Close />
+          </button>
         </div>
         <nav className="tk-side__nav">
           {NAV.map(n => (
@@ -315,6 +323,10 @@ function App() {
       {/* Main */}
       <section className="tk-main">
         <header className="tk-topbar">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+          <button className="tk-topbar__menu" onClick={() => setSidebarOpen(true)} aria-label="Abrir menu">
+            <Icon.Menu />
+          </button>
           <div className="tk-topbar__title">
             <span className="tk-eyebrow">
               {activeNav === 'history' && 'Atendimentos salvos'}
@@ -330,6 +342,7 @@ function App() {
               {activeNav === 'new' && stage === 'loading' && 'Cruzando catálogo'}
               {activeNav === 'new' && stage === 'results' && `Top 10 para ${client.name.split(' ')[0]}`}
             </h1>
+          </div>
           </div>
           <div className="tk-topbar__actions">
             {activeNav === 'new' && stage === 'form' && (
@@ -2280,8 +2293,9 @@ function CompareModal({ cars = [], onClose }) {
           <button onClick={onClose} aria-label="Fechar" style={{ width: 36, height: 36, borderRadius: '50%', border: 'none', background: 'var(--tk-bg-2)', color: 'var(--tk-ink)', fontSize: 22, cursor: 'pointer', lineHeight: 1 }}>×</button>
         </div>
 
-        {/* Grade: coluna de rótulos + 1 coluna por carro */}
-        <div style={{ display: 'grid', gridTemplateColumns: '124px 1fr 1fr' }}>
+        {/* Grade: coluna de rótulos + 1 coluna por carro (rola na horizontal em telas estreitas) */}
+        <div style={{ overflowX: 'auto' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '124px 1fr 1fr', minWidth: 480 }}>
           {/* Cabeçalho: foto + identificação */}
           <div />
           {cars.map(c => (
@@ -2318,6 +2332,7 @@ function CompareModal({ cars = [], onClose }) {
               </React.Fragment>
             );
           })}
+        </div>
         </div>
 
         <div style={{ padding: '10px 16px', fontSize: 11, color: 'var(--tk-muted)', borderTop: '1px solid var(--tk-line)', display: 'flex', alignItems: 'center', gap: 6 }}>
