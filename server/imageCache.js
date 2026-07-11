@@ -13,10 +13,16 @@ import { validateImages, isTpdExhausted } from './imageValidator.js';
 const BUCKET = 'car-images';
 const TTL_VALIDATED_DAYS = 180;
 const TTL_FAILED_DAYS = 7;
-const MAX_WIDTH = 1200;            // resize p/ storage final (~170KB médio)
+const MAX_WIDTH = 1200;            // resize p/ storage final
 const VISION_WIDTH = 512;          // resize p/ enviar à Groq (suficiente p/ classificar)
-const WEBP_QUALITY = 82;
-const WEBP_VISION_QUALITY = 70;
+// Storage: AVIF pesa ~30% menos que WebP no mesmo nível visual (q50 AVIF ≈ q82
+// WebP). Suporte de browser universal desde ~2024. effort 4 = equilíbrio
+// tamanho/velocidade de encode (0-9; maior = menor arquivo, mais lento).
+const AVIF_QUALITY = 50;
+const AVIF_EFFORT = 4;
+const STORAGE_EXT = 'avif';
+const STORAGE_CONTENT_TYPE = 'image/avif';
+const WEBP_VISION_QUALITY = 70;    // versão pequena p/ o LLM segue WebP (encode rápido)
 const MAX_CANDIDATES_PER_VIEW = 12; // download top-N por view (rich: precisa de pool maior)
 const HEURISTIC_PER_VIEW = 6;      // fotos por view no modo skipVision (galeria rica)
 const MAX_BYTES = 8 * 1024 * 1024; // 8 MB hard cap por download
@@ -315,10 +321,11 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', onP
 
     // Nos uploads da varredura completa, o idx tem que começar DEPOIS do maior
     // índice já ocupado por um favorito na mesma vista, senão o upsert sobrescreve
-    // o arquivo preservado (nomes são `<vista>-NN.webp`).
+    // o arquivo preservado (nomes são `<vista>-NN.<ext>`; acervo migrado é .avif,
+    // mas fotos antigas ainda-não-migradas podem ser .webp).
     const startIdx = { front: 0, rear: 0, side: 0, interior: 0 };
     for (const im of favorited) {
-      const m = (storagePathFromUrl(im.url) || '').match(/-(\d+)\.webp$/i);
+      const m = (storagePathFromUrl(im.url) || '').match(/-(\d+)\.(?:webp|avif)$/i);
       if (m && startIdx[im.view] !== undefined) startIdx[im.view] = Math.max(startIdx[im.view], parseInt(m[1], 10));
     }
 
@@ -423,21 +430,23 @@ async function toVisionDataUrl(buffer) {
   return `data:image/webp;base64,${small.toString('base64')}`;
 }
 
-// Versão grande pro bucket.
-async function resizeForStorage(buffer) {
+// Versão grande pro bucket. Fonte única de encode: usada tanto no pipeline de
+// build quanto no script de migração do acervo (scripts/migrate-to-avif.js).
+export async function encodeForStorage(buffer) {
   return sharp(buffer)
     .rotate()
     .resize({ width: MAX_WIDTH, withoutEnlargement: true })
-    .webp({ quality: WEBP_QUALITY })
+    .avif({ quality: AVIF_QUALITY, effort: AVIF_EFFORT })
     .toBuffer();
 }
+export { STORAGE_EXT, STORAGE_CONTENT_TYPE, BUCKET };
 
 async function uploadOne({ supabase, key, view, idx, buffer }) {
-  const stored = await resizeForStorage(buffer);
-  const path = `${key}/${view}-${String(idx + 1).padStart(2, '0')}.webp`;
+  const stored = await encodeForStorage(buffer);
+  const path = `${key}/${view}-${String(idx + 1).padStart(2, '0')}.${STORAGE_EXT}`;
   const { error } = await supabase.storage
     .from(BUCKET)
-    .upload(path, stored, { contentType: 'image/webp', upsert: true });
+    .upload(path, stored, { contentType: STORAGE_CONTENT_TYPE, upsert: true });
   if (error) throw new Error(`upload: ${error.message}`);
   const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
   return data.publicUrl;
