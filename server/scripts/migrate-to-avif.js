@@ -24,6 +24,7 @@ const val = (f, d) => { const a = args.find(x => x.startsWith(f + '=')); return 
 const APPLY = has('--apply');
 const SAMPLE = parseInt(val('--sample', '25'), 10);
 const LIMIT = val('--limit', null) ? parseInt(val('--limit'), 10) : null;
+const ONLY_KEY = val('--key', null); // migra só esse carro (key exata) — pra testes pontuais
 const Q_OVERRIDE = val('--quality', null) ? parseInt(val('--quality'), 10) : null;
 const E_OVERRIDE = val('--effort', null) ? parseInt(val('--effort'), 10) : null;
 
@@ -117,7 +118,11 @@ async function migrateRow(row, dry) {
 const t0 = Date.now();
 console.log(`Lendo índice (car_images_cache)...`);
 const rows = await allRows();
-const withWebp = rows.filter(r => (r.images || []).some(im => /\.webp$/i.test(pathFromUrl(im?.url) || '')));
+let withWebp = rows.filter(r => (r.images || []).some(im => /\.webp$/i.test(pathFromUrl(im?.url) || '')));
+if (ONLY_KEY) {
+  withWebp = withWebp.filter(r => r.key === ONLY_KEY);
+  if (withWebp.length === 0) { console.log(`--key=${ONLY_KEY}: nada pra migrar (não existe ou já está em AVIF).`); process.exit(0); }
+}
 console.log(`${rows.length} carros no índice; ${withWebp.length} com foto .webp pra migrar.`);
 console.log(`Encode: AVIF quality=${Q_OVERRIDE ?? 50} effort=${E_OVERRIDE ?? 4}${(Q_OVERRIDE ?? E_OVERRIDE) == null ? ' (do pipeline)' : ' (override — só dry-run)'}\n`);
 
