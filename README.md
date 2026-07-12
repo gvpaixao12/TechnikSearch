@@ -1,11 +1,13 @@
-# TechnikSearch
+# Technik — Automotive Consultancy
 
-AI-powered car search and recommendation tool. Describe what you're looking for in plain language ("family SUV, automatic, up to R$120k") and TechnikSearch classifies the request, matches it against a vehicle catalog, and enriches each result with images and up-to-date **FIPE** prices — all shown in a visual comparison panel.
+An AI-assisted tool for car-buying consultants. A consultant fills a visual **briefing** about the client (budget, body type, seats, trunk, lifestyle, priorities), and Technik cross-references the partner stock to return a justified **Top 10** — each result enriched with images and current **FIPE** prices. Free-text notes like "family of 4 + a dog" are interpreted by an LLM to sharpen the profile.
+
+![Technik — client briefing screen](docs/screenshot.png)
 
 ## Features
 
-- **Natural-language search** — an LLM turns free-text queries into structured filters and intent.
-- **Smart matching** — fuzzy search over the catalog with [Fuse.js](https://fusejs.io/) plus a recommendation layer.
+- **Guided briefing + AI profiling** — a visual, step-by-step form builds the client profile in real time; free-text notes are interpreted by an LLM.
+- **Smart matching** — fuzzy search over the catalog with [Fuse.js](https://fusejs.io/) plus a recommendation layer that returns a ranked Top 10.
 - **FIPE price lookup** — fetches current Brazilian reference prices, with a local cache to avoid re-querying on every search.
 - **Image pipeline** — resolves, validates and optimizes vehicle images (via [sharp](https://sharp.pixelplumbing.com/)), with caching.
 - **Visual panel** — a results/comparison UI (`Technik - Painel Visual.html`, `results.jsx`, `design-canvas.jsx`).
