@@ -1,72 +1,42 @@
-// Sonda READ-ONLY do tamanho do bucket car-images: percorre cada pasta (key),
-// soma o tamanho dos objetos e reporta total, média por foto e maiores ofensores.
+// Sonda READ-ONLY do tamanho do bucket car-images no R2: lista todos os objetos,
+// agrupa por pasta (key) e reporta total, média por foto e maiores ofensores.
 //   cd server && node scripts/diag-storage-size.js
 import 'dotenv/config';
-
-const u = process.env.SUPABASE_URL;
-const k = process.env.SUPABASE_SERVICE_KEY;
-if (!u || !k) { console.error('FALTA SUPABASE_URL / SUPABASE_SERVICE_KEY no .env'); process.exit(1); }
-const h = { apikey: k, Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' };
-const BUCKET = 'car-images';
-
-async function list(prefix, limit = 1000, offset = 0) {
-  const r = await fetch(`${u}/storage/v1/object/list/${BUCKET}`, {
-    method: 'POST', headers: h,
-    body: JSON.stringify({ prefix, limit, offset, sortBy: { column: 'name', order: 'asc' } }),
-  });
-  if (!r.ok) throw new Error(`list ${prefix}: ${r.status} ${await r.text()}`);
-  return r.json();
-}
-
-// Lista todas as "pastas" top-level (keys), paginando.
-async function allKeys() {
-  const keys = [];
-  for (let offset = 0; ; offset += 1000) {
-    const page = await list('', 1000, offset);
-    if (!Array.isArray(page) || page.length === 0) break;
-    for (const o of page) if (o.id === null || o.metadata == null) keys.push(o.name); // pastas vêm sem metadata
-    if (page.length < 1000) break;
-  }
-  return keys;
-}
+import { listPrefix, BUCKET } from '../storage.js';
 
 const fmt = b => b >= 1 << 30 ? (b / (1 << 30)).toFixed(2) + ' GB'
   : b >= 1 << 20 ? (b / (1 << 20)).toFixed(1) + ' MB'
   : (b / (1 << 10)).toFixed(0) + ' KB';
 
 const t0 = Date.now();
-const keys = await allKeys();
-console.log(`Pastas (carros) no bucket: ${keys.length}. Medindo objetos...`);
+console.log(`Listando objetos do bucket ${BUCKET} (R2)...`);
 
-let totalBytes = 0, totalFiles = 0;
-const perKey = [];
-let done = 0;
-const CONC = 8;
-for (let i = 0; i < keys.length; i += CONC) {
-  const batch = keys.slice(i, i + CONC);
-  await Promise.all(batch.map(async key => {
-    const objs = await list(key + '/', 1000, 0);
-    let bytes = 0, files = 0;
-    for (const o of (Array.isArray(objs) ? objs : [])) {
-      const sz = o?.metadata?.size;
-      if (typeof sz === 'number') { bytes += sz; files++; }
-    }
-    totalBytes += bytes; totalFiles += files;
-    perKey.push({ key, bytes, files });
-  }));
-  done += batch.length;
-  if (done % 80 === 0 || done === keys.length) process.stdout.write(`\r  ${done}/${keys.length} pastas medidas`);
+// Uma varredura só: o ListObjectsV2 pagina de 1000 em 1000 e já traz o tamanho,
+// então não precisa de uma chamada por pasta como era no Supabase.
+const objects = await listPrefix('');
+console.log(`  ${objects.length} objetos.`);
+
+const byKey = new Map();
+let totalBytes = 0;
+for (const o of objects) {
+  const key = o.path.includes('/') ? o.path.slice(0, o.path.indexOf('/')) : '(raiz)';
+  const cur = byKey.get(key) || { key, bytes: 0, files: 0 };
+  cur.bytes += o.size; cur.files++;
+  byKey.set(key, cur);
+  totalBytes += o.size;
 }
-console.log('');
 
-perKey.sort((a, b) => b.bytes - a.bytes);
+const perKey = [...byKey.values()].sort((a, b) => b.bytes - a.bytes);
+const withPhotos = perKey.filter(p => p.files > 0).length;
+
 console.log('\n=== RESUMO ===');
-console.log(`Carros com foto:   ${perKey.filter(p => p.files > 0).length}`);
-console.log(`Total de fotos:    ${totalFiles}`);
+console.log(`Carros com foto:   ${withPhotos}`);
+console.log(`Total de fotos:    ${objects.length}`);
 console.log(`Storage total:     ${fmt(totalBytes)}  (${totalBytes.toLocaleString()} bytes)`);
-console.log(`Média por foto:    ${totalFiles ? fmt(totalBytes / totalFiles) : '—'}`);
-console.log(`Média por carro:   ${perKey.length ? fmt(totalBytes / perKey.filter(p=>p.files>0).length) : '—'}`);
-console.log(`Fotos por carro:   ${perKey.length ? (totalFiles / perKey.filter(p=>p.files>0).length).toFixed(1) : '—'}`);
+console.log(`Média por foto:    ${objects.length ? fmt(totalBytes / objects.length) : '—'}`);
+console.log(`Média por carro:   ${withPhotos ? fmt(totalBytes / withPhotos) : '—'}`);
+console.log(`Fotos por carro:   ${withPhotos ? (objects.length / withPhotos).toFixed(1) : '—'}`);
+console.log(`Free tier R2:      10 GB — usando ${(totalBytes / (10 * (1 << 30)) * 100).toFixed(1)}%`);
 
 console.log('\n=== 10 carros que mais pesam ===');
 for (const p of perKey.slice(0, 10))

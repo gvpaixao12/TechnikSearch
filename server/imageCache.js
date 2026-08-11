@@ -1,5 +1,9 @@
-// Orquestra a pipeline de imagens: lê cache (Supabase), e se miss/expirado
-// faz busca → validação vision → resize/webp → upload pro bucket → grava índice.
+// Orquestra a pipeline de imagens: lê o índice (Postgres do Supabase), e se
+// miss/expirado faz busca → validação vision → resize/avif → upload pro bucket
+// (Cloudflare R2) → grava índice.
+//
+// Divisão de responsabilidade: Supabase = banco (índice, histórico, rascunhos);
+// R2 = os arquivos de foto. Ver storage.js.
 //
 // TTL: 6 meses para chaves que tiveram >= 2 fotos aprovadas; 7 dias para
 // "tentativas vazias" (evita ficar gastando Serper/vision toda hora em modelo
@@ -9,8 +13,9 @@ import { createClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
 import { searchByView } from './imageProviders.js';
 import { validateImages, isTpdExhausted } from './imageValidator.js';
-
-const BUCKET = 'car-images';
+import {
+  BUCKET, putObject, removeObjects, listPrefix, pathFromUrl,
+} from './storage.js';
 const TTL_VALIDATED_DAYS = 180;
 const TTL_FAILED_DAYS = 7;
 const MAX_WIDTH = 1200;            // resize p/ storage final
@@ -194,7 +199,7 @@ export async function addManualImages({ marca, modelo, ano, dataUrls, view }) {
     const buffer = dataUrlToBuffer(dataUrl);
     if (!buffer) continue;
     try {
-      const publicUrl = await uploadOne({ supabase, key, view, idx, buffer });
+      const publicUrl = await uploadOne({ key, view, idx, buffer });
       uploaded.push({ url: publicUrl, view, sourcePage: null, vision: false, manual: true });
       idx++;
     } catch (e) {
@@ -213,23 +218,17 @@ export async function addManualImages({ marca, modelo, ano, dataUrls, view }) {
   return { key, added: uploaded.length, photoCount: images.length, views: viewCounts(images), validated };
 }
 
-// Deriva o caminho no bucket a partir da URL pública
-// (…/object/public/car-images/<path>). Usado pra excluir o arquivo certo.
-function storagePathFromUrl(url) {
-  const marker = `/object/public/${BUCKET}/`;
-  const i = String(url || '').indexOf(marker);
-  return i >= 0 ? decodeURIComponent(String(url).slice(i + marker.length)) : null;
-}
+// Deriva o caminho no bucket a partir da URL pública. Aceita URL do R2 e a
+// legada do Supabase (ver storage.js). Usado pra excluir o arquivo certo.
+const storagePathFromUrl = pathFromUrl;
 
 // Remove os objetos do bucket sob a pasta da key (usado na varredura full).
 // `keepPaths` preserva fotos favoritadas — elas não são apagadas no refazer.
-async function deleteKeyObjects(supabase, key, keepPaths = []) {
-  const { data: listed } = await supabase.storage.from(BUCKET).list(key);
-  if (listed && listed.length) {
-    const keep = new Set(keepPaths);
-    const toRemove = listed.map(o => `${key}/${o.name}`).filter(p => !keep.has(p));
-    if (toRemove.length) await supabase.storage.from(BUCKET).remove(toRemove);
-  }
+async function deleteKeyObjects(key, keepPaths = []) {
+  const listed = await listPrefix(`${key}/`);
+  const keep = new Set(keepPaths);
+  const toRemove = listed.map(o => o.path).filter(p => !keep.has(p));
+  if (toRemove.length) await removeObjects(toRemove);
 }
 
 // Marca/desmarca uma foto como favorita. Favorita = protegida da varredura
@@ -273,8 +272,11 @@ export async function deleteCarPhoto({ marca, modelo, ano, url }) {
 
   const path = storagePathFromUrl(url);
   if (path) {
-    const { error } = await supabase.storage.from(BUCKET).remove([path]);
-    if (error) console.warn(`[delete-photo] ${key}: bucket remove falhou (${error.message}) — segue removendo do índice`);
+    try {
+      await removeObjects([path]);
+    } catch (e) {
+      console.warn(`[delete-photo] ${key}: bucket remove falhou (${e.message}) — segue removendo do índice`);
+    }
   }
   const remaining = images.filter(im => im.url !== url);
   const validated = remaining.length >= 2;
@@ -316,7 +318,7 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', onP
       const prev = Array.isArray(row?.images) ? row.images : [];
       favorited = prev.filter(im => im && im.favorite);
       const keepPaths = favorited.map(im => storagePathFromUrl(im.url)).filter(Boolean);
-      await deleteKeyObjects(supabase, key, keepPaths);
+      await deleteKeyObjects(key, keepPaths);
     }
 
     // Nos uploads da varredura completa, o idx tem que começar DEPOIS do maior
@@ -347,7 +349,7 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', onP
       let idx = scope === 'full' ? (startIdx[view] || 0) : 0;
       for (const img of (approved[view] || [])) {
         try {
-          const publicUrl = await uploadOne({ supabase, key, view, idx, buffer: img.buffer });
+          const publicUrl = await uploadOne({ key, view, idx, buffer: img.buffer });
           uploaded.push({ url: publicUrl, view, sourcePage: img.page || null, vision: true });
           idx++;
         } catch (e) {
@@ -441,15 +443,14 @@ export async function encodeForStorage(buffer) {
 }
 export { STORAGE_EXT, STORAGE_CONTENT_TYPE, BUCKET };
 
-async function uploadOne({ supabase, key, view, idx, buffer }) {
+async function uploadOne({ key, view, idx, buffer }) {
   const stored = await encodeForStorage(buffer);
   const path = `${key}/${view}-${String(idx + 1).padStart(2, '0')}.${STORAGE_EXT}`;
-  const { error } = await supabase.storage
-    .from(BUCKET)
-    .upload(path, stored, { contentType: STORAGE_CONTENT_TYPE, upsert: true });
-  if (error) throw new Error(`upload: ${error.message}`);
-  const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
-  return data.publicUrl;
+  try {
+    return await putObject({ path, body: stored, contentType: STORAGE_CONTENT_TYPE });
+  } catch (e) {
+    throw new Error(`upload: ${e.message}`);
+  }
 }
 
 async function readCache(supabase, key) {
@@ -539,7 +540,7 @@ async function _buildImagesUnlocked({ marca, modelo, ano, key, skipVision = fals
     let idx = 0;
     for (const img of approved[view]) {
       try {
-        const publicUrl = await uploadOne({ supabase, key, view, idx, buffer: img.buffer });
+        const publicUrl = await uploadOne({ key, view, idx, buffer: img.buffer });
         uploaded.push({ url: publicUrl, view, sourcePage: img.page || null, vision: !skipVision });
         idx++;
       } catch (e) {
@@ -604,7 +605,7 @@ async function upgradeWithVision({ marca, modelo, ano, key }) {
       let idx = 0;
       for (const img of approved[view]) {
         try {
-          const publicUrl = await uploadOne({ supabase, key, view, idx, buffer: img.buffer });
+          const publicUrl = await uploadOne({ key, view, idx, buffer: img.buffer });
           uploaded.push({ url: publicUrl, view, sourcePage: img.page || null, vision: true });
           idx++;
         } catch (e) {

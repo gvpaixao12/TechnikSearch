@@ -1,6 +1,6 @@
-// Re-encoda o acervo de fotos WebP → AVIF pra reduzir o storage do Supabase
-// mantendo qualidade e quantidade. Fonte de encode = encodeForStorage() do
-// pipeline (mesma qualidade das fotos novas).
+// Re-encoda o acervo de fotos WebP → AVIF pra reduzir o storage (R2) mantendo
+// qualidade e quantidade. Fonte de encode = encodeForStorage() do pipeline
+// (mesma qualidade das fotos novas).
 //
 // Uso:
 //   node scripts/migrate-to-avif.js                 # DRY-RUN: mede economia numa amostra, não grava
@@ -15,8 +15,9 @@
 import 'dotenv/config';
 import sharp from 'sharp';
 import {
-  getSupabase, encodeForStorage, STORAGE_EXT, STORAGE_CONTENT_TYPE, BUCKET,
+  getSupabase, encodeForStorage, STORAGE_EXT, STORAGE_CONTENT_TYPE,
 } from '../imageCache.js';
+import { putObject, removeObjects, pathFromUrl } from '../storage.js';
 
 const args = process.argv.slice(2);
 const has = f => args.includes(f);
@@ -46,12 +47,6 @@ async function encode(buffer) {
 }
 
 const supabase = getSupabase();
-
-function pathFromUrl(url) {
-  const marker = `/object/public/${BUCKET}/`;
-  const i = String(url || '').indexOf(marker);
-  return i >= 0 ? decodeURIComponent(String(url).slice(i + marker.length)) : null;
-}
 
 async function fetchBytes(url) {
   const r = await fetch(url, { headers: { 'User-Agent': 'TechnikMigrate/1.0' }, signal: AbortSignal.timeout(20000) });
@@ -94,11 +89,13 @@ async function migrateRow(row, dry) {
     if (dry) { newImages.push(im); continue; }
 
     const newPath = path.replace(/\.webp$/i, '.' + STORAGE_EXT);
-    const { error: upErr } = await supabase.storage.from(BUCKET)
-      .upload(newPath, out, { contentType: STORAGE_CONTENT_TYPE, upsert: true });
-    if (upErr) { console.warn(`  ! upload ${newPath}: ${upErr.message} — mantendo original`); newImages.push(im); skipped++; continue; }
-    const { data } = supabase.storage.from(BUCKET).getPublicUrl(newPath);
-    newImages.push({ ...im, url: data.publicUrl });
+    let newUrl;
+    try {
+      newUrl = await putObject({ path: newPath, body: out, contentType: STORAGE_CONTENT_TYPE });
+    } catch (e) {
+      console.warn(`  ! upload ${newPath}: ${e.message} — mantendo original`); newImages.push(im); skipped++; continue;
+    }
+    newImages.push({ ...im, url: newUrl });
     oldPathsToDelete.push(path);
   }
 
@@ -108,8 +105,8 @@ async function migrateRow(row, dry) {
       .update({ images: newImages }).eq('key', row.key);
     if (updErr) { console.warn(`  ! update índice ${row.key}: ${updErr.message} — NÃO apagando .webp`); }
     else if (oldPathsToDelete.length) {
-      const { error: delErr } = await supabase.storage.from(BUCKET).remove(oldPathsToDelete);
-      if (delErr) console.warn(`  ! remove .webp ${row.key}: ${delErr.message} (órfãos ficam, re-rode depois)`);
+      try { await removeObjects(oldPathsToDelete); }
+      catch (e) { console.warn(`  ! remove .webp ${row.key}: ${e.message} (órfãos ficam, re-rode depois)`); }
     }
   }
   return { oldBytes, newBytes, converted, skipped };

@@ -23,6 +23,7 @@ import { createClient } from '@supabase/supabase-js';
 import { loadCatalog } from '../catalog.js';
 import { getOrBuildImages, makeKey, KEY_PREFIX } from '../imageCache.js';
 import { isVisionAborted } from '../imageValidator.js';
+import { listFolders, listPrefix, removeObjects } from '../storage.js';
 
 const ARGS = process.argv.slice(2);
 const PRUNE_OLD = ARGS.includes('--prune-old');
@@ -34,7 +35,6 @@ const CONCURRENCY = (() => {
 })();
 const STAGGER_MS = 300;       // atraso entre largadas de cada worker (suaviza Commons)
 const PROGRESS_EVERY = 10;    // print de resumo a cada N carros
-const BUCKET = 'car-images';
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function fmtTime(ms) {
@@ -70,18 +70,19 @@ async function pruneOldVersions(supabase) {
   console.log(`[prune] ${deletedRows} linhas antigas removidas`);
 
   // 2) Pastas órfãs no bucket
-  const { data: top, error: e1 } = await supabase.storage.from(BUCKET).list('', { limit: 10000 });
-  if (e1) { console.warn('[prune] erro listando bucket:', e1.message); return; }
-  const oldFolders = (top || []).filter(o => o.id === null && !o.name.startsWith(KEY_PREFIX));
+  let top;
+  try { top = await listFolders(); }
+  catch (e) { console.warn('[prune] erro listando bucket:', e.message); return; }
+  const oldFolders = top.filter(name => !name.startsWith(KEY_PREFIX));
   let deletedFiles = 0;
   for (const folder of oldFolders) {
-    const { data: files, error: e2 } = await supabase.storage.from(BUCKET).list(folder.name, { limit: 1000 });
-    if (e2) { console.warn(`[prune] erro listando ${folder.name}:`, e2.message); continue; }
-    const paths = (files || []).map(f => `${folder.name}/${f.name}`);
-    if (paths.length === 0) continue;
-    const { error: e3 } = await supabase.storage.from(BUCKET).remove(paths);
-    if (e3) console.warn(`[prune] erro removendo ${folder.name}:`, e3.message);
-    else deletedFiles += paths.length;
+    try {
+      const files = await listPrefix(`${folder}/`);
+      if (files.length === 0) continue;
+      deletedFiles += await removeObjects(files.map(f => f.path));
+    } catch (e) {
+      console.warn(`[prune] erro em ${folder}:`, e.message);
+    }
   }
   console.log(`[prune] ${oldFolders.length} pastas antigas, ${deletedFiles} arquivos removidos do bucket\n`);
 }

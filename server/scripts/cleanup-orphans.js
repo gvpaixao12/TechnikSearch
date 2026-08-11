@@ -12,8 +12,8 @@
 // com nenhuma URL do índice. Chaves em --except são puladas por completo.
 import 'dotenv/config';
 import { getSupabase } from '../imageCache.js';
+import { pathFromUrl, listPrefix, listFolders, removeObjects } from '../storage.js';
 
-const BUCKET = 'car-images';
 const args = process.argv.slice(2);
 const APPLY = args.includes('--apply');
 const exceptArg = args.find(a => a.startsWith('--except='));
@@ -26,12 +26,6 @@ const EXCEPT = new Set(
 const sb = getSupabase();
 const fmt = b => b >= 1 << 30 ? (b / (1 << 30)).toFixed(2) + ' GB'
   : b >= 1 << 20 ? (b / (1 << 20)).toFixed(1) + ' MB' : (b / (1 << 10)).toFixed(0) + ' KB';
-
-function pathFromUrl(url) {
-  const marker = `/object/public/${BUCKET}/`;
-  const i = String(url || '').indexOf(marker);
-  return i >= 0 ? decodeURIComponent(String(url).slice(i + marker.length)) : null;
-}
 
 // 1) Conjunto de TODOS os caminhos referenciados pelo índice.
 async function referencedPaths() {
@@ -48,18 +42,7 @@ async function referencedPaths() {
   return ref;
 }
 
-// 2) Lista pastas top-level (keys) do bucket.
-async function listFolders() {
-  const folders = [];
-  for (let offset = 0; ; offset += 1000) {
-    const { data, error } = await sb.storage.from(BUCKET).list('', { limit: 1000, offset, sortBy: { column: 'name', order: 'asc' } });
-    if (error) throw new Error(error.message);
-    if (!data || !data.length) break;
-    for (const o of data) if (o.id === null) folders.push(o.name); // pastas vêm com id null
-    if (data.length < 1000) break;
-  }
-  return folders;
-}
+// 2) Pastas top-level (keys) do bucket vêm de storage.listFolders().
 
 const t0 = Date.now();
 console.log('Lendo caminhos referenciados no índice...');
@@ -76,11 +59,8 @@ for (let i = 0; i < folders.length; i += CONC) {
   const batch = folders.slice(i, i + CONC);
   await Promise.all(batch.map(async key => {
     if (EXCEPT.has(key)) { preserved++; return; }
-    const { data: files } = await sb.storage.from(BUCKET).list(key, { limit: 1000 });
-    for (const f of (files || [])) {
-      if (f.id === null) continue; // subpasta, ignora
-      const p = `${key}/${f.name}`;
-      if (!ref.has(p)) orphans.push({ path: p, size: f?.metadata?.size || 0 });
+    for (const f of await listPrefix(`${key}/`)) {
+      if (!ref.has(f.path)) orphans.push({ path: f.path, size: f.size });
     }
   }));
   scanned += batch.length;
@@ -102,12 +82,11 @@ if (!APPLY) {
 } else {
   console.log(`\n=== APAGANDO (irreversível) ===`);
   let removed = 0;
-  const CHUNK = 200;
+  const CHUNK = 500;
   for (let i = 0; i < orphans.length; i += CHUNK) {
     const paths = orphans.slice(i, i + CHUNK).map(o => o.path);
-    const { error } = await sb.storage.from(BUCKET).remove(paths);
-    if (error) { console.warn(`  ! chunk ${i}: ${error.message}`); continue; }
-    removed += paths.length;
+    try { removed += await removeObjects(paths); }
+    catch (e) { console.warn(`  ! chunk ${i}: ${e.message}`); continue; }
     process.stdout.write(`\r  ${removed}/${orphans.length} apagados`);
   }
   console.log(`\n\nRemovidos: ${removed} arquivos, liberou ~${fmt(totalBytes)}.`);

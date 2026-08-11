@@ -1,6 +1,6 @@
-// Remove do cache (Supabase) as entradas que batem com um termo de busca, e
-// apaga os arquivos correspondentes no bucket. Útil pra forçar rebuild de um
-// carro cuja foto saiu ruim (ex: anúncio de concessionária com telefone).
+// Remove do índice (Postgres/Supabase) as entradas que batem com um termo de
+// busca, e apaga os arquivos correspondentes no bucket (R2). Útil pra forçar
+// rebuild de um carro cuja foto saiu ruim (ex: anúncio de concessionária).
 //
 // Uso (de dentro de server/):
 //   node scripts/purge-car.js "toro freedom"            # SÓ LISTA o que casaria
@@ -8,8 +8,8 @@
 //   node scripts/purge-car.js "toro freedom" --ano 2023 --delete
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
+import { listPrefix, removeObjects } from '../storage.js';
 
-const BUCKET = 'car-images';
 const args = process.argv.slice(2);
 const doDelete = args.includes('--delete');
 const anoIdx = args.indexOf('--ano');
@@ -42,13 +42,14 @@ if (!doDelete) {
 
 for (const r of rows) {
   // Lista e remove todos os arquivos sob a "pasta" da key no bucket.
-  const { data: files, error: listErr } = await sb.storage.from(BUCKET).list(r.key, { limit: 1000 });
-  if (listErr) console.warn(`  ${r.key}: erro listando storage: ${listErr.message}`);
-  if (files && files.length) {
-    const paths = files.map(f => `${r.key}/${f.name}`);
-    const { error: rmErr } = await sb.storage.from(BUCKET).remove(paths);
-    if (rmErr) console.warn(`  ${r.key}: erro removendo arquivos: ${rmErr.message}`);
-    else console.log(`  ${r.key}: ${paths.length} arquivo(s) removido(s) do bucket`);
+  try {
+    const files = await listPrefix(`${r.key}/`);
+    if (files.length) {
+      const n = await removeObjects(files.map(f => f.path));
+      console.log(`  ${r.key}: ${n} arquivo(s) removido(s) do bucket`);
+    }
+  } catch (e) {
+    console.warn(`  ${r.key}: erro no storage: ${e.message}`);
   }
   const { error: delErr } = await sb.from('car_images_cache').delete().eq('key', r.key);
   if (delErr) console.warn(`  ${r.key}: erro removendo linha: ${delErr.message}`);
