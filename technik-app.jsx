@@ -213,7 +213,7 @@ function App() {
       // Repopula o formulário a partir do briefing salvo, pra que "Editar
       // briefing" abra a tela já preenchida com o que o cliente pediu.
       applyForm(briefingToForm(c.briefing || {}, client));
-      setRecommendation({ top: c.top || [], briefing: c.briefing, diagnostico: c.diagnostico });
+      setRecommendation({ top: c.top || [], briefing: c.briefing, diagnostico: c.diagnostico, consultaId: c.id });
       setLoadError(null);
       setDraftId(null);
       setActiveNav('new');
@@ -411,6 +411,7 @@ function App() {
         {stage === 'results' && recommendation && (
           <ResultsView
             client={client}
+            consultaId={recommendation.consultaId}
             cardStyle={t.cardStyle}
             showCompareBar={t.showCompareBar}
             cars={recommendation.top}
@@ -2055,7 +2056,221 @@ function HistoryView({ onOpen, onNew, onResumeDraft }) {
 }
 
 // ─── RESULTS ──────────────────────────────────────────────────
-function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing, diagnostico }) {
+// ─── FEEDBACK DA BUSCA ────────────────────────────────────────
+// 👍 é um clique e acabou. 👎 abre o painel: chips de motivo (clicar rende mais
+// dado que digitar) + "senti falta de" com autocomplete do próprio catálogo +
+// comentário livre. O campo "faltou" é o que mais vale: o backend responde na
+// hora POR QUE aquele carro não apareceu (gap de catálogo, filtro apertado ou
+// ranking do vendedor), então a reclamação já chega com a causa.
+const FEEDBACK_MOTIVOS = [
+  { id: 'faltou',     label: 'Faltou um carro' },
+  { id: 'caro',       label: 'Caro demais' },
+  { id: 'perfil',     label: 'Fora do perfil' },
+  { id: 'poucos',     label: 'Poucas opções' },
+  { id: 'repetitivo', label: 'Lista repetitiva' },
+  { id: 'ficha',      label: 'Ficha técnica errada' },
+  { id: 'fotos',      label: 'Fotos ruins' },
+];
+
+// Rótulo + cor por causa do diagnóstico. As quatro causas são acionáveis por
+// times diferentes, então vale distinguir visualmente.
+const CAUSA_INFO = {
+  'fora-do-catalogo':      { label: 'Gap de catálogo', tone: 'warn' },
+  'cortado-por-filtro':    { label: 'Filtro do briefing', tone: 'info' },
+  'vendedor-nao-escolheu': { label: 'Ranking do vendedor', tone: 'warn' },
+  'estava-na-lista':       { label: 'Já estava na lista', tone: 'ok' },
+};
+
+function FeedbackBar({ consultaId, client, briefing, cars = [] }) {
+  const [rating, setRating] = useState(null);      // 'up' | 'down' | null
+  const [state, setState] = useState('idle');      // idle | sending | done | error
+  const [error, setError] = useState(null);
+  const [motivos, setMotivos] = useState([]);
+  const [comentario, setComentario] = useState('');
+  const [faltou, setFaltou] = useState('');
+  const [sugestoes, setSugestoes] = useState([]);
+  const [sugOpen, setSugOpen] = useState(false);
+  const [diag, setDiag] = useState(null);
+
+  // Autocomplete do catálogo, com debounce pra não bater a cada tecla.
+  useEffect(() => {
+    const q = faltou.trim();
+    if (q.length < 2 || !sugOpen) { setSugestoes([]); return; }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => {
+      fetch(`${API_BASE}/api/catalog/models?q=${encodeURIComponent(q)}`, { signal: ctrl.signal })
+        .then(r => r.json())
+        .then(j => setSugestoes(j.ok ? j.models : []))
+        .catch(() => { /* autocomplete é opcional; falha silenciosa */ });
+    }, 250);
+    return () => { clearTimeout(timer); ctrl.abort(); };
+  }, [faltou, sugOpen]);
+
+  function toggleMotivo(id) {
+    setMotivos(prev => prev.includes(id) ? prev.filter(m => m !== id) : [...prev, id]);
+  }
+
+  async function send(r, extra = {}) {
+    setState('sending');
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          consultaId, rating: r, client, briefing,
+          // Modelo + ano: o diagnóstico precisa do ano pra não confundir
+          // "Compass 2019" com um Compass 2023 que estava na lista.
+          topModels: cars.map(c => `${c.brand} ${c.model} ${c.year}`),
+          ...extra,
+        }),
+      });
+      const j = await res.json();
+      // O diagnóstico vem mesmo quando o save falha — já foi calculado e serve
+      // ao consultor agora. Só o "anotado" é que não pode ser dito à toa.
+      setDiag(j.diagnostico || null);
+      if (!j.ok) throw new Error(j.reason || `HTTP ${res.status}`);
+      setState('done');
+    } catch (e) {
+      setError(e.message);
+      setState('error');
+    }
+  }
+
+  function handleUp() {
+    setRating('up');
+    send('up');
+  }
+
+  function handleDown() {
+    setRating('down');
+    setState('idle');
+  }
+
+  // Já respondido: agradece e, se houve "faltou X", mostra a causa apurada.
+  if (state === 'done') {
+    const causa = diag && CAUSA_INFO[diag.causa];
+    return (
+      <div className="tk-fb tk-fb--done">
+        <div className="tk-fb__thanks">
+          <Icon.Check /> Anotado{rating === 'up' ? ' como boa busca' : ''}. Obrigado.
+        </div>
+        {diag && (
+          <div className={`tk-fb__diag is-${causa?.tone || 'info'}`}>
+            <span className="tk-fb__causa">{causa?.label || diag.causa}</span>
+            <p>{diag.resumo}</p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="tk-fb">
+      <div className="tk-fb__head">
+        <div>
+          <span className="tk-eyebrow">Essa busca foi boa?</span>
+          <p className="tk-help">Seu retorno refina as próximas — principalmente carro que faltou.</p>
+        </div>
+        <div className="tk-fb__rate">
+          <button
+            className={`tk-fb__btn ${rating === 'up' ? 'is-up' : ''}`}
+            disabled={state === 'sending'}
+            onClick={handleUp} title="Busca boa">
+            <ThumbIcon /> Boa
+          </button>
+          <button
+            className={`tk-fb__btn ${rating === 'down' ? 'is-down' : ''}`}
+            disabled={state === 'sending'}
+            onClick={handleDown} title="Busca ruim">
+            <ThumbIcon down /> Ruim
+          </button>
+        </div>
+      </div>
+
+      {/* Fora do painel: o 👍 também pode falhar, e aí não há painel aberto. */}
+      {state === 'error' && (
+        <div className="tk-fb__err">
+          Não consegui salvar: {error}. Tente de novo.
+          {diag && <div className="tk-fb__diag is-info" style={{ marginTop: 10 }}><p>{diag.resumo}</p></div>}
+        </div>
+      )}
+
+      {rating === 'down' && (
+        <div className="tk-fb__panel">
+          <label className="tk-fb__label">O que faltou ou atrapalhou?</label>
+          <div className="tk-fb__chips">
+            {FEEDBACK_MOTIVOS.map(m => (
+              <button key={m.id}
+                className={`tk-chip ${motivos.includes(m.id) ? 'is-active' : ''}`}
+                onClick={() => toggleMotivo(m.id)}>
+                {m.label}
+              </button>
+            ))}
+          </div>
+
+          <label className="tk-fb__label">Senti falta de <span className="tk-help">(marca e modelo — a gente checa por que não apareceu)</span></label>
+          <div className="tk-fb__auto">
+            <input
+              type="text"
+              className="tk-fb__input"
+              placeholder="Ex.: Toyota Corolla Cross"
+              value={faltou}
+              onChange={e => { setFaltou(e.target.value); setSugOpen(true); }}
+              onFocus={() => setSugOpen(true)}
+              onBlur={() => setTimeout(() => setSugOpen(false), 150)}
+            />
+            {sugOpen && sugestoes.length > 0 && (
+              <div className="tk-fb__sug">
+                {sugestoes.map(s => (
+                  <button key={s} onMouseDown={e => e.preventDefault()}
+                    onClick={() => { setFaltou(s); setSugOpen(false); }}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <label className="tk-fb__label">Comentário <span className="tk-help">(opcional)</span></label>
+          <textarea
+            className="tk-fb__input tk-fb__textarea"
+            rows={3}
+            placeholder="O que você esperava ver nessa lista?"
+            value={comentario}
+            onChange={e => setComentario(e.target.value)}
+          />
+
+          <div className="tk-fb__actions">
+            <button className="tk-btn tk-btn-ghost" onClick={() => { setRating(null); setState('idle'); }}>
+              Cancelar
+            </button>
+            <button className="tk-btn tk-btn-primary"
+              disabled={state === 'sending' || (!motivos.length && !faltou.trim() && !comentario.trim())}
+              onClick={() => send('down', {
+                // Digitar no campo "faltou" implica o motivo, sem precisar clicar.
+                motivos: faltou.trim() && !motivos.includes('faltou') ? [...motivos, 'faltou'] : motivos,
+                comentario, faltou,
+              })}>
+              {state === 'sending' ? 'Enviando…' : 'Enviar retorno'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ThumbIcon = ({ down }) => (
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+    strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
+    style={down ? { transform: 'rotate(180deg)' } : undefined}>
+    <path d="M7 21V10l4.5-7c1.4 0 2.3 1 2 2.4L13 9h5.4c1.5 0 2.6 1.4 2.2 2.8l-2 7A2.5 2.5 0 0 1 16.2 21Z" />
+    <path d="M7 10H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3" />
+  </svg>
+);
+
+function ResultsView({ client, consultaId, cardStyle, showCompareBar, cars = [], briefing, diagnostico }) {
   const [filter, setFilter] = useState('all');
   const [compare, setCompare] = useState([]);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -2094,6 +2309,8 @@ function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing, d
     });
   }
 
+  // Busca vazia é justamente onde o feedback vale mais — em vez de beco sem
+  // saída, o consultor diz qual carro esperava e recebe a causa na hora.
   if (!cars.length) {
     return (
       <div className="tk-results tk-scroll">
@@ -2104,6 +2321,7 @@ function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing, d
             <p>Tente relaxar o orçamento, o ano mínimo, ou o tipo de carroceria.</p>
           </div>
         </div>
+        <FeedbackBar key={consultaId} consultaId={consultaId} client={client} briefing={briefing} cars={cars} />
       </div>
     );
   }
@@ -2198,6 +2416,9 @@ function ResultsView({ client, cardStyle, showCompareBar, cars = [], briefing, d
           ))}
         </div>
       )}
+
+      {/* key: troca de consulta reseta o feedback (senão herda o estado da anterior) */}
+      <FeedbackBar key={consultaId} consultaId={consultaId} client={client} briefing={briefing} cars={cars} />
 
       {showCompareBar && compare.length > 0 && (() => {
         // Resolve os ids selecionados nos carros reais vindos do backend

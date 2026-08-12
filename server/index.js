@@ -10,12 +10,14 @@ import { getMarcas, getModelos, getAnos, getPreco } from './fipe.js';
 import { resolveCandidate, resolveCandidates } from './match.js';
 import { runCurator } from './agents.js';
 import { normalizeBriefing } from './briefing.js';
-import { recommend } from './recommend.js';
+import { recommend, diagnoseMiss, suggestModels } from './recommend.js';
 import { loadCatalog, clearCatalogCache } from './catalog.js';
 import { getOrBuildImages, listCachedCars, addManualImages, rebuildCarImages, getCarPhotos, deleteCarPhoto, setPhotoFavorite } from './imageCache.js';
 import { saveConsulta, listConsultas, getConsulta, getStats } from './history.js';
+import { saveFeedback, listFeedback } from './feedback.js';
 import { saveRascunho, listRascunhos, getRascunho, deleteRascunho } from './rascunhos.js';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 
 const app = express();
 app.use(cors());
@@ -104,10 +106,13 @@ app.post('/api/curator-only', async (req, res, next) => {
 app.post('/api/recommend', async (req, res, next) => {
   try {
     const result = await recommend(req.body || {});
-    res.json(result);
+    // Gera o id AQUI pra devolver junto com o resultado: o frontend precisa
+    // dele pra amarrar o feedback à consulta, e assim não esperamos o insert.
+    const consultaId = randomUUID();
+    res.json({ ...result, consultaId });
     // Grava no histórico depois de responder — save nunca atrasa nem quebra
     // a recomendação (erros são engolidos dentro de saveConsulta).
-    saveConsulta({ client: req.body?.client, result });
+    saveConsulta({ id: consultaId, client: req.body?.client, result });
   } catch (e) { next(e); }
 });
 
@@ -136,6 +141,65 @@ app.get('/api/consultas/:id', async (req, res) => {
     res.json({ ok: true, consulta });
   } catch (e) {
     res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+// ─── Feedback do consultor sobre a busca ─────────────────────────
+// Se veio "senti falta de X", diagnostica na hora POR QUE X não apareceu e
+// devolve junto: o consultor vê a causa no mesmo clique, e a causa fica
+// gravada com o feedback (vira fila de trabalho: gap de catálogo, filtro
+// apertado ou ranking do vendedor).
+app.post('/api/feedback', async (req, res) => {
+  try {
+    const { consultaId, rating, motivos, comentario, faltou, client, briefing, topModels } = req.body || {};
+
+    let diagnostico = null;
+    if (faltou?.trim()) {
+      try {
+        diagnostico = await diagnoseMiss({
+          briefing,
+          termo: faltou,
+          topModels: Array.isArray(topModels) ? topModels : [],
+        });
+      } catch (e) {
+        // Diagnóstico é bônus — nunca impede o feedback de ser salvo.
+        console.warn('[feedback] diagnoseMiss falhou (ignorado):', e.message);
+      }
+    }
+
+    try {
+      const id = await saveFeedback({
+        consultaId, rating, motivos, comentario, faltou, diagnostico,
+        clientName: client?.name, briefing,
+      });
+      res.json({ ok: true, id, diagnostico });
+    } catch (e) {
+      // Não salvou (Supabase pausado, tabela ainda não criada…). Devolve o erro
+      // sem esconder — mas manda o diagnóstico junto: ele já foi calculado e é
+      // útil pro consultor agora, mesmo que a linha não tenha sido gravada.
+      res.status(503).json({ ok: false, reason: e.message, diagnostico });
+    }
+  } catch (e) {
+    res.status(500).json({ ok: false, reason: e.message });
+  }
+});
+
+app.get('/api/feedback', async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+    res.json({ ok: true, feedback: await listFeedback({ limit, rating: req.query.rating }) });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+// Autocomplete do campo "senti falta de" — nomes reais do catálogo, pra que o
+// termo digitado seja diagnosticável em vez de texto solto.
+app.get('/api/catalog/models', async (req, res) => {
+  try {
+    res.json({ ok: true, models: await suggestModels(req.query.q || '') });
+  } catch (e) {
+    res.status(404).json({ ok: false, reason: e.message });
   }
 });
 

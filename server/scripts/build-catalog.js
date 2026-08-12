@@ -165,7 +165,42 @@ async function main() {
   // final e build incompleto sai com código != 0.
   const brandReport = [];
 
-  for (let mi = 0; mi < marcasFiltered.length; mi++) {
+  // MERGE (upsert, NÃO-destrutivo): nunca remove entries existentes — só insere
+  // ou atualiza as buscadas, indexando por marca|modelo|ano. Se um modelo falhar,
+  // os carros dele que já estão no catálogo são PRESERVADOS em vez de sumirem.
+  const mergeBrand = (brandEntries) => {
+    if (!brandEntries.length) return;
+    const ukey = e => `${e.marcaId}|${e.modeloId}|${e.anoId}`;
+    const byKey = new Map(catalog.map(e => [ukey(e), e]));
+    for (const e of brandEntries) byKey.set(ukey(e), e);
+    catalog = [...byKey.values()];
+  };
+
+  // ANTES o catálogo só era gravado no FIM de cada marca. Uma marca grande leva
+  // quase uma hora (Chevrolet tem 556 modelos), então uma interrupção no meio
+  // jogava fora todo o trabalho — aconteceu, 47 min e 347 entries perdidos.
+  // Agora grava a cada CHECKPOINT_MODELOS modelos: o pior caso passa a ser
+  // perder alguns modelos, não a marca inteira.
+  const CHECKPOINT_MODELOS = 10;
+  const salvar = async (marcasFeitas) => {
+    await fs.writeFile(OUT_FILE, JSON.stringify({
+      version: 1,
+      builtAt: new Date().toISOString(),
+      anoMin: ANO_MIN,
+      stats: { marcas: marcasFeitas, modelos: modelosTotal, anos: anosTotal, entries: catalog.length, erros: errosTotal, tipos: tipoStats },
+      entries: catalog,
+    }, null, 0), 'utf8');
+  };
+
+  // Disjuntor. A FIPE bloqueia por VOLUME acumulado, não por velocidade: medido
+  // em campo, o bloqueio veio depois de ~500 requests mesmo com 2,5s de intervalo,
+  // e a partir dali NADA mais passou. Insistir não recupera nada e provavelmente
+  // prolonga o bloqueio. Quando N modelos seguidos falham inteiros, para limpo —
+  // com o progresso salvo — pra retomar noutra sessão.
+  const ABORT_AFTER_FAILS = parseInt(process.env.FIPE_ABORT_AFTER || '', 10) || 5;
+  let bloqueado = false;
+
+  for (let mi = 0; mi < marcasFiltered.length && !bloqueado; mi++) {
     const marca = marcasFiltered[mi];
     console.log(`[${ts()}] [${mi + 1}/${marcasFiltered.length}] ${marca.nome}`);
     const errosAntes = errosTotal;
@@ -186,6 +221,7 @@ async function main() {
 
     // Sequencial — o rate limiter global garante ~3 req/s
     const BATCH = 1;
+    let falhasSeguidas = 0;
     for (let bi = 0; bi < modelos.length; bi += BATCH) {
       const slice = modelos.slice(bi, bi + BATCH);
       const results = await Promise.all(slice.map(async md => {
@@ -195,7 +231,8 @@ async function main() {
         let anos;
         try {
           anos = await withRetry(() => getAnos(marca.codigo, md.codigo), `getAnos ${marca.nome}/${md.nome}`);
-        } catch { errosTotal++; return []; }
+          falhasSeguidas = 0;
+        } catch { errosTotal++; falhasSeguidas++; return []; }
 
         const anosUsados = anos
           .filter(a => !isZeroKmCode(a.codigo))
@@ -235,42 +272,43 @@ async function main() {
         return entries;
       }));
       results.forEach(entries => brandEntries.push(...entries));
-      if ((bi + BATCH) % 10 === 0 || bi + BATCH >= modelos.length) {
+
+      // Checkpoint: funde o que já foi coletado no catálogo e grava em disco.
+      // Fazer isso a cada CHECKPOINT_MODELOS é o que impede que uma interrupção
+      // jogue a marca inteira fora. mergeBrand é idempotente (upsert por chave),
+      // então re-fundir o mesmo brandEntries a cada checkpoint é inofensivo.
+      const feitos = Math.min(bi + BATCH, modelos.length);
+      if (feitos % CHECKPOINT_MODELOS === 0 || feitos >= modelos.length) {
+        mergeBrand(brandEntries);
+        await salvar(mi);
         const cur = slice[slice.length - 1];
-        console.log(`    [${ts()}] ${Math.min(bi + BATCH, modelos.length)}/${modelos.length} modelos · modelo atual: ${cur.nome} · +${brandEntries.length} entries (cat total: ${catalog.length + brandEntries.length})`);
+        console.log(`    [${ts()}] ${feitos}/${modelos.length} modelos · modelo atual: ${cur.nome} · +${brandEntries.length} entries (cat total: ${catalog.length}) ✔salvo`);
+      }
+
+      if (falhasSeguidas >= ABORT_AFTER_FAILS) {
+        bloqueado = true;
+        console.error(`\n  ⛔ [${ts()}] ${falhasSeguidas} modelos seguidos falharam por completo — a FIPE bloqueou o IP.`);
+        console.error(`     Parando aqui. O progresso até ${feitos}/${modelos.length} modelos está salvo.`);
+        console.error(`     Retome mais tarde (horas) com: --brands=${marca.nome.toLowerCase()}`);
+        break;
       }
     }
 
-    // MERGE (upsert, NÃO-destrutivo): nunca remove entries existentes — só
-    // insere/atualiza as buscadas nesta rodada, indexando por marca|modelo|ano.
-    // Assim, se um modelo falhar (ex.: 429 no getAnos), os carros dele que já
-    // estão no catálogo são PRESERVADOS em vez de sumirem. (O merge antigo fazia
-    // "remove a marca → põe o que buscou"; sob 429 isso erodia o catálogo.)
-    // Pra um rebuild limpo do zero, apague o catalog.json antes de rodar.
-    if (brandEntries.length) {
-      const ukey = e => `${e.marcaId}|${e.modeloId}|${e.anoId}`;
-      const byKey = new Map(catalog.map(e => [ukey(e), e]));
-      for (const e of brandEntries) byKey.set(ukey(e), e);
-      catalog = [...byKey.values()];
-    }
+    // Fecha a marca. O merge e a gravação já aconteceram nos checkpoints; isto
+    // aqui só garante o estado final caso o último lote não tenha caído num
+    // múltiplo de CHECKPOINT_MODELOS. Pra um rebuild limpo do zero, apague o
+    // catalog.json antes de rodar.
+    mergeBrand(brandEntries);
+    await salvar(mi + 1);
 
     const errosMarca = errosTotal - errosAntes;
     brandReport.push({
       marca: marca.nome,
-      status: errosMarca > 0 ? 'PARCIAL' : 'ok',
+      status: bloqueado ? 'BLOQUEADO' : errosMarca > 0 ? 'PARCIAL' : 'ok',
       modelos: modelos.length,
       entries: brandEntries.length,
       erros: errosMarca,
     });
-
-    // Salva incrementalmente a cada marca pra não perder progresso
-    await fs.writeFile(OUT_FILE, JSON.stringify({
-      version: 1,
-      builtAt: new Date().toISOString(),
-      anoMin: ANO_MIN,
-      stats: { marcas: mi + 1, modelos: modelosTotal, anos: anosTotal, entries: catalog.length, erros: errosTotal, tipos: tipoStats },
-      entries: catalog,
-    }, null, 0), 'utf8');
   }
 
   console.log('\n══════════════════════════════════════');
@@ -288,9 +326,17 @@ async function main() {
   // passava por sucesso com a Chevrolet em 14.
   console.log('\n═══ COBERTURA POR MARCA (desta rodada) ═══');
   for (const b of [...brandReport].sort((x, y) => x.entries - y.entries)) {
-    const flag = b.status === 'FALHOU' ? '✗' : b.status === 'PARCIAL' ? '!' : ' ';
+    const flag = b.status === 'FALHOU' ? '✗' : b.status === 'BLOQUEADO' ? '⛔' : b.status === 'PARCIAL' ? '!' : ' ';
     const erros = b.erros ? `${String(b.erros).padStart(4)} erros` : '          ';
     console.log(`  ${flag} ${String(b.entries).padStart(5)} entries ${String(b.modelos).padStart(4)} modelos ${erros}  ${b.marca}`);
+  }
+
+  if (bloqueado) {
+    console.log('\n⛔ BUILD INTERROMPIDO: a FIPE bloqueou o IP por volume acumulado.');
+    console.log('   O progresso está salvo — retome daqui a algumas horas, dirigido');
+    console.log('   às marcas que faltam. O bloqueio não é por velocidade: afrouxar');
+    console.log('   FIPE_RATE_MS não evita, é preciso espaçar as SESSÕES.');
+    process.exitCode = 1;
   }
 
   const falhas = brandReport.filter(b => b.status === 'FALHOU');

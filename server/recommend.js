@@ -45,28 +45,55 @@ function combMatch(briefingFuels, entryFuel) {
   });
 }
 
+// ─── Filtro determinístico do catálogo ────────────────────────────────────
+// Isolado numa função só porque o diagnóstico de "faltou o carro X" precisa
+// rodar EXATAMENTE o mesmo filtro num carro específico (ver diagnoseMiss).
+// Duplicar a regra aqui e lá significaria diagnóstico mentindo com o tempo.
+
+const MARGEM_NORMAL = { lo: 0.95, hi: 1.05 };   // folga pequena no orçamento
+const MARGEM_RELAXADA = { lo: 0.90, hi: 1.10 }; // usada quando sobram <5 opções
+
+// Deriva do briefing normalizado tudo que os filtros consultam.
+function filtroContext(briefing) {
+  return {
+    tiposPedidos: (briefing.tiposDesejados || []).map(t => TIPO_TO_SLUG[t]).filter(Boolean),
+    combsPedidas: (briefing.combustiveisAceitos || []).map(normFuel),
+    orc: briefing.orcamentoReais || {},
+    anoMin: briefing.anoMin ? Number(briefing.anoMin) : null,
+    anoMax: briefing.anoMax ? Number(briefing.anoMax) : null,
+    // Rótulos originais em pt-BR — só pra texto de diagnóstico, não filtram.
+    tiposLabel: briefing.tiposDesejados || [],
+    combsLabel: briefing.combustiveisAceitos || [],
+  };
+}
+
+// Por que esta entrada do catálogo NÃO entra no pool? null = entra.
+// A ordem dos testes é a ordem de precedência do motivo reportado.
+function motivoDescarte(e, ctx, margem = MARGEM_NORMAL) {
+  if (!e.preco) return 'semPreco';
+  if (ctx.anoMin && e.ano < ctx.anoMin) return 'ano';
+  if (ctx.anoMax && e.ano > ctx.anoMax) return 'ano';
+  if (ctx.tiposPedidos.length && !ctx.tiposPedidos.includes(e.tipo)) return 'tipo';
+  if (ctx.combsPedidas.length && !combMatch(ctx.combsPedidas, e.combustivel)) return 'comb';
+  if (e.preco < ctx.orc.min * margem.lo) return 'orcamento';
+  if (ctx.orc.max != null && e.preco > ctx.orc.max * margem.hi) return 'orcamento';
+  return null;
+}
+
 // ─── Pipeline NOVO usando catálogo pré-computado ──────────────────────────
 async function recommendFromCatalog(briefing, log) {
   const catalog = await loadCatalog();
   log('catalog-loaded', { count: catalog.entries.length });
 
-  const tiposPedidos = (briefing.tiposDesejados || [])
-    .map(t => TIPO_TO_SLUG[t]).filter(Boolean);
-  const combsPedidas = (briefing.combustiveisAceitos || []).map(normFuel);
-  const orc = briefing.orcamentoReais;
-  const anoMin = briefing.anoMin;
-  const anoMax = briefing.anoMax;
+  const ctx = filtroContext(briefing);
+  const { orc, anoMin, anoMax } = ctx;
 
   const reasonsCount = { ano: 0, tipo: 0, comb: 0, orcamento: 0, semPreco: 0 };
 
   // Modo normal: 95% a 105% do orçamento (margem pequena)
   let pool = catalog.entries.filter(e => {
-    if (!e.preco) { reasonsCount.semPreco++; return false; }
-    if (anoMin && e.ano < Number(anoMin)) { reasonsCount.ano++; return false; }
-    if (anoMax && e.ano > Number(anoMax)) { reasonsCount.ano++; return false; }
-    if (tiposPedidos.length && !tiposPedidos.includes(e.tipo)) { reasonsCount.tipo++; return false; }
-    if (combsPedidas.length && !combMatch(combsPedidas, e.combustivel)) { reasonsCount.comb++; return false; }
-    if (e.preco < orc.min * 0.95 || (orc.max != null && e.preco > orc.max * 1.05)) { reasonsCount.orcamento++; return false; }
+    const motivo = motivoDescarte(e, ctx, MARGEM_NORMAL);
+    if (motivo) { reasonsCount[motivo]++; return false; }
     return true;
   });
 
@@ -74,15 +101,7 @@ async function recommendFromCatalog(briefing, log) {
 
   // Relaxa orçamento se sobrou pouco — piso em 90% do mínimo (mais conservador)
   if (pool.length < 5) {
-    pool = catalog.entries.filter(e => {
-      if (!e.preco) return false;
-      if (anoMin && e.ano < Number(anoMin)) return false;
-      if (anoMax && e.ano > Number(anoMax)) return false;
-      if (tiposPedidos.length && !tiposPedidos.includes(e.tipo)) return false;
-      if (combsPedidas.length && !combMatch(combsPedidas, e.combustivel)) return false;
-      if (e.preco < orc.min * 0.9 || (orc.max != null && e.preco > orc.max * 1.10)) return false;
-      return true;
-    });
+    pool = catalog.entries.filter(e => !motivoDescarte(e, ctx, MARGEM_RELAXADA));
     log('catalog-relaxed', { count: pool.length });
   }
 
@@ -269,4 +288,188 @@ async function recommendLegacy(briefing, log) {
     .sort((a, b) => a.rank - b.rank);
 
   return { ok: true, briefing, top: topEnriched, diagnostico: { fluxo: 'legacy', curador: candidatos.length, fipe: matched.length, pool: pool.length, vendedor: topEnriched.length } };
+}
+
+// ─── Diagnóstico de "senti falta do carro X" ─────────────────────────────
+// Quando o consultor reclama que um carro não apareceu, roda os MESMOS filtros
+// do pipeline só naquele carro e responde onde ele caiu. Sem isso, o feedback
+// é uma caixa de sugestões; com isso, cada reclamação já vem com a causa.
+//
+// Quatro causas possíveis:
+//   estava-na-lista       → apareceu no top entregue (o consultor não viu)
+//   fora-do-catalogo      → nenhuma versão no catálogo FIPE → gap de build
+//   cortado-por-filtro    → existe, mas preço/ano/tipo/combustível barraram
+//   vendedor-nao-escolheu → passou nos filtros, o LLM vendedor não ranqueou
+
+function normText(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const FILTRO_LABEL = {
+  ano: 'ano', tipo: 'tipo de carroceria', comb: 'combustível',
+  orcamento: 'orçamento', semPreco: 'sem preço na FIPE',
+};
+
+const plural = (n, sing, pl) => `${n} ${n === 1 ? sing : pl}`;
+
+// Texto em pt-BR explicando o descarte dominante, com os números concretos.
+// `entries` são SÓ as versões cortadas por este motivo — usar todas as versões
+// encontradas produziria frases contraditórias ("é híbrido, flex; aceitava flex").
+function explicaDescarte(motivo, entries, ctx) {
+  const anos = entries.map(e => e.ano).filter(Boolean);
+  const precos = entries.map(e => e.preco).filter(Boolean);
+  const brl = n => 'R$ ' + Math.round(n).toLocaleString('pt-BR');
+  switch (motivo) {
+    case 'ano': {
+      const faixa = anos.length ? `${Math.min(...anos)}–${Math.max(...anos)}` : '?';
+      const pedido = `${ctx.anoMin || '?'}${ctx.anoMax ? `–${ctx.anoMax}` : ' em diante'}`;
+      return `no catálogo só há ano ${faixa}; o briefing pediu ${pedido}.`;
+    }
+    case 'tipo': {
+      const tipos = [...new Set(entries.map(e => e.tipo))].join(', ');
+      return `está classificado como ${tipos}; o briefing pediu ${ctx.tiposLabel.join(', ')}.`;
+    }
+    case 'comb': {
+      const combs = [...new Set(entries.map(e => e.combustivel))].join(', ');
+      return `é ${combs}; o briefing aceitava ${ctx.combsLabel.join(', ')}.`;
+    }
+    case 'orcamento': {
+      const faixa = precos.length ? `${brl(Math.min(...precos))} a ${brl(Math.max(...precos))}` : '?';
+      const teto = ctx.orc.max == null ? 'sem teto' : brl(ctx.orc.max);
+      return `custa de ${faixa}; o briefing era ${brl(ctx.orc.min)} a ${teto}.`;
+    }
+    case 'semPreco':
+      return 'as versões encontradas estão sem preço na FIPE.';
+    default:
+      return '';
+  }
+}
+
+/**
+ * Diagnostica por que um carro não apareceu numa recomendação.
+ * @param {object}   p.briefing   briefing JÁ NORMALIZADO (como sai do /api/recommend)
+ * @param {string}   p.termo      o que o consultor digitou, ex. "Corolla Cross 2022"
+ * @param {string[]} p.topModels  modelos entregues, ex. ["Toyota Corolla Cross 2.0..."]
+ */
+export async function diagnoseMiss({ briefing, termo, topModels = [] }) {
+  const busca = normText(termo);
+  if (!busca) return null;
+
+  // Ano solto no termo ("Corolla Cross 2022") vira filtro, não palavra-chave.
+  const anoPedido = (busca.match(/\b(19|20)\d{2}\b/) || [])[0];
+  const tokens = busca.split(' ').filter(t => t.length >= 2 && t !== anoPedido);
+  if (!tokens.length) return null;
+
+  const bate = (texto) => {
+    const t = normText(texto);
+    return tokens.every(tok => t.includes(tok));
+  };
+
+  // 1. O carro estava na lista entregue? Se o consultor citou um ano, ele
+  // também precisa bater — senão "Compass 2020" casaria com um Compass 2023.
+  const naLista = topModels.filter(m => bate(m) && (!anoPedido || normText(m).includes(anoPedido)));
+  if (naLista.length) {
+    return {
+      termo, causa: 'estava-na-lista',
+      resumo: `“${termo}” apareceu na lista entregue (${naLista[0]}).`,
+      detalhe: { modelosNaLista: naLista.slice(0, 3) },
+    };
+  }
+
+  const catalog = await loadCatalog();
+  const ctx = filtroContext(briefing || {});
+  const doModelo = catalog.entries.filter(e => bate(`${e.marca} ${e.modelo}`));
+  const matches = anoPedido ? doModelo.filter(e => String(e.ano) === anoPedido) : doModelo;
+
+  // 2a. O modelo existe, mas não naquele ano — é gap de ano, não de modelo.
+  if (!matches.length && doModelo.length) {
+    const anos = doModelo.map(e => e.ano).filter(Boolean);
+    return {
+      termo, causa: 'fora-do-catalogo',
+      resumo: `O modelo existe no catálogo, mas não o ano ${anoPedido}: só há ${Math.min(...anos)}–${Math.max(...anos)}.`,
+      detalhe: { candidatosNoCatalogo: 0, anoPedido, anosDisponiveis: [...new Set(anos)].sort() },
+    };
+  }
+
+  // 2b. Nem existe no catálogo → gap de build (ou erro de digitação).
+  if (!matches.length) {
+    // Tenta o token mais longo sozinho pra sugerir "quis dizer?".
+    const maiorToken = tokens.slice().sort((a, b) => b.length - a.length)[0];
+    const sugestoes = [...new Set(
+      catalog.entries
+        .filter(e => normText(`${e.marca} ${e.modelo}`).includes(maiorToken))
+        .map(e => `${e.marca} ${splitModelo(e.modelo).versao || e.modelo}`)
+    )].slice(0, 5);
+    return {
+      termo, causa: 'fora-do-catalogo',
+      resumo: sugestoes.length
+        ? `Não há “${termo}” no catálogo FIPE. Parecidos: ${sugestoes.join(' · ')}.`
+        : `Não há nenhuma versão de “${termo}” no catálogo FIPE — gap de catálogo.`,
+      detalhe: { candidatosNoCatalogo: 0, sugestoes },
+    };
+  }
+
+  // 3. Existe: rodar o filtro determinístico versão por versão.
+  const descartes = {};
+  const cortadasPor = {};   // motivo → versões cortadas por ele (pra explicação)
+  const passaram = [];
+  let passariaRelaxado = false;
+  for (const e of matches) {
+    const motivo = motivoDescarte(e, ctx, MARGEM_NORMAL);
+    if (!motivo) { passaram.push(e); continue; }
+    descartes[motivo] = (descartes[motivo] || 0) + 1;
+    (cortadasPor[motivo] ||= []).push(e);
+    if (!motivoDescarte(e, ctx, MARGEM_RELAXADA)) passariaRelaxado = true;
+  }
+
+  const exemplos = matches.slice(0, 5).map(e => ({
+    marca: e.marca, modelo: e.modelo, ano: e.ano,
+    preco: e.preco, tipo: e.tipo, combustivel: e.combustivel,
+    motivo: motivoDescarte(e, ctx, MARGEM_NORMAL),
+  }));
+
+  // 4. Passou nos filtros mas não foi entregue → o vendedor LLM não escolheu.
+  if (passaram.length) {
+    return {
+      termo, causa: 'vendedor-nao-escolheu',
+      resumo: `${plural(passaram.length, 'versão', 'versões')} de “${termo}” passou nos filtros e entrou no pool, mas o vendedor não ranqueou no top. É ranking, não catálogo.`,
+      detalhe: { candidatosNoCatalogo: matches.length, passaramFiltro: passaram.length, descartes, exemplos },
+    };
+  }
+
+  // 5. Todas cortadas → reporta o motivo dominante com os números.
+  const dominante = Object.entries(descartes).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const nota = passariaRelaxado
+    ? ' Entraria na busca relaxada (usada só quando sobram menos de 5 opções).'
+    : '';
+  return {
+    termo, causa: 'cortado-por-filtro',
+    filtro: dominante,
+    resumo: `${plural(matches.length, 'versão', 'versões')} de “${termo}” no catálogo, nenhuma passou nos filtros. `
+      + `Motivo principal — ${FILTRO_LABEL[dominante] || dominante}: ${explicaDescarte(dominante, cortadasPor[dominante] || matches, ctx)}${nota}`,
+    detalhe: { candidatosNoCatalogo: matches.length, passaramFiltro: 0, descartes, passariaRelaxado, exemplos },
+  };
+}
+
+/** Sugestões "Marca Modelo" do catálogo, pro autocomplete do campo "faltou". */
+export async function suggestModels(q, limit = 8) {
+  const busca = normText(q);
+  if (busca.length < 2) return [];
+  const catalog = await loadCatalog();
+  const tokens = busca.split(' ');
+  const out = new Set();
+  for (const e of catalog.entries) {
+    const versao = splitModelo(e.modelo).versao || e.modelo;
+    const label = `${e.marca} ${versao}`;
+    if (out.has(label)) continue;
+    const alvo = normText(`${e.marca} ${e.modelo}`);
+    if (tokens.every(t => alvo.includes(t))) out.add(label);
+    if (out.size >= limit) break;
+  }
+  return [...out];
 }

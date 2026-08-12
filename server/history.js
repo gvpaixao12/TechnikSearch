@@ -8,11 +8,12 @@
 import { getSupabase } from './imageCache.js';
 
 // Monta a linha denormalizada a partir do request + resultado do recommend.
-function buildRow({ client, result }) {
+function buildRow({ id, client, result }) {
   const briefing = result?.briefing || {};
   const orc = briefing.orcamentoReais || {};
   const top = Array.isArray(result?.top) ? result.top : [];
   return {
+    ...(id ? { id } : {}),
     client_name: client?.name?.trim() || null,
     client_segment: client?.segment?.trim() || null,
     ok: result?.ok !== false,
@@ -32,10 +33,13 @@ function buildRow({ client, result }) {
 }
 
 // Grava uma consulta. Retorna o id inserido, ou null se falhou (sem lançar).
-export async function saveConsulta({ client, result }) {
+// `id` opcional: quem chama pode gerar o uuid antes (crypto.randomUUID) pra já
+// devolver o id ao frontend sem esperar o insert — é o que /api/recommend faz,
+// pra que o feedback consiga se referir à consulta sem atrasar a resposta.
+export async function saveConsulta({ id, client, result }) {
   try {
     const sb = getSupabase();
-    const row = buildRow({ client, result });
+    const row = buildRow({ id, client, result });
     const { data, error } = await sb
       .from('consultas')
       .insert(row)
