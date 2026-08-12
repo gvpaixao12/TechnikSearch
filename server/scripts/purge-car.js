@@ -7,8 +7,8 @@
 //   node scripts/purge-car.js "toro freedom" --delete   # apaga de fato
 //   node scripts/purge-car.js "toro freedom" --ano 2023 --delete
 import 'dotenv/config';
-import { createClient } from '@supabase/supabase-js';
 import { listPrefix, removeObjects } from '../storage.js';
+import { q, exec, closePool } from '../db.js';
 
 const args = process.argv.slice(2);
 const doDelete = args.includes('--delete');
@@ -18,17 +18,27 @@ const term = args.filter((a, i) => !a.startsWith('--') && i !== (anoIdx + 1)).jo
 
 if (!term) { console.error('informe um termo de busca, ex: node scripts/purge-car.js "toro freedom"'); process.exit(1); }
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { auth: { persistSession: false } });
+// Quebra o termo em palavras e exige TODAS no modelo (ilike). Filtra ano se dado.
+// Cada palavra vira um parâmetro — nunca interpolado na string, senão um termo
+// com aspas viraria SQL injection num script que apaga coisas.
+const palavras = term.split(/\s+/);
+const condicoes = palavras.map((_, i) => `modelo ilike $${i + 1}`);
+const params = palavras.map(w => `%${w}%`);
+if (ano) { condicoes.push(`ano = $${params.length + 1}`); params.push(ano); }
 
-// Quebra o termo em palavras e exige todas no modelo (ilike). Filtra ano se dado.
-let q = sb.from('car_images_cache').select('key,marca,modelo,ano,images,validated');
-for (const w of term.split(/\s+/)) q = q.ilike('modelo', `%${w}%`);
-if (ano) q = q.eq('ano', ano);
-
-const { data, error } = await q;
-if (error) { console.error('erro lendo cache:', error.message); process.exit(1); }
-
-const rows = data || [];
+let rows;
+try {
+  rows = await q(
+    `select key, marca, modelo, ano, images, validated
+       from car_images_cache
+      where ${condicoes.join(' and ')}
+      order by key`,
+    params
+  );
+} catch (e) {
+  console.error('erro lendo cache:', e.message);
+  process.exit(1);
+}
 console.log(`\n${rows.length} entrada(s) casando com "${term}"${ano ? ` ano ${ano}` : ''}:\n`);
 for (const r of rows) {
   const n = Array.isArray(r.images) ? r.images.length : 0;
@@ -51,8 +61,12 @@ for (const r of rows) {
   } catch (e) {
     console.warn(`  ${r.key}: erro no storage: ${e.message}`);
   }
-  const { error: delErr } = await sb.from('car_images_cache').delete().eq('key', r.key);
-  if (delErr) console.warn(`  ${r.key}: erro removendo linha: ${delErr.message}`);
-  else console.log(`  ${r.key}: linha do cache removida ✓ (será reconstruída na próxima visita)`);
+  try {
+    await exec('delete from car_images_cache where key = $1', [r.key]);
+    console.log(`  ${r.key}: linha do cache removida ✓ (será reconstruída na próxima visita)`);
+  } catch (e) {
+    console.warn(`  ${r.key}: erro removendo linha: ${e.message}`);
+  }
 }
 console.log('\nfeito.\n');
+await closePool();

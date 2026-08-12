@@ -11,8 +11,8 @@
 // SEGURANÇA: só considera órfão o que está DENTRO de uma pasta <key>/ e não bate
 // com nenhuma URL do índice. Chaves em --except são puladas por completo.
 import 'dotenv/config';
-import { getSupabase } from '../imageCache.js';
 import { pathFromUrl, listPrefix, listFolders, removeObjects } from '../storage.js';
+import { q, closePool } from '../db.js';
 
 const args = process.argv.slice(2);
 const APPLY = args.includes('--apply');
@@ -23,21 +23,16 @@ const EXCEPT = new Set(
     .map(s => s.trim()).filter(Boolean)
 );
 
-const sb = getSupabase();
 const fmt = b => b >= 1 << 30 ? (b / (1 << 30)).toFixed(2) + ' GB'
   : b >= 1 << 20 ? (b / (1 << 20)).toFixed(1) + ' MB' : (b / (1 << 10)).toFixed(0) + ' KB';
 
 // 1) Conjunto de TODOS os caminhos referenciados pelo índice.
 async function referencedPaths() {
   const ref = new Set();
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from('car_images_cache').select('images').range(from, from + 999);
-    if (error) throw new Error(error.message);
-    if (!data || !data.length) break;
-    for (const r of data) for (const im of (r.images || [])) {
+  for (const r of await q('select images from car_images_cache')) {
+    for (const im of (r.images || [])) {
       const p = pathFromUrl(im?.url); if (p) ref.add(p);
     }
-    if (data.length < 1000) break;
   }
   return ref;
 }

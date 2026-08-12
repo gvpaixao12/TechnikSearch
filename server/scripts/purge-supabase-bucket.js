@@ -12,7 +12,7 @@
 //   2) TODA foto referenciada no índice existe de fato no R2.
 // Ou seja: só apaga o que comprovadamente já tem substituto servindo.
 import 'dotenv/config';
-import { getSupabase } from '../imageCache.js';
+import { getSupabase } from '../supabase.js';
 import { listPrefix, pathFromUrl, isLegacyUrl } from '../storage.js';
 
 const BUCKET = 'car-images';

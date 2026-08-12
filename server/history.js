@@ -1,11 +1,11 @@
-// Histórico de consultas — persiste cada recomendação entregue no Supabase
+// Histórico de consultas — persiste cada recomendação entregue no Postgres
 // (tabela `consultas`, criada via scripts/consultas-schema.sql).
 //
 // Filosofia: salvar NUNCA pode quebrar a recomendação. Todo erro aqui é
 // logado e engolido — o consultor recebe o resultado mesmo que o histórico
-// falhe (ex.: tabela ainda não criada, Supabase pausado).
+// falhe (ex.: banco fora do ar).
 
-import { getSupabase } from './imageCache.js';
+import { q, one, oneOrFail, jsonb } from './db.js';
 
 // Monta a linha denormalizada a partir do request + resultado do recommend.
 function buildRow({ id, client, result }) {
@@ -38,15 +38,23 @@ function buildRow({ id, client, result }) {
 // pra que o feedback consiga se referir à consulta sem atrasar a resposta.
 export async function saveConsulta({ id, client, result }) {
   try {
-    const sb = getSupabase();
-    const row = buildRow({ id, client, result });
-    const { data, error } = await sb
-      .from('consultas')
-      .insert(row)
-      .select('id')
-      .single();
-    if (error) throw error;
-    return data?.id || null;
+    const r = buildRow({ id, client, result });
+    // `tipos`, `combustiveis`, `prioridades` e `top_models` são text[] e vão
+    // como array JS mesmo — é `briefing`/`top`/`diagnostico` (jsonb) que
+    // precisam de jsonb(). Ver o comentário em db.js.
+    const inserted = await one(
+      `insert into consultas
+         (${r.id ? 'id, ' : ''}client_name, client_segment, ok, orcamento_min, orcamento_max,
+          tipos, combustiveis, prioridades, ano_min, total_resultados,
+          mes_referencia, top_models, briefing, top, diagnostico)
+       values (${r.id ? '$16, ' : ''}$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+       returning id`,
+      [r.client_name, r.client_segment, r.ok, r.orcamento_min, r.orcamento_max,
+        r.tipos, r.combustiveis, r.prioridades, r.ano_min, r.total_resultados,
+        r.mes_referencia, r.top_models, jsonb(r.briefing), jsonb(r.top),
+        jsonb(r.diagnostico), ...(r.id ? [r.id] : [])]
+    );
+    return inserted?.id || null;
   } catch (e) {
     console.warn('[history] saveConsulta falhou (ignorado):', e.message);
     return null;
@@ -58,38 +66,26 @@ const LIST_COLS = 'id, created_at, client_name, client_segment, ok, orcamento_mi
 
 // Lista as consultas mais recentes (resumo, sem briefing/top completos).
 export async function listConsultas({ limit = 50 } = {}) {
-  const sb = getSupabase();
-  const { data, error } = await sb
-    .from('consultas')
-    .select(LIST_COLS)
-    .order('created_at', { ascending: false })
-    .limit(limit);
-  if (error) throw error;
-  return data || [];
+  return q(
+    `select ${LIST_COLS} from consultas order by created_at desc limit $1`,
+    [limit]
+  );
 }
 
 // Registro completo de uma consulta (pra reabrir como resultado).
+// Lança quando não existe — era o comportamento do .single() do supabase-js, e
+// o endpoint depende dele pra devolver erro em vez de 200 com corpo vazio.
 export async function getConsulta(id) {
-  const sb = getSupabase();
-  const { data, error } = await sb
-    .from('consultas')
-    .select('*')
-    .eq('id', id)
-    .single();
-  if (error) throw error;
-  return data;
+  return oneOrFail('select * from consultas where id = $1', [id], 'consulta não encontrada');
 }
 
 // Agrega métricas em JS (volume baixo; evita RPC/GROUP BY no Postgres).
 export async function getStats({ sample = 1000 } = {}) {
-  const sb = getSupabase();
-  const { data, error } = await sb
-    .from('consultas')
-    .select('created_at, ok, orcamento_min, orcamento_max, total_resultados, tipos, top_models')
-    .order('created_at', { ascending: false })
-    .limit(sample);
-  if (error) throw error;
-  const rows = data || [];
+  const rows = await q(
+    `select created_at, ok, orcamento_min, orcamento_max, total_resultados, tipos, top_models
+       from consultas order by created_at desc limit $1`,
+    [sample]
+  );
 
   const total = rows.length;
   const comResultado = rows.filter(r => r.total_resultados > 0).length;

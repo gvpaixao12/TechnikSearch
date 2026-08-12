@@ -17,7 +17,7 @@
 // está gravada no índice. Recomendo migrar tudo, conferir o app, e só então
 // rodar com --purge pra liberar o espaço lá.
 import 'dotenv/config';
-import { getSupabase } from '../imageCache.js';
+import { getSupabase } from '../supabase.js';
 import { putObject, pathFromUrl, isLegacyUrl, publicBase } from '../storage.js';
 
 const args = process.argv.slice(2);

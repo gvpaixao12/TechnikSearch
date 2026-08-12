@@ -19,7 +19,7 @@
 // pula os que já estão prontos.
 
 import 'dotenv/config';
-import { createClient } from '@supabase/supabase-js';
+import { q as dbq, exec as dbexec } from '../db.js';
 import { loadCatalog } from '../catalog.js';
 import { getOrBuildImages, makeKey, KEY_PREFIX } from '../imageCache.js';
 import { isVisionAborted } from '../imageValidator.js';
@@ -47,25 +47,22 @@ function fmtTime(ms) {
 
 // Remove entradas e arquivos de versões antigas do cache (keys que não começam
 // com KEY_PREFIX). Roda só com a flag --prune-old.
-async function pruneOldVersions(supabase) {
+async function pruneOldVersions() {
   console.log(`[prune] limpando versões antigas (mantendo ${KEY_PREFIX}*)…`);
   // 1) Linhas do índice
   const oldKeys = [];
-  const PAGE = 1000;
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase
-      .from('car_images_cache').select('key').range(from, from + PAGE - 1);
-    if (error) { console.warn('[prune] erro lendo keys:', error.message); break; }
-    if (!data || data.length === 0) break;
-    for (const r of data) if (!r.key.startsWith(KEY_PREFIX)) oldKeys.push(r.key);
-    if (data.length < PAGE) break;
-  }
+  try {
+    for (const r of await dbq('select key from car_images_cache')) {
+      if (!r.key.startsWith(KEY_PREFIX)) oldKeys.push(r.key);
+    }
+  } catch (e) { console.warn('[prune] erro lendo keys:', e.message); }
   let deletedRows = 0;
-  for (let i = 0; i < oldKeys.length; i += 200) {
-    const chunk = oldKeys.slice(i, i + 200);
-    const { error } = await supabase.from('car_images_cache').delete().in('key', chunk);
-    if (error) console.warn('[prune] erro deletando linhas:', error.message);
-    else deletedRows += chunk.length;
+  if (oldKeys.length) {
+    // `= any($1)` aceita a lista inteira de uma vez — o chunk de 200 existia
+    // só por causa do limite do `.in()` do PostgREST.
+    try {
+      deletedRows = await dbexec('delete from car_images_cache where key = any($1)', [oldKeys]);
+    } catch (e) { console.warn('[prune] erro deletando linhas:', e.message); }
   }
   console.log(`[prune] ${deletedRows} linhas antigas removidas`);
 
@@ -88,17 +85,12 @@ async function pruneOldVersions(supabase) {
 }
 
 async function main() {
-  const supaUrl = process.env.SUPABASE_URL;
-  const supaKey = process.env.SUPABASE_SERVICE_KEY;
-  if (!supaUrl || !supaKey) {
-    console.error('SUPABASE_URL e SUPABASE_SERVICE_KEY são obrigatórios no .env');
+  if (!process.env.DATABASE_URL) {
+    console.error('DATABASE_URL é obrigatório no .env');
     process.exit(1);
   }
-  const supabase = createClient(supaUrl, supaKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
 
-  if (PRUNE_OLD) await pruneOldVersions(supabase);
+  if (PRUNE_OLD) await pruneOldVersions();
 
   console.log(`[bg] modo ${USE_VISION ? 'VISÃO (gpt-4o-mini)' : 'HEURÍSTICO'} · concorrência ${CONCURRENCY}`);
   const catalog = await loadCatalog();
@@ -124,31 +116,23 @@ async function main() {
   const allKeys = cars.map(c => makeKey({ marca: c.marca, modelo: c.modelo, ano: c.ano }));
   const doneKeys = new Set();
   const emptyKeys = [];
-  // Supabase tem limite no .in() — quebra em chunks de 200
-  for (let i = 0; i < allKeys.length; i += 200) {
-    const chunk = allKeys.slice(i, i + 200);
-    const { data, error } = await supabase
-      .from('car_images_cache')
-      .select('key, images')
-      .in('key', chunk);
-    if (error) { console.warn('[bg] erro lendo cache:', error.message); continue; }
-    for (const row of (data || [])) {
+  // Uma query só: o `= any($1)` não tem o teto de 200 do `.in()` do PostgREST.
+  try {
+    for (const row of await dbq('select key, images from car_images_cache where key = any($1)', [allKeys])) {
       const imgs = Array.isArray(row.images) ? row.images : [];
       if (imgs.length === 0) { emptyKeys.push(row.key); continue; }
       const visionOk = imgs.some(im => im && im.vision === true);
       if (!USE_VISION || visionOk) doneKeys.add(row.key);
       // modo visão + heurístico → fica de fora de doneKeys → entra no todo
     }
-  }
+  } catch (e) { console.warn('[bg] erro lendo cache:', e.message); }
 
   // Apaga entradas vazias pra que o getOrBuildImages refaça
   if (emptyKeys.length) {
     console.log(`[bg] limpando ${emptyKeys.length} entries com 0 fotos…`);
-    for (let i = 0; i < emptyKeys.length; i += 200) {
-      const chunk = emptyKeys.slice(i, i + 200);
-      const { error } = await supabase.from('car_images_cache').delete().in('key', chunk);
-      if (error) console.warn('[bg] erro deletando vazios:', error.message);
-    }
+    try {
+      await dbexec('delete from car_images_cache where key = any($1)', [emptyKeys]);
+    } catch (e) { console.warn('[bg] erro deletando vazios:', e.message); }
   }
 
   const todo = cars.filter(c => !doneKeys.has(makeKey({ marca: c.marca, modelo: c.modelo, ano: c.ano })));

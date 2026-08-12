@@ -1,21 +1,21 @@
-// Orquestra a pipeline de imagens: lê o índice (Postgres do Supabase), e se
+// Orquestra a pipeline de imagens: lê o índice (Postgres da VPS), e se
 // miss/expirado faz busca → validação vision → resize/avif → upload pro bucket
 // (Cloudflare R2) → grava índice.
 //
-// Divisão de responsabilidade: Supabase = banco (índice, histórico, rascunhos);
-// R2 = os arquivos de foto. Ver storage.js.
+// Divisão de responsabilidade: Postgres = índice (car_images_cache); R2 = os
+// arquivos de foto. Ver db.js e storage.js.
 //
 // TTL: 6 meses para chaves que tiveram >= 2 fotos aprovadas; 7 dias para
 // "tentativas vazias" (evita ficar gastando Serper/vision toda hora em modelo
 // que a web não tem foto boa).
 
-import { createClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
 import { searchByView } from './imageProviders.js';
 import { validateImages, isTpdExhausted } from './imageValidator.js';
 import {
   BUCKET, putObject, removeObjects, listPrefix, pathFromUrl,
 } from './storage.js';
+import { q, one, exec, jsonb } from './db.js';
 const TTL_VALIDATED_DAYS = 180;
 const TTL_FAILED_DAYS = 7;
 const MAX_WIDTH = 1200;            // resize p/ storage final
@@ -46,14 +46,24 @@ function hostOf(u) {
   try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; }
 }
 
-function isLikelyBadImage(im) {
+// Origem banida em QUALQUER caminho — heurístico E visão. O portão de visão lê
+// pixels e, por regra explícita do prompt, tolera "marca d'água de site pequena
+// e discreta num canto" (imageValidator.js): é assim que foto de carrosnaweb
+// passava batida mesmo com o domínio já listado aqui. Cortar pela origem antes
+// de baixar é o que garante foto limpa nesses domínios — e ainda economiza
+// download e uma chamada de visão por candidato.
+function isBannedSource(im) {
   const url = (im.url || '').toLowerCase();
   const page = (im.page || '').toLowerCase();
-  const title = (im.title || '').toLowerCase();
   if (BAD_URL_PATTERNS.some(rx => rx.test(url) || rx.test(page))) return true;
-  if (WATERMARK_DOMAINS.some(d => url.includes(d) || page.includes(d))) return true;
-  if (BAD_TITLE_KEYWORDS.test(title)) return true;
-  return false;
+  return WATERMARK_DOMAINS.some(d => url.includes(d) || page.includes(d));
+}
+
+// Só o caminho heurístico usa o título: sem ler pixels, ele precisa desconfiar
+// de "vs / review / melhor". No caminho da visão o LLM julga a imagem em si.
+function isLikelyBadImage(im) {
+  if (isBannedSource(im)) return true;
+  return BAD_TITLE_KEYWORDS.test((im.title || '').toLowerCase());
 }
 
 // Seleção heurística com diversidade de fonte: pega 1 por domínio primeiro
@@ -93,39 +103,18 @@ function selectHeuristic(byView, perView = HEURISTIC_PER_VIEW) {
   return out;
 }
 
-let _supabase = null;
-export function getSupabase() {
-  if (_supabase) return _supabase;
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_KEY;
-  if (!url || !key) throw new Error('SUPABASE_URL/SUPABASE_SERVICE_KEY ausentes no .env');
-  _supabase = createClient(url, key, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  return _supabase;
-}
-
-// Lista todas as entradas do cache de imagens — o "catálogo no Supabase". Cada
-// linha é um marca/modelo/ano com suas fotos já cacheadas. Usado pela aba
-// Ajustes → Catálogo pra ver o que está cadastrado e o que tem/não tem foto.
-// Pagina de 1000 em 1000 (limite do PostgREST) por segurança.
+// Lista todas as entradas do cache de imagens — o "catálogo". Cada linha é um
+// marca/modelo/ano com suas fotos já cacheadas. Usado pela aba Ajustes →
+// Catálogo pra ver o que está cadastrado e o que tem/não tem foto.
+//
+// Sem paginação: aquela era necessária só porque o PostgREST corta em 1000
+// linhas por resposta. Em SQL direto o cursor entrega tudo.
 export async function listCachedCars() {
-  const supabase = getSupabase();
-  const PAGE = 1000;
-  const rows = [];
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase
-      .from('car_images_cache')
-      .select('key, marca, modelo, ano, images, validated, expires_at')
-      .order('marca', { ascending: true })
-      .order('modelo', { ascending: true })
-      .order('ano', { ascending: true })
-      .range(from, from + PAGE - 1);
-    if (error) throw new Error(error.message);
-    if (!data || data.length === 0) break;
-    rows.push(...data);
-    if (data.length < PAGE) break;
-  }
+  const rows = await q(
+    `select key, marca, modelo, ano, images, validated, expires_at
+       from car_images_cache
+      order by marca, modelo, ano`
+  );
   const now = new Date();
   return rows.map(r => ({
     key: r.key,
@@ -168,13 +157,8 @@ function dataUrlToBuffer(dataUrl) {
 
 // Lê a linha crua do cache (mesmo expirada) — pra fazer merge com fotos já
 // existentes no upload manual sem descartá-las por TTL.
-async function readCacheRow(supabase, key) {
-  const { data } = await supabase
-    .from('car_images_cache')
-    .select('*')
-    .eq('key', key)
-    .maybeSingle();
-  return data || null;
+async function readCacheRow(key) {
+  return one('select * from car_images_cache where key = $1', [key]);
 }
 
 // Insere fotos manuais (upload do usuário) direto no bucket + índice, SEM passar
@@ -185,10 +169,9 @@ export async function addManualImages({ marca, modelo, ano, dataUrls, view }) {
   if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
   if (!Array.isArray(dataUrls) || dataUrls.length === 0) throw new Error('nenhuma imagem enviada');
   if (!VIEW_KEYS.includes(view)) throw new Error(`vista inválida: use ${VIEW_KEYS.join(', ')}`);
-  const supabase = getSupabase();
   const key = makeKey({ marca, modelo, ano });
 
-  const existing = await readCacheRow(supabase, key);
+  const existing = await readCacheRow(key);
   const current = Array.isArray(existing?.images) ? existing.images : [];
   // idx continua a numeração de arquivos já existentes NESTA vista (front-01,
   // front-02…) pra não sobrescrever fotos anteriores da mesma vista.
@@ -210,7 +193,7 @@ export async function addManualImages({ marca, modelo, ano, dataUrls, view }) {
 
   const images = [...current, ...uploaded];
   const validated = images.length >= 2;
-  await writeCache(supabase, {
+  await writeCache({
     key, marca, modelo, ano, images, validated,
     expires_at: new Date(Date.now() + TTL_VALIDATED_DAYS * 86400_000).toISOString(),
   });
@@ -236,14 +219,13 @@ async function deleteKeyObjects(key, keepPaths = []) {
 export async function setPhotoFavorite({ marca, modelo, ano, url, favorite }) {
   if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
   if (!url) throw new Error('url da foto é obrigatória');
-  const supabase = getSupabase();
   const key = makeKey({ marca, modelo, ano });
-  const row = await readCacheRow(supabase, key);
+  const row = await readCacheRow(key);
   const images = Array.isArray(row?.images) ? row.images : [];
   if (!images.some(im => im.url === url)) throw new Error('foto não encontrada nesse carro');
   const next = images.map(im => im.url === url ? { ...im, favorite: !!favorite } : im);
   const ttlDays = next.length >= 2 ? TTL_VALIDATED_DAYS : TTL_FAILED_DAYS;
-  await writeCache(supabase, {
+  await writeCache({
     key, marca, modelo, ano, images: next, validated: next.length >= 2,
     expires_at: new Date(Date.now() + ttlDays * 86400_000).toISOString(),
   });
@@ -253,9 +235,8 @@ export async function setPhotoFavorite({ marca, modelo, ano, url, favorite }) {
 // Lê as fotos atuais de um carro (galeria), pra exibir/gerenciar na tela de Ajustes.
 export async function getCarPhotos({ marca, modelo, ano }) {
   if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
-  const supabase = getSupabase();
   const key = makeKey({ marca, modelo, ano });
-  const row = await readCacheRow(supabase, key);
+  const row = await readCacheRow(key);
   const images = Array.isArray(row?.images) ? row.images : [];
   return { key, images, photoCount: images.length, views: viewCounts(images), validated: !!row?.validated };
 }
@@ -264,9 +245,8 @@ export async function getCarPhotos({ marca, modelo, ano }) {
 export async function deleteCarPhoto({ marca, modelo, ano, url }) {
   if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
   if (!url) throw new Error('url da foto é obrigatória');
-  const supabase = getSupabase();
   const key = makeKey({ marca, modelo, ano });
-  const row = await readCacheRow(supabase, key);
+  const row = await readCacheRow(key);
   const images = Array.isArray(row?.images) ? row.images : [];
   if (!images.some(im => im.url === url)) throw new Error('foto não encontrada nesse carro');
 
@@ -281,7 +261,7 @@ export async function deleteCarPhoto({ marca, modelo, ano, url }) {
   const remaining = images.filter(im => im.url !== url);
   const validated = remaining.length >= 2;
   const ttlDays = remaining.length > 0 ? TTL_VALIDATED_DAYS : TTL_FAILED_DAYS;
-  await writeCache(supabase, {
+  await writeCache({
     key, marca, modelo, ano, images: remaining, validated,
     expires_at: new Date(Date.now() + ttlDays * 86400_000).toISOString(),
   });
@@ -297,7 +277,6 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', onP
   onProgress({ stage: 'queue' });
   await acquireBuildSlot();
   try {
-    const supabase = getSupabase();
     const key = makeKey({ marca, modelo, ano });
     const allViews = ['front', 'rear', 'side', 'interior'];
 
@@ -305,7 +284,7 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', onP
     let existingImages = [];
     let favorited = []; // fotos protegidas na varredura completa (com estrela)
     if (scope === 'missing') {
-      const row = await readCacheRow(supabase, key);
+      const row = await readCacheRow(key);
       existingImages = Array.isArray(row?.images) ? row.images : [];
       const counts = viewCounts(existingImages);
       targetViews = allViews.filter(v => (counts[v] || 0) === 0);
@@ -314,7 +293,7 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', onP
       }
     } else {
       // full: apaga o acervo antes de refazer, MAS preserva as fotos favoritadas.
-      const row = await readCacheRow(supabase, key);
+      const row = await readCacheRow(key);
       const prev = Array.isArray(row?.images) ? row.images : [];
       favorited = prev.filter(im => im && im.favorite);
       const keepPaths = favorited.map(im => storagePathFromUrl(im.url)).filter(Boolean);
@@ -362,7 +341,7 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', onP
     const images = scope === 'missing' ? [...existingImages, ...uploaded] : [...favorited, ...uploaded];
     const validated = images.length >= 2;
     const ttlDays = validated ? TTL_VALIDATED_DAYS : TTL_FAILED_DAYS;
-    await writeCache(supabase, {
+    await writeCache({
       key, marca, modelo, ano, images, validated,
       expires_at: new Date(Date.now() + ttlDays * 86400_000).toISOString(),
     });
@@ -453,14 +432,12 @@ async function uploadOne({ key, view, idx, buffer }) {
   }
 }
 
-async function readCache(supabase, key) {
-  const { data, error } = await supabase
-    .from('car_images_cache')
-    .select('*')
-    .eq('key', key)
-    .maybeSingle();
-  if (error) {
-    console.warn('[imageCache] read error:', error.message);
+async function readCache(key) {
+  let data;
+  try {
+    data = await one('select * from car_images_cache where key = $1', [key]);
+  } catch (e) {
+    console.warn('[imageCache] read error:', e.message);
     return null;
   }
   if (!data) return null;
@@ -468,11 +445,28 @@ async function readCache(supabase, key) {
   return data;
 }
 
-async function writeCache(supabase, row) {
-  const { error } = await supabase
-    .from('car_images_cache')
-    .upsert(row, { onConflict: 'key' });
-  if (error) console.warn('[imageCache] write error:', error.message);
+// Upsert por `key`. `images` é jsonb, então passa por jsonb() — array JS cru
+// viraria array do Postgres e gravaria torto (ver db.js). Erro é logado e
+// engolido, como antes: falha de escrita no índice não pode derrubar o build
+// de fotos que já subiu os arquivos pro R2.
+async function writeCache(row) {
+  try {
+    await exec(
+      `insert into car_images_cache (key, marca, modelo, ano, images, validated, expires_at)
+            values ($1, $2, $3, $4, $5, $6, $7)
+       on conflict (key) do update set
+            marca = excluded.marca,
+            modelo = excluded.modelo,
+            ano = excluded.ano,
+            images = excluded.images,
+            validated = excluded.validated,
+            expires_at = excluded.expires_at`,
+      [row.key, row.marca, row.modelo, row.ano, jsonb(row.images ?? []),
+        !!row.validated, row.expires_at]
+    );
+  } catch (e) {
+    console.warn('[imageCache] write error:', e.message);
+  }
 }
 
 // Pra cada view, baixa os top-N candidatos e prepara a versão vision em base64.
@@ -480,7 +474,9 @@ async function writeCache(supabase, row) {
 async function downloadByView(byViewRaw, views) {
   const out = {};
   for (const v of views) {
-    const slice = (byViewRaw[v] || []).slice(0, MAX_CANDIDATES_PER_VIEW);
+    const slice = (byViewRaw[v] || [])
+      .filter(im => !isBannedSource(im))
+      .slice(0, MAX_CANDIDATES_PER_VIEW);
     const downloaded = await Promise.all(slice.map(async im => {
       const buffer = await downloadImage(im.url);
       if (!buffer) return null;
@@ -504,7 +500,6 @@ async function buildImages({ marca, modelo, ano, key, skipVision = false }) {
 }
 
 async function _buildImagesUnlocked({ marca, modelo, ano, key, skipVision = false }) {
-  const supabase = getSupabase();
   const t0 = Date.now();
 
   const views = ['front', 'rear', 'side', 'interior'];
@@ -524,7 +519,7 @@ async function _buildImagesUnlocked({ marca, modelo, ano, key, skipVision = fals
       images: [], validated: false,
       expires_at: new Date(Date.now() + TTL_FAILED_DAYS * 86400_000).toISOString(),
     };
-    await writeCache(supabase, row);
+    await writeCache(row);
     return { key, images: [], validated: false, cached: false };
   }
 
@@ -559,7 +554,7 @@ async function _buildImagesUnlocked({ marca, modelo, ano, key, skipVision = fals
     validated,
     expires_at: new Date(Date.now() + ttlDays * 86400_000).toISOString(),
   };
-  await writeCache(supabase, row);
+  await writeCache(row);
   console.log(`[images] ${key}: ${uploaded.length} salvas em ${Date.now() - t0}ms`);
   return { key, images: uploaded, validated, cached: false };
 }
@@ -574,7 +569,6 @@ async function upgradeWithVision({ marca, modelo, ano, key }) {
   _upgradesInFlight.add(key);
   try {
     await acquireBuildSlot();
-    const supabase = getSupabase();
     const t0 = Date.now();
     console.log(`[upgrade] ${key}: iniciando re-validação com vision`);
 
@@ -625,7 +619,7 @@ async function upgradeWithVision({ marca, modelo, ano, key }) {
       validated: true,
       expires_at: new Date(Date.now() + TTL_VALIDATED_DAYS * 86400_000).toISOString(),
     };
-    await writeCache(supabase, row);
+    await writeCache(row);
     console.log(`[upgrade] ${key}: ${uploaded.length} fotos validadas em ${Date.now() - t0}ms ✓`);
   } finally {
     releaseBuildSlot();
@@ -686,9 +680,18 @@ function isVisionValidated(cached) {
 async function revalidateExisting({ marca, modelo, ano, key, images }) {
   await acquireBuildSlot();
   try {
-    const supabase = getSupabase();
     const byView = { front: [], rear: [], side: [], interior: [] };
-    for (const im of images) if (byView[im.view]) byView[im.view].push({ url: im.url, page: im.sourcePage });
+    let banidas = 0;
+    for (const im of images) {
+      if (!byView[im.view]) continue;
+      // Fotos JÁ salvas de origem banida não são reenviadas pra visão: elas caem
+      // aqui e somem do índice. É o que limpa o acervo antigo (marca d'água de
+      // agregador) sem precisar refazer o carro na mão. `url` aponta pro R2, então
+      // a origem só é conhecível por sourcePage.
+      if (isBannedSource({ url: '', page: im.sourcePage })) { banidas++; continue; }
+      byView[im.view].push({ url: im.url, page: im.sourcePage });
+    }
+    if (banidas) console.log(`[revalida] ${key}: ${banidas} foto(s) descartadas por origem banida`);
 
     let approved;
     try {
@@ -711,7 +714,7 @@ async function revalidateExisting({ marca, modelo, ano, key, images }) {
 
     const validated = kept.length >= 2;
     const ttlDays = validated ? TTL_VALIDATED_DAYS : TTL_FAILED_DAYS;
-    await writeCache(supabase, {
+    await writeCache({
       key, marca, modelo, ano, images: kept, validated,
       expires_at: new Date(Date.now() + ttlDays * 86400_000).toISOString(),
     });
@@ -727,12 +730,11 @@ async function revalidateExisting({ marca, modelo, ano, key, images }) {
 // (não quer disparar vision pro catálogo inteiro).
 export async function getOrBuildImages({ marca, modelo, ano, skipVision = false, allowUpgrade = false, revalidateInBackground = false, force = false }) {
   if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
-  const supabase = getSupabase();
   const key = makeKey({ marca, modelo, ano });
 
   // force: ignora o cache e reconstrói do zero (usado pelo "Buscar com IA" da
   // tela de Ajustes — inclusive pra reprocessar entradas que estão sem foto).
-  const cached = force ? null : await readCache(supabase, key);
+  const cached = force ? null : await readCache(key);
   if (cached) {
     const imgs = cached.images || [];
     // Entradas vazias ou já-validadas na visão voltam direto.

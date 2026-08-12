@@ -15,9 +15,10 @@
 import 'dotenv/config';
 import sharp from 'sharp';
 import {
-  getSupabase, encodeForStorage, STORAGE_EXT, STORAGE_CONTENT_TYPE,
+  encodeForStorage, STORAGE_EXT, STORAGE_CONTENT_TYPE,
 } from '../imageCache.js';
 import { putObject, removeObjects, pathFromUrl } from '../storage.js';
+import { q, exec, jsonb, closePool } from '../db.js';
 
 const args = process.argv.slice(2);
 const has = f => args.includes(f);
@@ -46,27 +47,15 @@ async function encode(buffer) {
   return encodeForStorage(buffer);
 }
 
-const supabase = getSupabase();
-
 async function fetchBytes(url) {
   const r = await fetch(url, { headers: { 'User-Agent': 'TechnikMigrate/1.0' }, signal: AbortSignal.timeout(20000) });
   if (!r.ok) throw new Error(`download ${r.status}`);
   return Buffer.from(await r.arrayBuffer());
 }
 
-// Lê todas as linhas do índice (key + images), paginando.
+// Lê todas as linhas do índice (key + images).
 async function allRows() {
-  const PAGE = 1000, rows = [];
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase
-      .from('car_images_cache').select('key, images')
-      .order('key', { ascending: true }).range(from, from + PAGE - 1);
-    if (error) throw new Error(error.message);
-    if (!data || data.length === 0) break;
-    rows.push(...data);
-    if (data.length < PAGE) break;
-  }
-  return rows;
+  return q('select key, images from car_images_cache order by key');
 }
 
 // Migra uma linha. Retorna { oldBytes, newBytes, converted, skipped }.
@@ -101,8 +90,10 @@ async function migrateRow(row, dry) {
 
   if (!dry && converted > 0) {
     // 1) aponta o índice pras novas URLs .avif; 2) só então apaga as .webp.
-    const { error: updErr } = await supabase.from('car_images_cache')
-      .update({ images: newImages }).eq('key', row.key);
+    let updErr = null;
+    try {
+      await exec('update car_images_cache set images = $1 where key = $2', [jsonb(newImages), row.key]);
+    } catch (e) { updErr = e; }
     if (updErr) { console.warn(`  ! update índice ${row.key}: ${updErr.message} — NÃO apagando .webp`); }
     else if (oldPathsToDelete.length) {
       try { await removeObjects(oldPathsToDelete); }

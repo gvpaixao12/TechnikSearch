@@ -9,10 +9,8 @@
 //   node scripts/revalidate-existing.js --limit 20   # testa num subconjunto
 //   IMAGE_BUILD_CONCURRENCY=6 node scripts/revalidate-existing.js
 import 'dotenv/config';
-import { createClient } from '@supabase/supabase-js';
 import { getOrBuildImages } from '../imageCache.js';
-
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { auth: { persistSession: false } });
+import { q } from '../db.js';
 
 const args = process.argv.slice(2);
 const reAll = args.includes('--all');
@@ -20,10 +18,15 @@ const limIdx = args.indexOf('--limit');
 const limit = limIdx >= 0 ? Number(args[limIdx + 1]) : Infinity;
 const CHUNK = Number(process.env.IMAGE_BUILD_CONCURRENCY) || 6;
 
-const { data, error } = await sb.from('car_images_cache').select('key,marca,modelo,ano,images');
-if (error) { console.error('erro lendo cache:', error.message); process.exit(1); }
+let data;
+try {
+  data = await q('select key, marca, modelo, ano, images from car_images_cache');
+} catch (e) {
+  console.error('erro lendo cache:', e.message);
+  process.exit(1);
+}
 
-let rows = (data || []).filter(r => (r.images || []).length > 0);
+let rows = data.filter(r => (r.images || []).length > 0);
 if (!reAll) rows = rows.filter(r => !(r.images || []).some(im => im.vision === true));
 rows = rows.slice(0, limit);
 
