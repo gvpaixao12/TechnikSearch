@@ -156,7 +156,13 @@ export async function searchByView({ marca, modelo, ano, rich = false }) {
     }
     if (out[view].length < target) {
       try {
-        const s = await searchSerper(pt, { num: SERPER_NUM });
+        // Aspas na frase do modelo pra FORÇAR o acabamento no resultado. Sem
+        // isso o Google trata "EXL"/"LX"/"Personal" como token fraco e devolve a
+        // mesma foto de imprensa do modelo pras três versões. Se a frase exata
+        // não existir (trim raro), cai pra busca solta — melhor foto do modelo
+        // que carro sem foto.
+        let s = await searchSerper(pt.replace(base, `"${marca} ${modeloLimpo}" ${ano}`), { num: SERPER_NUM });
+        if (s.length === 0) s = await searchSerper(pt, { num: SERPER_NUM });
         out[view].push(...s);
       } catch (e) {
         console.warn(`[providers] Serper ${view} falhou: ${e.message}`);

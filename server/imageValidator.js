@@ -3,6 +3,7 @@
 // se o LLM duvida ou a chamada falha, descarta — melhor zero foto que foto errada.
 
 import OpenAI from 'openai';
+import { splitModelo } from './classify.js';
 
 // Provedor de visão. Default: reaproveita a conta OpenAI do texto (LLM_API_KEY)
 // com gpt-4o-mini — confiável, sem teto diário (TPD) e bom em ler volante/placa.
@@ -80,6 +81,19 @@ async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3
   const client = getClient();
   const cap = Math.min(maxApproved, images.length);
 
+  // O nome FIPE mistura acabamento e motor ("Fit EXL 1.5 Flex 16V 5p Aut"), e o
+  // acabamento acaba soterrado na especificação. Destacado, ele serve de
+  // DESEMPATE entre fotos válidas.
+  //
+  // De propósito NÃO é critério de rejeição: EXL, LX e Personal diferem em roda,
+  // farol de neblina e sensor — detalhe que nenhum modelo de visão distingue de
+  // forma confiável, e "em dúvida, rejeite" transformaria isso em galeria vazia.
+  // Rejeição continua sendo marca/modelo/geração/mercado.
+  const { versao } = splitModelo(modelo);
+  const trimHint = versao && versao !== modelo
+    ? `\nACABAMENTO: ${versao}. Havendo mais de uma foto igualmente válida, PREFIRA a que corresponde a este acabamento (rodas, faróis de neblina, frisos). NÃO rejeite uma foto só por dúvida de acabamento.\n`
+    : '';
+
   const isExternal = view !== 'interior';
   const diversityHint = isExternal
     ? 'Se entre as fotos houver cores EXTERNAS diferentes do carro (ex: preto, branco, vermelho), prefira escolher 2-3 com cores DISTINTAS — diversidade visual é desejável.'
@@ -93,6 +107,7 @@ async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3
 
 Pra cada foto, julgue se é REALMENTE um(a) ${marca} ${modelo} do ano ${ano}, vista de ${VIEW_LABEL[view]}.
 IMPORTANTE: queremos a versão vendida no MERCADO BRASILEIRO. Carros do Brasil têm volante à ESQUERDA.
+${trimHint}
 
 Rejeite a foto se qualquer um abaixo for verdade:
 - Marca, modelo ou geração visivelmente diferente

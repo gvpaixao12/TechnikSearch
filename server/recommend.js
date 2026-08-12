@@ -2,7 +2,7 @@ import { normalizeBriefing } from './briefing.js';
 import { runCurator, runVendor, runCuradorLeve } from './agents.js';
 import { resolveCandidates } from './match.js';
 import { loadCatalog } from './catalog.js';
-import { splitModelo } from './classify.js';
+import { splitModelo, baseModelo } from './classify.js';
 
 const TIPO_TO_SLUG = {
   'Hatch': 'hatch',
@@ -16,6 +16,29 @@ const TIPO_TO_SLUG = {
 function tipoSlug(tipo) {
   if (!tipo) return 'suv';
   return TIPO_TO_SLUG[tipo] || 'suv';
+}
+
+// Uma versão por modelo/ano no resultado. Três Fit 2021 (EXL, Personal, LX) são
+// o mesmo carro em níveis de equipamento diferentes: ocupam três slots do top,
+// exibem a MESMA foto (a web só tem a foto de imprensa do modelo, não do trim) e
+// não dão ao comprador três decisões — dão uma.
+//
+// "Melhor" = melhor rank do vendedor, não a versão mais cara. O rank já pesa o
+// briefing; se a pessoa pediu economia, o LX É a melhor opção. O filtro de
+// orçamento roda antes, então todo mundo do grupo já cabe no budget — escolher
+// pelo preço aqui seria enfiar um critério que ninguém pediu.
+//
+// Depende de baseModelo() (classify.js), que só agrupa quando reconhece o token
+// de acabamento. Modelo com nome fora do dicionário fica separado de propósito.
+// Espera a lista JÁ ordenada por rank.
+function umaVersaoPorModelo(ordenadosPorRank) {
+  const visto = new Set();
+  return ordenadosPorRank.filter(c => {
+    const chave = `${c.brand}|${baseModelo(c.model)}|${c.year}`.toLowerCase();
+    if (visto.has(chave)) return false;
+    visto.add(chave);
+    return true;
+  });
 }
 
 function normFuel(s) {
@@ -181,10 +204,13 @@ async function recommendFromCatalog(briefing, log) {
     .filter(Boolean)
     .sort((a, b) => a.rank - b.rank);
 
+  const topUnico = umaVersaoPorModelo(topEnriched);
+  log('dedupe-modelo', { antes: topEnriched.length, depois: topUnico.length });
+
   return {
     ok: true,
     briefing,
-    top: topEnriched,
+    top: topUnico,
     diagnostico: {
       catalogTotal: catalog.entries.length,
       catalogPool: pool.length,
@@ -287,7 +313,9 @@ async function recommendLegacy(briefing, log) {
     .filter(Boolean)
     .sort((a, b) => a.rank - b.rank);
 
-  return { ok: true, briefing, top: topEnriched, diagnostico: { fluxo: 'legacy', curador: candidatos.length, fipe: matched.length, pool: pool.length, vendedor: topEnriched.length } };
+  const topUnico = umaVersaoPorModelo(topEnriched);
+
+  return { ok: true, briefing, top: topUnico, diagnostico: { fluxo: 'legacy', curador: candidatos.length, fipe: matched.length, pool: pool.length, vendedor: topEnriched.length, aposDedupe: topUnico.length } };
 }
 
 // ─── Diagnóstico de "senti falta do carro X" ─────────────────────────────

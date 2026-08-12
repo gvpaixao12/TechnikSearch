@@ -238,6 +238,82 @@ export function splitModelo(modelo) {
   return { versao, motor };
 }
 
+// Tokens de ACABAMENTO (nível de equipamento) que a FIPE cola no fim da versão.
+// Servem pra reconhecer que "Fit EXL", "Fit LX" e "Fit Personal" são o MESMO
+// carro em três níveis de equipamento — e não três carros.
+//
+// O que está FORA daqui é de propósito, porque muda o carro e não só o pacote:
+//   carroceria  → Coupe, Sedan, Cabriolet, Sportback, Hatchback, Spyder, Targa
+//   tração      → 4MATIC, XDRIVE/SDRIVE, I Motion, 4x4
+//   mecânica    → GTS, AMG, RS, Type-R, Si, GT, S, Turbo, 4S
+// "911 Carrera" e "911 Turbo" não são trims um do outro; "Corolla" e
+// "Corolla Cross" muito menos. Token desconhecido = NÃO agrupa (falha segura):
+// mostrar dois cards parecidos é bem menos grave que fundir carros diferentes.
+const TRIM_TOKENS = new Set([
+  // Honda
+  'lx', 'lxl', 'lxs', 'ex', 'exl', 'exs', 'ex/s', 'dx', 'cx', 'personal',
+  // Toyota
+  'gli', 'xei', 'xli', 'seg', 'altis', 'xre', 'xrv', 'xrx', 'xr',
+  // VW
+  'highline', 'comfortline', 'trendline', 'trend', 'sense', 'connect', 'xtreme',
+  // Fiat
+  'drive', 'trekking', 'endurance', 'precision', 'hgt', 'audace', 'impetus',
+  'essence', 'easy', 'like', 'attractive', 'ecomotion',
+  // Jeep / RAM
+  'longitude', 'trailhawk', 'overland', 'limited',
+  // GM
+  'lt', 'ltz', 'ls', 'premier', 'midnight', 'joy',
+  // Hyundai
+  'comfort', 'evolution', 'platinum', 'vision', 'ultimate', 'unique',
+  // Ford
+  'titanium', 'storm', 'xl', 'xls', 'xlt',
+  // Renault
+  'zen', 'intense', 'iconic', 'life', 'dynamique', 'expression',
+  // Nissan
+  'sv', 'sl', 'advance', 'advanced',
+  // Peugeot / Citroën
+  'allure', 'griffe', 'feel', 'shine',
+  // Premium (níveis de acabamento, não variantes mecânicas)
+  'prestige', 'ambiente', 'ambition', 'attraction', 'performance', 'perf',
+  'avantgarde', 'avant', 'elegance', 'classic',
+  // Sufixos genéricos de pacote
+  'sport', 'se', 'sel', 'plus', 'black', 'edition', 'ed', 'premium', 'style',
+  'city', 'track',
+]);
+
+// Normaliza um token pra bater no dicionário: minúsculo, sem acento e sem
+// pontuação de abreviação ("Perf." → "perf", "Ed." → "ed").
+function normTrimToken(t) {
+  return String(t || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[.,]+$/, '')
+    .trim();
+}
+
+// Nome do modelo SEM o acabamento — a chave pra saber que duas entradas da FIPE
+// são o mesmo carro. "Fit EXL 1.5 Flex 16V 5p Aut" → "Fit".
+// Descasca tokens de trim a partir do FIM e para no primeiro desconhecido, então
+// "Corolla Cross XRE" para em "Corolla Cross" (XRE é trim, Cross não é).
+// Nunca devolve vazio: o primeiro token é sempre preservado.
+// Badge de motorização das alemãs, que vem como token solto no fim da versão:
+// "Série 3 320i", "Classe A 200", "T-Cross 200", "X1 SDRIVE 20i". Dois ou três
+// dígitos com sufixo opcional de letra. Um dígito só NÃO entra de propósito:
+// "Panamera 4" e "Cayenne 4S" são tração integral, não motor.
+const ENGINE_BADGE = /^\d{2,3}[a-z]?$/i;
+
+export function baseModelo(modelo) {
+  const { versao } = splitModelo(modelo);
+  const tokens = versao.split(/\s+/).filter(Boolean);
+  let end = tokens.length;
+  while (end > 1) {
+    const t = normTrimToken(tokens[end - 1]);
+    if (!TRIM_TOKENS.has(t) && !ENGINE_BADGE.test(t)) break;
+    end--;
+  }
+  return tokens.slice(0, end).join(' ');
+}
+
 export function classifyTipo(marcaModelo) {
   for (const rule of TYPE_RULES) {
     if (rule.patterns.some(p => p.test(marcaModelo))) return rule.type;

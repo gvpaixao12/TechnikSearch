@@ -85,7 +85,7 @@ REGRAS DURAS (todas filtradas no servidor — desrespeitar = candidato descartad
 - Carroceria HONESTA: Eclipse Cross/Compass/T-Cross/Creta/Tracker/Renegade/Kicks/HR-V/Pulse/Tiggo/Evoque/X1/Q3/Macan/RS Q3/GLA/NX/Corolla Cross = SUV (não Hatch). CLA/M235i/220i Gran Coupé = Coupé. Civic/Cruze/Onix Plus/Versa = Sedã.
 - Combustível dentro do briefing. Se aceita só Flex/Gasolina, NUNCA sugerir elétrico (Mini E, BMW i*, Mercedes EQ*, Tesla, Volvo Recharge, ID., Taycan, e-208) nem híbrido.
 - Preço FIPE estimado dentro do orçamento.
-- Diversifique: ≥5 marcas, e MÚLTIPLOS TRIMS do mesmo modelo (ex: BMW Série 3 = 320i + 330i + M340i; Compass = Limited + Sport + Trailhawk Diesel).
+- Diversifique por MODELO, não por acabamento: ≥5 marcas e modelos distintos. NÃO gaste vagas da lista com vários trims do mesmo modelo/ano (Fit EXL + Fit LX + Fit Personal = um carro só) — o servidor mantém apenas a melhor versão de cada modelo e descarta as outras. Uma versão por modelo/ano; use as vagas que sobram pra trazer MAIS MODELOS.
 - Para >=2 tipos pedidos, distribua proporcionalmente.
 
 MODELOS DESCONTINUADOS NO BR — INCLUA quando o anoMin permite:
@@ -216,7 +216,7 @@ function dedupeCandidatos(lista) {
 
 export async function runCurator(briefing) {
   const briefText = briefingToText(briefing);
-  const prompt = `Briefing do cliente:\n\n${briefText}\n\nGere a shortlist de 25 a 40 candidatos. Diversifique versões de trim do mesmo modelo quando o preço FIPE for distinto. Explore tanto marcas populares quanto premium — sempre dentro do briefing.`;
+  const prompt = `Briefing do cliente:\n\n${briefText}\n\nGere a shortlist de 25 a 40 candidatos. Uma versão por modelo/ano — prefira ampliar o número de MODELOS diferentes a repetir acabamentos do mesmo carro. Explore tanto marcas populares quanto premium — sempre dentro do briefing.`;
   const json = await runChat({ system: CURATOR_SYSTEM, user: prompt });
   const lista = dedupeCandidatos(json?.candidatos || []);
   console.log(`[curator] gerou ${lista.length} (após dedupe)`);
