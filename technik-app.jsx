@@ -543,10 +543,10 @@ function CatalogPanel() {
 
 // ─── SETTINGS ─────────────────────────────────────────────────
 // Tela de Ajustes com abas. Cada aba é uma área de configuração diferente;
-// por enquanto só "Catálogo no Supabase" (lista o que está cadastrado no cache
-// de imagens). Novas abas entram em SETTINGS_TABS + no switch de conteúdo.
+// por enquanto só "Catálogo" (lista o que está cadastrado no cache de imagens).
+// Novas abas entram em SETTINGS_TABS + no switch de conteúdo.
 const SETTINGS_TABS = [
-  { id: 'catalog', label: 'Catálogo no Supabase' },
+  { id: 'catalog', label: 'Catálogo' },
 ];
 
 function SettingsView() {
@@ -557,7 +557,7 @@ function SettingsView() {
       <div className="tk-results__hero" style={{ display: 'block' }}>
         <span className="tk-eyebrow">Ajustes</span>
         <h1>Configurações</h1>
-        <p>Área de administração da Technik. Comece pelo catálogo cadastrado no Supabase.</p>
+        <p>Área de administração da Technik. Comece pelo catálogo cadastrado.</p>
       </div>
 
       {/* Abas */}
@@ -635,7 +635,7 @@ function carStatus(car) {
   return viewsPresent(car.views) >= PHOTO_VIEWS.length ? 'complete' : 'incomplete';
 }
 
-// ─── ABA: CATÁLOGO NO SUPABASE ────────────────────────────────
+// ─── ABA: CATÁLOGO ────────────────────────────────────────────
 // Lista tudo que está cadastrado no cache de imagens (car_images_cache),
 // agrupado por marca → modelo → versões (ano). Mostra quem tem foto completa,
 // incompleta (falta alguma vista) ou nenhuma.
@@ -789,7 +789,7 @@ function SupabaseCatalogTab() {
   }
 
   if (state.loading) {
-    return <div className="tk-help" style={{ padding: '28px 4px' }}>Carregando catálogo do Supabase…</div>;
+    return <div className="tk-help" style={{ padding: '28px 4px' }}>Carregando catálogo…</div>;
   }
 
   if (state.error) {
@@ -861,7 +861,7 @@ function SupabaseCatalogTab() {
       {grouped.length === 0 ? (
         <div className="tk-help" style={{ padding: '28px 4px' }}>
           {state.cars.length === 0
-            ? 'Nenhum carro cadastrado no Supabase ainda.'
+            ? 'Nenhum carro cadastrado ainda.'
             : q
             ? <>Nenhuma marca/modelo corresponde a “<strong>{query.trim()}</strong>”.</>
             : photoFilter === 'complete'
