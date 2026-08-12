@@ -2,7 +2,16 @@
  * Varre top marcas BR, todos os modelos, anos >= 2018, salva preço + tipo classificado.
  * Saída: server/data/catalog.json
  *
- * Rodar: node server/scripts/build-catalog.js [--all-brands]
+ * Rodar:
+ *   node scripts/build-catalog.js --audit              # relatório de cobertura, SEM tocar na FIPE
+ *   node scripts/build-catalog.js                      # top marcas BR
+ *   node scripts/build-catalog.js --all-brands
+ *   node scripts/build-catalog.js --brands=fiat,gm\ -\ chevrolet   # dirigido
+ *   FIPE_RATE_MS=4000 FIPE_RETRIES=8 node scripts/build-catalog.js --brands=...
+ *
+ * Sai com código != 0 se alguma marca ficar incompleta — build torto não passa
+ * mais por sucesso. Retomada é automática: o que já está no catalog.json é
+ * pulado, então re-rodar dirigido às marcas que falharam é barato.
  */
 
 import 'dotenv/config';
@@ -18,6 +27,7 @@ const OUT_FILE = path.join(OUT_DIR, 'catalog.json');
 
 const ANO_MIN = 2005;
 const ALL_BRANDS = process.argv.includes('--all-brands');
+const AUDIT = process.argv.includes('--audit');
 
 // Top marcas vendidas no BR — cobre ~95% do mercado
 // Ordem: populares primeiro (menores e mais úteis), premium depois (catálogo grande)
@@ -84,7 +94,14 @@ function ts() {
   return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour12: false });
 }
 
-async function withRetry(fn, label, attempts = 2) {
+// Tentativas por request. 2 era pouco: sob 429 sustentado a marca inteira morria
+// na primeira rajada (foi assim que a Chevrolet ficou com 14 entries). Backoff
+// exponencial em vez de linear, com jitter — o jitter evita que várias falhas
+// sincronizem e voltem a bater na FIPE todas no mesmo instante.
+const RETRY_ATTEMPTS = parseInt(process.env.FIPE_RETRIES || '', 10) || 5;
+const RETRY_MAX_WAIT_MS = 60000;
+
+async function withRetry(fn, label, attempts = RETRY_ATTEMPTS) {
   let lastErr;
   for (let i = 0; i < attempts; i++) {
     await rateLimit();
@@ -92,15 +109,17 @@ async function withRetry(fn, label, attempts = 2) {
     catch (e) {
       lastErr = e;
       const is429 = e.message?.includes('429');
-      const wait = is429 ? 3000 * (i + 1) : 1000 * (i + 1);
+      const wait = Math.min((is429 ? 3000 : 1000) * 2 ** i, RETRY_MAX_WAIT_MS)
+        + Math.floor(Math.random() * 1000);
       console.warn(`  [${ts()}] [retry ${i + 1}/${attempts}] ${label}: ${e.message}`);
-      await new Promise(r => setTimeout(r, wait));
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, wait));
     }
   }
   throw lastErr;
 }
 
 async function main() {
+  if (AUDIT) return auditar();
   console.log(`Build de catálogo FIPE — ano >= ${ANO_MIN}, ${ALL_BRANDS ? 'TODAS' : 'top BR'} marcas`);
   await fs.mkdir(OUT_DIR, { recursive: true });
 
@@ -140,10 +159,16 @@ async function main() {
 
   let modelosTotal = 0, anosTotal = 0, errosTotal = 0, pulados = 0;
   const tipoStats = {};
+  // Cobertura por marca. Antes o build terminava "com sucesso" mesmo perdendo
+  // uma marca inteira num 429 — o único sinal era um console.warn afogado em
+  // milhares de linhas de log. Agora cada marca vira uma linha do relatório
+  // final e build incompleto sai com código != 0.
+  const brandReport = [];
 
   for (let mi = 0; mi < marcasFiltered.length; mi++) {
     const marca = marcasFiltered[mi];
     console.log(`[${ts()}] [${mi + 1}/${marcasFiltered.length}] ${marca.nome}`);
+    const errosAntes = errosTotal;
 
     let modelos;
     try {
@@ -151,6 +176,7 @@ async function main() {
     } catch (e) {
       console.warn(`  [${ts()}] ⚠ falha definitiva em modelos: ${e.message}`);
       errosTotal++;
+      brandReport.push({ marca: marca.nome, status: 'FALHOU', modelos: 0, entries: 0, erros: 1 });
       continue;
     }
     modelosTotal += modelos.length;
@@ -228,6 +254,15 @@ async function main() {
       catalog = [...byKey.values()];
     }
 
+    const errosMarca = errosTotal - errosAntes;
+    brandReport.push({
+      marca: marca.nome,
+      status: errosMarca > 0 ? 'PARCIAL' : 'ok',
+      modelos: modelos.length,
+      entries: brandEntries.length,
+      erros: errosMarca,
+    });
+
     // Salva incrementalmente a cada marca pra não perder progresso
     await fs.writeFile(OUT_FILE, JSON.stringify({
       version: 1,
@@ -247,6 +282,56 @@ async function main() {
   console.log(`  ${pulados} pulados (já estavam no catálogo)`);
   console.log('  tipos:', tipoStats);
   console.log(`  arquivo: ${OUT_FILE}`);
+
+  // Ordenado do menor pro maior: marca popular no topo da lista é o sinal de
+  // build truncado. É o relatório que faltava — sem ele, "3473 entries, 0 erros"
+  // passava por sucesso com a Chevrolet em 14.
+  console.log('\n═══ COBERTURA POR MARCA (desta rodada) ═══');
+  for (const b of [...brandReport].sort((x, y) => x.entries - y.entries)) {
+    const flag = b.status === 'FALHOU' ? '✗' : b.status === 'PARCIAL' ? '!' : ' ';
+    const erros = b.erros ? `${String(b.erros).padStart(4)} erros` : '          ';
+    console.log(`  ${flag} ${String(b.entries).padStart(5)} entries ${String(b.modelos).padStart(4)} modelos ${erros}  ${b.marca}`);
+  }
+
+  const falhas = brandReport.filter(b => b.status === 'FALHOU');
+  const parciais = brandReport.filter(b => b.status === 'PARCIAL');
+  if (falhas.length || parciais.length) {
+    console.log(`\n⚠ BUILD INCOMPLETO: ${falhas.length} marca(s) perdida(s), ${parciais.length} parcial(is).`);
+    if (falhas.length) console.log(`  perdidas: ${falhas.map(b => b.marca).join(', ')}`);
+    console.log(`  Re-rode dirigido: --brands=${[...falhas, ...parciais].map(b => b.marca.toLowerCase()).join(',')}`);
+    console.log(`  (a retomada pula tudo que já deu certo — não refaz o catálogo inteiro)`);
+    process.exitCode = 1;
+  } else {
+    console.log('\n✓ todas as marcas processadas sem erro.');
+  }
+}
+
+// --audit: relatório de cobertura do catálogo QUE JÁ EXISTE, sem tocar na FIPE.
+// Serve pra enxergar o desequilíbrio a qualquer momento — inclusive na VPS —
+// com risco zero de ban. Foi o que revelou Porsche com 714 entries e a
+// Chevrolet com 14.
+async function auditar() {
+  const data = JSON.parse(await fs.readFile(OUT_FILE, 'utf8'));
+  const entries = data.entries || [];
+  const porMarca = new Map();
+  for (const e of entries) {
+    const cur = porMarca.get(e.marca) || { marca: e.marca, entries: 0, modelos: new Set() };
+    cur.entries++;
+    cur.modelos.add(e.modelo);
+    porMarca.set(e.marca, cur);
+  }
+  const rows = [...porMarca.values()].sort((a, b) => a.entries - b.entries);
+  console.log(`Catálogo: ${entries.length} entries · ${rows.length} marcas · buildado em ${data.builtAt}\n`);
+  console.log('  entries  modelos  marca');
+  for (const r of rows) {
+    console.log(`  ${String(r.entries).padStart(7)}  ${String(r.modelos.size).padStart(7)}  ${r.marca}`);
+  }
+  const presentes = new Set([...porMarca.keys()].map(m => m.toLowerCase()));
+  const ausentes = TOP_BRANDS_ORDERED.filter(n => !presentes.has(n));
+  if (ausentes.length) {
+    console.log(`\n⚠ da lista TOP_BRANDS, sem NENHUMA entry: ${ausentes.join(', ')}`);
+    console.log('  (alguns são só nome alternativo da mesma marca na FIPE — confira antes de sair rodando)');
+  }
 }
 
 main().catch(e => {
