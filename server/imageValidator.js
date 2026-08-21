@@ -48,6 +48,51 @@ function getClient() {
 // tokens/min no tier 1 da OpenAI) e as views desistem com 429. Cada chamada
 // gasta ~2.2k tokens; com 2 em voo e a latência do LLM, fica ~90k/min, dentro do
 // teto. Suba VISION_CONCURRENCY se o tier da conta for maior.
+// Orçamento de TOKENS por minuto reservado à visão.
+//
+// O teto de TPM é DA CONTA, compartilhado com o LLM de texto da recomendação —
+// e foi assim que uma consulta de 1.512 tokens levou 429 enquanto o pipeline de
+// fotos torrava 200.000/min. Limitar chamadas simultâneas não bastava porque o
+// custo por chamada estava subestimado em ~6x: o gpt-4o-mini cobra imagem num
+// multiplicador alto, e são MAX_IMAGES_PER_CALL imagens por chamada.
+//
+// Aqui a visão fica com uma fatia e o resto é folga pra busca do usuário passar.
+// O consumo real vem do `usage` da resposta, então a estimativa se autocorrige.
+const VISION_TPM_BUDGET = Number(process.env.VISION_TPM_BUDGET) || 120_000;
+let _tokenEstimate = 15_000;          // por chamada; ajustado pelo usage real
+const _tokenLog = [];                 // [{ t, tokens }] da última janela de 60s
+
+function _tokensNaJanela() {
+  const corte = Date.now() - 60_000;
+  while (_tokenLog.length && _tokenLog[0].t < corte) _tokenLog.shift();
+  return _tokenLog.reduce((s, e) => s + e.tokens, 0);
+}
+
+// Segura a chamada até caber no orçamento. Sem isso o 429 vira a forma normal
+// de descobrir que passou do limite — e quem paga é a recomendação.
+async function aguardaOrcamento() {
+  let avisou = false;
+  for (let i = 0; i < 60; i++) {
+    const usados = _tokensNaJanela();
+    if (usados + _tokenEstimate <= VISION_TPM_BUDGET) {
+      if (avisou) console.log(`[validator] orçamento liberou (${usados} tokens na janela)`);
+      return;
+    }
+    if (!avisou) {
+      console.log(`[validator] segurando visão: ${usados}/${VISION_TPM_BUDGET} tokens no último minuto (est. ${_tokenEstimate}/chamada)`);
+      avisou = true;
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  console.warn('[validator] orçamento de TPM não liberou em 2min — seguindo mesmo assim');
+}
+
+function _registraUso(tokens) {
+  const t = tokens || _tokenEstimate;
+  _tokenLog.push({ t: Date.now(), tokens: t });
+  if (tokens) _tokenEstimate = Math.round(_tokenEstimate * 0.7 + tokens * 0.3);
+}
+
 const VISION_CONCURRENCY = Number(process.env.VISION_CONCURRENCY) || 2;
 let _activeVision = 0;
 const _visionWaiters = [];
@@ -143,6 +188,7 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
   }
 
   let completion;
+  await aguardaOrcamento();
   await acquireVision();
   try {
     completion = await client.chat.completions.create({
@@ -204,6 +250,8 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
 
   // Sucesso: zera a contagem de 429 seguidos.
   _consec429 = 0;
+  // Consumo REAL da chamada — realimenta a estimativa do pacer de TPM.
+  _registraUso(completion?.usage?.total_tokens);
 
   const text = completion.choices?.[0]?.message?.content || '{}';
   try {

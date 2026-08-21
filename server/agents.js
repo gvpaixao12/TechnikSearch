@@ -22,11 +22,17 @@ function getClient() {
     _client = new OpenAI({
       apiKey: process.env.LLM_API_KEY,
       baseURL: process.env.LLM_BASE_URL || 'https://api.openai.com/v1',
+      // O default do SDK e 2, e as duas caiam dentro da mesma janela saturada
+      // quando o pipeline de fotos cravava o TPM da conta — a recomendacao
+      // morria com 429 pedindo 1.5k tokens. O SDK respeita o retry-after, e o
+      // proprio 429 costuma dizer "try again in 453ms": e so precisar de uma
+      // fresta. Chamada de texto e barata; insistir aqui custa quase nada.
+      maxRetries: 6,
     });
   } else {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error('GROQ_API_KEY ausente no .env');
-    _client = new OpenAI({ apiKey, baseURL: 'https://api.groq.com/openai/v1' });
+    _client = new OpenAI({ apiKey, baseURL: 'https://api.groq.com/openai/v1', maxRetries: 6 });
   }
   return _client;
 }
