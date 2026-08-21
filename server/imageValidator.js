@@ -76,7 +76,7 @@ async function aguardaOrcamento() {
     const usados = _tokensNaJanela();
     if (usados + _tokenEstimate <= VISION_TPM_BUDGET) {
       if (avisou) console.log(`[validator] orçamento liberou (${usados} tokens na janela)`);
-      return;
+      return _reserva();
     }
     if (!avisou) {
       console.log(`[validator] segurando visão: ${usados}/${VISION_TPM_BUDGET} tokens no último minuto (est. ${_tokenEstimate}/chamada)`);
@@ -84,13 +84,25 @@ async function aguardaOrcamento() {
     }
     await new Promise(r => setTimeout(r, 2000));
   }
+  return _reserva();
   console.warn('[validator] orçamento de TPM não liberou em 2min — seguindo mesmo assim');
 }
 
-function _registraUso(tokens) {
-  const t = tokens || _tokenEstimate;
-  _tokenLog.push({ t: Date.now(), tokens: t });
-  if (tokens) _tokenEstimate = Math.round(_tokenEstimate * 0.7 + tokens * 0.3);
+// Reserva o custo ESTIMADO no instante em que a chamada e liberada. Sem isso,
+// N chamadas concorrentes olham a mesma janela "vazia" e entram todas juntas —
+// medido em campo: 165k consumidos num orcamento de 120k. A reserva e
+// reconciliada com o consumo real quando a resposta volta.
+function _reserva() {
+  const e = { t: Date.now(), tokens: _tokenEstimate };
+  _tokenLog.push(e);
+  return e;
+}
+
+function _registraUso(reserva, tokens) {
+  if (!tokens) return;                       // falhou: mantem a reserva estimada
+  if (reserva) reserva.tokens = tokens;      // reconcilia com o real
+  else _tokenLog.push({ t: Date.now(), tokens });
+  _tokenEstimate = Math.round(_tokenEstimate * 0.7 + tokens * 0.3);
 }
 
 const VISION_CONCURRENCY = Number(process.env.VISION_CONCURRENCY) || 2;
@@ -188,7 +200,7 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
   }
 
   let completion;
-  await aguardaOrcamento();
+  const _res = await aguardaOrcamento();
   await acquireVision();
   try {
     completion = await client.chat.completions.create({
@@ -251,7 +263,7 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
   // Sucesso: zera a contagem de 429 seguidos.
   _consec429 = 0;
   // Consumo REAL da chamada — realimenta a estimativa do pacer de TPM.
-  _registraUso(completion?.usage?.total_tokens);
+  _registraUso(_res, completion?.usage?.total_tokens);
 
   const text = completion.choices?.[0]?.message?.content || '{}';
   try {
