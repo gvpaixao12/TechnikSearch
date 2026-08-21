@@ -693,6 +693,23 @@ async function revalidateExisting({ marca, modelo, ano, key, images }) {
     }
     if (banidas) console.log(`[revalida] ${key}: ${banidas} foto(s) descartadas por origem banida`);
 
+    // A visão só aceita WebP/JPEG/PNG/GIF — e o acervo é AVIF, que a API recusa
+    // com "400 unsupported image". Como aqui as fotos vêm do índice (só URL, sem
+    // buffer), passar a URL do R2 direto fazia TODA revalidação falhar, calada,
+    // desde a migração pro AVIF em julho: as fotos ficavam com vision:false pra
+    // sempre e o portão de visão nunca rodava em acervo existente. Então baixamos
+    // e convertemos, igual o caminho de build faz com o candidato recém-baixado.
+    let semBuffer = 0;
+    for (const view of VIEW_KEYS) {
+      byView[view] = (await Promise.all(byView[view].map(async im => {
+        const buffer = await downloadImage(im.url);
+        if (!buffer) { semBuffer++; return null; }
+        try { return { ...im, visionUrl: await toVisionDataUrl(buffer) }; }
+        catch { semBuffer++; return null; }
+      }))).filter(Boolean);
+    }
+    if (semBuffer) console.warn(`[revalida] ${key}: ${semBuffer} foto(s) não puderam ser preparadas pra visão`);
+
     let approved;
     try {
       approved = await validateImages({ marca, modelo, ano, byView });
