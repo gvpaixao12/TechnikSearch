@@ -361,16 +361,24 @@ async function auditar() {
   const entries = data.entries || [];
   const porMarca = new Map();
   for (const e of entries) {
-    const cur = porMarca.get(e.marca) || { marca: e.marca, entries: 0, modelos: new Set() };
+    const cur = porMarca.get(e.marca) || { marca: e.marca, entries: 0, modelos: new Set(), nameplates: new Set() };
     cur.entries++;
     cur.modelos.add(e.modelo);
+    // Nameplate = primeira palavra do modelo FIPE ("GOLF Comfortline 1.4 TSI"
+    // vira "GOLF"). Grosseiro, mas separa "temos Golf" de "temos 14 anos do
+    // mesmo Golf" — e e essa a pergunta que o usuario faz.
+    cur.nameplates.add(String(e.modelo).trim().split(/[\s\/]+/)[0].toUpperCase());
     porMarca.set(e.marca, cur);
   }
-  const rows = [...porMarca.values()].sort((a, b) => a.entries - b.entries);
+  const rows = [...porMarca.values()].sort((a, b) => a.nameplates.size - b.nameplates.size);
   console.log(`Catálogo: ${entries.length} entries · ${rows.length} marcas · buildado em ${data.builtAt}\n`);
-  console.log('  entries  modelos  marca');
+  // ATENCAO: `entries` engana como medida de cobertura — conta variacao de ano
+  // e acabamento, nao carro diferente. A VW aparecia com 583 entries (2a maior)
+  // tendo so 8 nameplates: era Gol/Fox/Golf multiplicados por 14 anos. Ordenar
+  // por NAMEPLATE e o que revela o buraco real.
+  console.log('  nameplates  modelos  entries  marca');
   for (const r of rows) {
-    console.log(`  ${String(r.entries).padStart(7)}  ${String(r.modelos.size).padStart(7)}  ${r.marca}`);
+    console.log(`  ${String(r.nameplates.size).padStart(10)}  ${String(r.modelos.size).padStart(7)}  ${String(r.entries).padStart(7)}  ${r.marca}`);
   }
   const presentes = new Set([...porMarca.keys()].map(m => m.toLowerCase()));
   const ausentes = TOP_BRANDS_ORDERED.filter(n => !presentes.has(n));
