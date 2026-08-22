@@ -259,7 +259,17 @@ export async function runCuradorLeve(briefing, pool) {
   return Array.isArray(json?.ids) ? json.ids : [];
 }
 
-export async function runVendor(briefing, resolvedCandidates) {
+// `lembretes` são candidatos que algum consultor já reclamou de não ver no top
+// (ver "lembretes de ranking" em recommend.js).
+//
+// O texto é forte de propósito — "inclua, salvo razão técnica concreta". A
+// versão anterior era um pedido educado ("avalie com atenção") e foi ignorada
+// nos testes: o carro entrava no prompt e não saía na lista. Continua não sendo
+// inclusão automática, e a diferença importa: quem barra é a razão técnica
+// contra o BRIEFING, não a preferência do consultor. Quem garante que não vira
+// carta branca é o filtro determinístico lá atrás — só chega aqui carro que já
+// passou em ano, tipo, combustível e orçamento.
+export async function runVendor(briefing, resolvedCandidates, { lembretes = [] } = {}) {
   const briefText = briefingToText(briefing);
 
   const candidatosTexto = resolvedCandidates.map((c, i) => {
@@ -267,7 +277,16 @@ export async function runVendor(briefing, resolvedCandidates) {
     return `[${id}] ${c.fipe.marca} ${c.fipe.modelo} (${c.fipe.anoModelo}) — FIPE ${c.fipe.precoTexto} — ${c.fipe.combustivel}`;
   }).join('\n');
 
-  const prompt = `Briefing do cliente:\n\n${briefText}\n\n---\n\nCandidatos validados na FIPE (use o ID exato como "candidatoId" na resposta):\n\n${candidatosTexto}\n\nMonte o top 10 final.`;
+  // Vem ANTES da lista de candidatos de propósito: depois de 30 linhas de
+  // lista, o aviso era ignorado — o carro entrava no prompt e continuava
+  // invisível, que é a reclamação original com passos a mais.
+  const blocoLembretes = lembretes.length
+    ? `---\n\nATENÇÃO — sinalizado por consultor humano:\n`
+      + lembretes.map(l => `[${l.id}] ${l.label}`).join('\n')
+      + `\n\nUm consultor experiente já reclamou de não ver estes carros em buscas parecidas com esta, e eles passaram em todos os filtros do briefing. Inclua-os no top 10, a não ser que exista razão técnica CONCRETA contra (ex: o briefing pede 7 lugares e o carro tem 5). "Outro candidato é mais popular" ou "é mais óbvio" NÃO é razão.\n\n`
+    : '';
+
+  const prompt = `Briefing do cliente:\n\n${briefText}\n\n---\n\n${blocoLembretes}Candidatos validados na FIPE (use o ID exato como "candidatoId" na resposta):\n\n${candidatosTexto}\n\nMonte o top 10 final.`;
   const json = await runChat({ system: VENDOR_SYSTEM, user: prompt });
   return json.top;
 }

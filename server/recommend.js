@@ -3,6 +3,7 @@ import { runCurator, runVendor, runCuradorLeve } from './agents.js';
 import { resolveCandidates } from './match.js';
 import { loadCatalog } from './catalog.js';
 import { splitModelo, baseModelo } from './classify.js';
+import { listRankingMisses } from './feedback.js';
 
 const TIPO_TO_SLUG = {
   'Hatch': 'hatch',
@@ -103,6 +104,68 @@ function motivoDescarte(e, ctx, margem = MARGEM_NORMAL) {
   return null;
 }
 
+// ─── Lembretes de ranking: o feedback voltando pro pipeline ───────────────
+// Quando o consultor diz "senti falta do Golf" e o diagnóstico conclui
+// `vendedor-nao-escolheu`, o carro estava no pool e mesmo assim não chegou ao
+// top. Sem isso aqui, essa reclamação morre no banco e a busca seguinte repete
+// o mesmo erro. Com isso, o modelo reclamado (a) sobrevive ao corte do curador
+// leve e (b) é apontado pro vendedor pelo nome.
+//
+// É empurrão, não passe livre: o carro precisa ter passado nos filtros DESTA
+// busca pra ser lembrado, e o vendedor continua livre pra deixá-lo de fora.
+// Forçar o carro na lista seria mentir pro cliente pra agradar o consultor.
+
+const HINTS_TTL_MS = 5 * 60_000;
+const HINTS_JANELA_DIAS = 90;   // reclamação de um ano atrás não rege hoje
+const HINTS_MAX = 12;           // teto de nomes que entram no prompt
+const HINTS_REPESCAGEM = 4;     // quantos podem furar o corte do curador leve
+// Uma versão por reclamação. Com 2, medido, o vendedor trazia as duas e o
+// modelo reclamado ocupava 2 dos 7 slots — o empurrão virava sequestro. O
+// consultor sentiu falta DO Golf, não de dois Golfs.
+const HINTS_POR_LEMBRETE = 1;
+
+let _hintsCache = { at: 0, hints: [] };
+
+/** Zera o cache — chamado quando um feedback novo chega (ver /api/feedback). */
+export function invalidateRankingHints() {
+  _hintsCache = { at: 0, hints: [] };
+}
+
+export async function loadRankingHints() {
+  if (_hintsCache.at && Date.now() - _hintsCache.at < HINTS_TTL_MS) return _hintsCache.hints;
+  let hints = [];
+  try {
+    const rows = await listRankingMisses({ dias: HINTS_JANELA_DIAS, limit: HINTS_MAX });
+    hints = rows.map(r => {
+      // MESMA tokenização do diagnóstico: ano solto vira filtro, não palavra-
+      // chave. Se as duas regras divergirem, o lembrete passa a casar com um
+      // carro diferente do que o consultor reclamou.
+      const busca = normText(r.termo);
+      const ano = (busca.match(/\b(19|20)\d{2}\b/) || [])[0];
+      const tokens = busca.split(' ').filter(t => t.length >= 2 && t !== ano);
+      return { termo: r.termo, vezes: r.vezes, tokens };
+    }).filter(h => h.tokens.length);
+  } catch (e) {
+    // Banco fora do ar não pode derrubar recomendação: sem lembrete, a busca
+    // roda exatamente como rodava antes desta feature existir.
+    console.warn('[hints] não consegui ler o feedback (ignorado):', e.message);
+  }
+  _hintsCache = { at: Date.now(), hints };
+  return hints;
+}
+
+/** Entradas do pool que casam com algum lembrete → Map(entrada → lembrete). */
+export function marcaSinalizados(pool, hints) {
+  const marcadas = new Map();
+  if (!hints.length) return marcadas;
+  for (const e of pool) {
+    const alvo = normText(`${e.marca} ${e.modelo}`);
+    const hint = hints.find(h => h.tokens.every(t => alvo.includes(t)));
+    if (hint) marcadas.set(e, hint);
+  }
+  return marcadas;
+}
+
 // ─── Pipeline NOVO usando catálogo pré-computado ──────────────────────────
 async function recommendFromCatalog(briefing, log) {
   const catalog = await loadCatalog();
@@ -144,6 +207,13 @@ async function recommendFromCatalog(briefing, log) {
     };
   }
 
+  // Lembretes do feedback: quais entradas deste pool já foram reclamadas como
+  // "sumiu do top". Lido aqui, com o pool inteiro na mão, antes de qualquer
+  // corte — é justamente nos cortes que elas se perdiam.
+  const hints = await loadRankingHints();
+  const sinalizados = marcaSinalizados(pool, hints);
+  if (sinalizados.size) log('hints-no-pool', { count: sinalizados.size });
+
   // Curador leve LLM: se sobrou muito, prioriza top ~30 mais relevantes
   let candidates = pool;
   if (pool.length > 30) {
@@ -159,6 +229,39 @@ async function recommendFromCatalog(briefing, log) {
     }
   }
 
+  // Repescagem: carro sinalizado não pode morrer no corte do curador leve —
+  // esse corte é um dos dois lugares onde ele sumia (o outro é o vendedor).
+  // Entrar na lista do vendedor não é entrar no top: só garante que ele veja.
+  //
+  // O teto POR LEMBRETE existe porque um termo curto ("golf") casa com dezenas
+  // de versões do mesmo carro: sem ele, uma reclamação só empurraria 15 Golfs
+  // pra dentro e afogaria os outros candidatos.
+  if (sinalizados.size) {
+    const jaTem = new Set(candidates);
+    const porHint = new Map();
+    const repescados = [];
+    // Mais novo primeiro: qual das 6 versões de Golf repescar seria arbitrário
+    // (ordem do catálogo), e o consultor que sente falta "do Golf" tem em mente
+    // o mais recente que cabe no orçamento — o teto de preço já rodou antes.
+    const fila = [...sinalizados].sort((a, b) => (b[0].ano || 0) - (a[0].ano || 0));
+    for (const [entry, hint] of fila) {
+      if (jaTem.has(entry)) continue;
+      const usados = porHint.get(hint) || 0;
+      if (usados >= HINTS_POR_LEMBRETE) continue;
+      porHint.set(hint, usados + 1);
+      repescados.push(entry);
+      if (repescados.length >= HINTS_REPESCAGEM) break;
+    }
+    if (repescados.length) {
+      // Na FRENTE da lista, não no fim. Medido: repescado como candidato 31 de
+      // 32, com o aviso depois de 32 linhas de lista, o vendedor ignorava — o
+      // carro estava tecnicamente presente e continuava invisível, que é
+      // exatamente a reclamação original.
+      candidates = [...repescados, ...candidates];
+      log('hints-repescados', { count: repescados.length });
+    }
+  }
+
   // Adapta formato pro vendor (espera { fipe: { ... } })
   const candidatesForVendor = candidates.map(e => ({
     fipe: {
@@ -170,7 +273,22 @@ async function recommendFromCatalog(briefing, log) {
     cand: { tipo: e.tipo, combustivel: e.combustivel, marca: e.marca, modelo: e.modelo, ano: e.ano },
   }));
 
-  const top = await runVendor(briefing, candidatesForVendor);
+  // Os IDs que o vendedor usa (c1, c2...) só existem aqui — o lembrete precisa
+  // falar a língua dele, senão o modelo não sabe de que carro estamos falando.
+  // Mesmo teto por lembrete da repescagem, e pelo mesmo motivo: uma lista de
+  // "atenção especial" com 15 linhas deixa de ser atenção especial.
+  const vistosPorHint = new Map();
+  const lembretes = [];
+  candidates.forEach((e, i) => {
+    const hint = sinalizados.get(e);
+    if (!hint) return;
+    const usados = vistosPorHint.get(hint) || 0;
+    if (usados >= HINTS_POR_LEMBRETE) return;
+    vistosPorHint.set(hint, usados + 1);
+    lembretes.push({ id: `c${i + 1}`, label: `${e.marca} ${e.modelo} ${e.ano}` });
+  });
+
+  const top = await runVendor(briefing, candidatesForVendor, { lembretes });
   log('vendor-done', { count: top.length });
 
   const byId = new Map(candidatesForVendor.map((p, i) => [`c${i + 1}`, p]));
@@ -215,6 +333,7 @@ async function recommendFromCatalog(briefing, log) {
       catalogTotal: catalog.entries.length,
       catalogPool: pool.length,
       curadorLeveSelecionou: candidates.length,
+      lembretes: lembretes.map(l => l.label),
       vendedorRetornou: topEnriched.length,
       descartesPorEtapa: reasonsCount,
       builtAt: catalog.builtAt,
@@ -465,7 +584,10 @@ export async function diagnoseMiss({ briefing, termo, topModels = [] }) {
   if (passaram.length) {
     return {
       termo, causa: 'vendedor-nao-escolheu',
-      resumo: `${plural(passaram.length, 'versão', 'versões')} de “${termo}” passou nos filtros e entrou no pool, mas o vendedor não ranqueou no top. É ranking, não catálogo.`,
+      // Não dá pra saber daqui QUAL das duas etapas de ranking cortou (o
+      // diagnóstico re-roda os filtros, não o pipeline LLM), então a frase não
+      // aponta o culpado — antes dizia "o vendedor", o que era chute.
+      resumo: `${plural(passaram.length, 'versão', 'versões')} de “${termo}” passou nos filtros e entrou no pool, mas o ranking não trouxe pro top. É ranking, não catálogo — nas próximas buscas em que ele passar nos filtros, entra marcado pro vendedor olhar.`,
       detalhe: { candidatosNoCatalogo: matches.length, passaramFiltro: passaram.length, descartes, exemplos },
     };
   }

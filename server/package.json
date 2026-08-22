@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "node --watch index.js",
     "start": "node index.js",
-    "test:fipe": "node scripts/test-fipe.js"
+    "test:fipe": "node scripts/test-fipe.js",
+    "test:hints": "node --experimental-test-module-mocks scripts/test-hints-pipeline.js",
+    "diag:hints": "node scripts/diag-hints.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1108.0",

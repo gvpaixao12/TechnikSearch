@@ -54,3 +54,31 @@ export async function listFeedback({ limit = 100, rating } = {}) {
     filtra ? [limit, rating] : [limit]
   );
 }
+
+// ─── O feedback voltando pro pipeline ────────────────────────────────────
+// Modelos que o consultor apontou como "senti falta de X" E que o diagnóstico
+// classificou como problema de RANKING (passou nos filtros, entrou no pool,
+// não chegou ao top). São os únicos que viram lembrete pro LLM: gap de
+// catálogo é trabalho de build, e corte por filtro é o briefing funcionando —
+// nenhum dos dois se resolve cutucando o modelo.
+//
+// Agrupa por termo digitado (normalizado no SQL só o suficiente pra "Golf" e
+// "golf " caírem juntos); quem consome re-tokeniza com a MESMA regra do
+// diagnóstico, pra lembrete e diagnóstico nunca discordarem sobre o que casa.
+export async function listRankingMisses({ dias = 90, limit = 12 } = {}) {
+  return q(
+    `select lower(trim(faltou)) as termo,
+            count(*)::int       as vezes,
+            max(created_at)     as ultima
+       from consulta_feedback
+      where rating = 'down'
+        and faltou is not null
+        and trim(faltou) <> ''
+        and diagnostico->>'causa' = 'vendedor-nao-escolheu'
+        and created_at > now() - make_interval(days => $1::int)
+      group by 1
+      order by vezes desc, ultima desc
+      limit $2`,
+    [dias, limit]
+  );
+}
