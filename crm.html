@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<title>Technik · CRM</title>
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Exo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+<link href="/brand-styles.css" rel="stylesheet" />
+<style>
+  body { background: var(--tk-bg-2); }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 14px 26px;
+    background: var(--tk-bg); border-bottom: 1px solid var(--tk-bg-3);
+  }
+  .marca { display: flex; align-items: center; gap: 11px; }
+  .marca img { width: 30px; height: 30px; }
+  .marca strong { font-size: 16.5px; letter-spacing: -.01em; }
+  .quem { font-size: 13.5px; color: var(--tk-muted); }
+  .sair {
+    font: inherit; font-size: 13.5px; padding: 7px 15px;
+    background: none; color: var(--tk-ink);
+    border: 1px solid var(--tk-bg-3); border-radius: 7px; cursor: pointer;
+  }
+  .sair:hover { border-color: var(--tk-primary); }
+
+  main { max-width: 880px; margin: 0 auto; padding: 44px 26px; }
+  h1 { font-size: 25px; margin: 0 0 9px; letter-spacing: -.02em; }
+  .sub { color: var(--tk-muted); font-size: 15px; margin: 0 0 36px; line-height: 1.55; }
+
+  .grade { display: grid; gap: 15px; grid-template-columns: repeat(auto-fit, minmax(245px, 1fr)); }
+  .cartao {
+    background: var(--tk-bg); border: 1px solid var(--tk-bg-3);
+    border-radius: 12px; padding: 22px;
+  }
+  .cartao h2 { font-size: 15.5px; margin: 0 0 7px; }
+  .cartao p { font-size: 13.5px; color: var(--tk-muted); margin: 0; line-height: 1.55; }
+  .cartao.pronto { cursor: pointer; transition: border-color .15s, transform .15s; }
+  .cartao.pronto:hover { border-color: var(--tk-primary); transform: translateY(-2px); }
+  .tag {
+    display: inline-block; margin-bottom: 11px; padding: 3px 9px;
+    font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+    border-radius: 5px; background: var(--tk-bg-3); color: var(--tk-muted);
+  }
+  .cartao.pronto .tag { background: var(--tk-primary); color: #fff; }
+  a { color: inherit; text-decoration: none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="marca">
+    <img src="/assets/favicon.svg" alt="" />
+    <strong>Technik</strong>
+  </div>
+  <div style="display:flex;align-items:center;gap:14px">
+    <span class="quem" id="quem"></span>
+    <button class="sair" id="sair">Sair</button>
+  </div>
+</header>
+
+<main>
+  <h1>CRM</h1>
+  <p class="sub">
+    A autenticação está no ar. Os módulos abaixo ainda não foram construídos —
+    o plano de cada um está em <code>PLANO-DESKTOP-CRM.md</code>.
+  </p>
+
+  <div class="grade">
+    <a class="cartao pronto" href="/busca">
+      <span class="tag">Pronto</span>
+      <h2>Busca</h2>
+      <p>O recomendador de carros, que já existe. É o que o app desktop abre.</p>
+    </a>
+    <div class="cartao">
+      <span class="tag">A construir</span>
+      <h2>Histórico</h2>
+      <p>Consultas por cliente, briefings e o que foi recomendado. Os dados já
+         estão na tabela <code>consultas</code> — falta a tela.</p>
+    </div>
+    <div class="cartao">
+      <span class="tag">A construir</span>
+      <h2>Clientes</h2>
+      <p>Ficha com contato e histórico. Precisa da tabela <code>clientes</code> e
+         da vinculação com as consultas antigas.</p>
+    </div>
+  </div>
+</main>
+
+<script>
+  fetch('/api/me')
+    .then(function (r) { return r.json(); })
+    .then(function (d) { if (d.ok) document.getElementById('quem').textContent = d.nome || ''; })
+    .catch(function () { /* o header fica sem o nome, e tudo bem */ });
+
+  document.getElementById('sair').addEventListener('click', function () {
+    fetch('/api/logout', { method: 'POST' })
+      .finally(function () { location.href = '/login'; });
+  });
+</script>
+</body>
+</html>

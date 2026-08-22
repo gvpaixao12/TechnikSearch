@@ -1,0 +1,42 @@
+{
+  "name": "technik-desktop",
+  "productName": "Technik",
+  "version": "1.0.3",
+  "private": true,
+  "description": "Casca desktop do Technik — abre a busca numa janela própria.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --url=http://localhost:3001",
+    "icon": "node build-icon.js",
+    "dist": "node build-icon.js && electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.paixaogabriel.technik",
+    "productName": "Technik",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "error.html",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Technik"
+    },
+    "artifactName": "Technik-Setup-${version}.${ext}"
+  }
+}

@@ -162,3 +162,88 @@ cd /opt/technik && git pull
 cd server && npm install --omit=dev
 pm2 restart technik
 ```
+
+---
+
+## 8. Autenticação (obrigatório desde 2026-08-22)
+
+A partir da versão com login, **nada é público**: a raiz do site é a tela de
+entrada, a busca mudou pra `/busca`, e a API responde 401 pra quem não estiver
+autenticado. Antes disso qualquer um com a URL chamava `/api/recommend` e
+gastava créditos da OpenAI.
+
+São duas portas de entrada, e elas alcançam coisas diferentes:
+
+| quem | como entra | alcança |
+|---|---|---|
+| você, no navegador | senha em `/login` → cookie de sessão | tudo |
+| o app desktop | header `x-technik-device` | só `/busca` |
+
+### Passos no primeiro deploy
+
+Rode **antes** de reiniciar o pm2. São mudanças só de banco, então o app antigo
+continua no ar enquanto isso — se algo falhar, nada quebrou ainda.
+
+```bash
+cd /opt/technik && git pull
+cd server
+
+# 1. cria as tabelas (idempotente — o próprio script aplica o schema)
+#    e cria seu usuário. Escolha a senha aqui.
+node scripts/criar-usuario.mjs SEU_LOGIN 'SUA_SENHA' 'Seu Nome'
+
+# 2. só agora sobe o código novo
+pm2 restart technik
+```
+
+Confira que fechou:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://SEU_DOMINIO/busca        # 302
+curl -s -o /dev/null -w '%{http_code}\n' https://SEU_DOMINIO/api/consultas # 401
+curl -s -o /dev/null -w '%{http_code}\n' https://SEU_DOMINIO/login        # 200
+```
+
+### Autorizar uma máquina (o app desktop)
+
+O instalador **não** carrega credencial nenhuma — de propósito, senão qualquer
+cópia dele viraria uma chave. A autorização é por computador:
+
+```bash
+node scripts/criar-dispositivo.mjs "notebook da loja" busca
+```
+
+Ele imprime um JSON **uma única vez** (o banco só guarda o hash). Grave esse
+conteúdo em `%APPDATA%\Technik\credentials.json` na máquina, e o app passa a
+entrar sozinho, sem tela de senha.
+
+Para ver o que está autorizado, ou cortar o acesso de uma máquina:
+
+```bash
+node scripts/criar-dispositivo.mjs --listar
+node scripts/criar-dispositivo.mjs --revogar <id>
+```
+
+Revogar tem efeito imediato e não afeta sua senha nem suas sessões de navegador.
+
+### Trocar a senha
+
+O mesmo script; ele detecta que o usuário existe e **derruba todas as sessões
+abertas** — que é o comportamento que você quer quando troca senha por
+desconfiança:
+
+```bash
+node scripts/criar-usuario.mjs SEU_LOGIN 'NOVA_SENHA'
+```
+
+### Se você se trancar do lado de fora
+
+Nada aqui depende do app estar no ar: os scripts falam direto com o banco. Se
+esquecer a senha, rode `criar-usuario.mjs` de novo com o mesmo login pela SSH.
+
+### Cuidado com a ordem ao atualizar o desktop
+
+O instalador precisa ser **1.0.3 ou mais novo**. Versões anteriores apontavam
+pra raiz do site, que agora é o login — elas abrem numa tela onde o app não tem
+senha pra digitar. E o 1.0.3 só funciona depois que este deploy estiver no ar,
+porque antes dele `/busca` não existe.

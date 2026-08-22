@@ -10,7 +10,7 @@ import { getMarcas, getModelos, getAnos, getPreco } from './fipe.js';
 import { resolveCandidate, resolveCandidates } from './match.js';
 import { runCurator } from './agents.js';
 import { normalizeBriefing } from './briefing.js';
-import { recommend, diagnoseMiss, suggestModels } from './recommend.js';
+import { recommend, diagnoseMiss, suggestModels, invalidateRankingHints } from './recommend.js';
 import { loadCatalog, clearCatalogCache } from './catalog.js';
 import { getOrBuildImages, listCachedCars, addManualImages, rebuildCarImages, getCarPhotos, deleteCarPhoto, setPhotoFavorite } from './imageCache.js';
 import { saveConsulta, listConsultas, getConsulta, getStats } from './history.js';
@@ -18,14 +18,23 @@ import { saveFeedback, listFeedback } from './feedback.js';
 import { saveRascunho, listRascunhos, getRascunho, deleteRascunho } from './rascunhos.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import {
+  autentica, criaSessao, destroiSessao, setCookieSessao, limpaCookieSessao,
+  leCookie, identifica, exigeAuth, limpaSessoesVencidas, COOKIE,
+} from './auth.js';
 
 const app = express();
+
+// O nginx é quem termina o TLS; sem isso req.secure é sempre false e o cookie
+// de sessão nunca ganharia a flag Secure em produção.
+app.set('trust proxy', 1);
+
 app.use(cors());
 
 // Upload manual de fotos (base64): precisa de body grande. Parser dedicado,
 // registrado ANTES do parser global de 1mb pra não esbarrar no limite. Como o
 // handler responde e não chama next(), o parser global nunca roda nesta rota.
-app.post('/api/supabase/cars/manual-photos', express.json({ limit: '40mb' }), async (req, res) => {
+app.post('/api/supabase/cars/manual-photos', exigeAuth('busca'), express.json({ limit: '40mb' }), async (req, res) => {
   try {
     const { marca, modelo, ano, images, view } = req.body || {};
     if (!marca || !modelo || !ano) {
@@ -40,11 +49,84 @@ app.post('/api/supabase/cars/manual-photos', express.json({ limit: '40mb' }), as
 
 app.use(express.json({ limit: '1mb' }));
 
-app.use(express.static(FRONTEND_DIR));
+// ─── Público ─────────────────────────────────────────────────────────────────
+// Só o que a tela de login precisa pra desenhar. Tudo o mais fica atrás do
+// portão logo abaixo — inclusive os .jsx do app, que antes eram servidos a
+// quem pedisse.
 
-app.get('/', (_req, res) => {
+app.get('/login', (req, res) => {
+  // Já autenticado não deve ver tela de login: manda pra onde ele pode ir.
+  identifica(req)
+    .then(quem => (quem ? res.redirect(quem.escopo === 'busca' ? '/busca' : '/crm')
+                        : res.sendFile(path.join(FRONTEND_DIR, 'login.html'))))
+    .catch(() => res.sendFile(path.join(FRONTEND_DIR, 'login.html')));
+});
+
+app.get('/brand-styles.css', (_req, res) => res.sendFile(path.join(FRONTEND_DIR, 'brand-styles.css')));
+app.use('/assets', express.static(path.join(FRONTEND_DIR, 'assets')));
+
+app.post('/api/login', async (req, res) => {
+  try {
+    const { login, senha } = req.body || {};
+    const u = await autentica({ login, senha });
+    if (!u) return res.status(401).json({ ok: false, reason: 'usuário ou senha incorretos' });
+    const token = await criaSessao({ usuarioId: u.id, userAgent: req.headers['user-agent'] });
+    setCookieSessao(req, res, token);
+    res.json({ ok: true, usuario: { login: u.login, nome: u.nome } });
+  } catch (e) {
+    console.error('[login] falhou:', e.message);
+    res.status(500).json({ ok: false, reason: 'erro ao entrar' });
+  }
+});
+
+app.post('/api/logout', async (req, res) => {
+  try { await destroiSessao(leCookie(req, COOKIE)); } catch { /* já era */ }
+  limpaCookieSessao(res);
+  res.json({ ok: true });
+});
+
+// ─── Portão ──────────────────────────────────────────────────────────────────
+// Daqui pra baixo tudo exige identificação: sessão de navegador ou token de
+// dispositivo. É isto que impede um desconhecido com a URL de chamar
+// /api/recommend e gastar os créditos da OpenAI.
+
+app.use(exigeAuth('busca'));
+
+app.get('/api/me', (req, res) => {
+  const a = req.auth;
+  res.json({
+    ok: true,
+    tipo: a.tipo,
+    nome: a.tipo === 'usuario' ? (a.nome || a.login) : a.nome,
+    escopo: a.escopo,
+  });
+});
+
+// A raiz não tem tela própria: manda cada um pro seu lugar. O desktop chega
+// como dispositivo (escopo 'busca') e cairia num 403 se fosse jogado no CRM.
+app.get('/', (req, res) => {
+  res.redirect(req.auth.escopo === 'busca' ? '/busca' : '/crm');
+});
+
+// A busca — o que o app desktop abre.
+app.get('/busca', (_req, res) => {
   res.sendFile(path.join(FRONTEND_DIR, 'Technik - Painel Visual.html'));
 });
+
+// O CRM exige escopo próprio: token de dispositivo não alcança.
+app.get('/crm', exigeAuth('crm'), (_req, res) => {
+  res.sendFile(path.join(FRONTEND_DIR, 'crm.html'));
+});
+
+// FRONTEND_DIR é a raiz do projeto, e ela contém `server/`. Sem este guarda o
+// código do backend sai pela web — o `.env` não, porque o express ignora
+// dotfiles por padrão, mas `server/auth.js` e o resto sim.
+app.use((req, res, next) => {
+  if (/^\/(server|node_modules|desktop)(\/|$)/i.test(req.path)) return res.status(404).end();
+  next();
+});
+
+app.use(express.static(FRONTEND_DIR));
 
 app.get('/api/health', async (_req, res) => {
   let catalogTotal = null;
@@ -172,6 +254,10 @@ app.post('/api/feedback', async (req, res) => {
         consultaId, rating, motivos, comentario, faltou, diagnostico,
         clientName: client?.name, briefing,
       });
+      // Reclamação de ranking vira lembrete pro vendedor na PRÓXIMA busca. O
+      // cache dos lembretes tem TTL de 5 min; sem este invalidate, o consultor
+      // reclamaria e a busca seguinte ainda ignoraria o que ele acabou de dizer.
+      if (diagnostico?.causa === 'vendedor-nao-escolheu') invalidateRankingHints();
       res.json({ ok: true, id, diagnostico });
     } catch (e) {
       // Não salvou (Supabase pausado, tabela ainda não criada…). Devolve o erro

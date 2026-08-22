@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<title>Technik — sem conexão</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #19193a;
+    color: #e8e8f5;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    text-align: center; padding: 32px;
+    -webkit-user-select: none; user-select: none;
+  }
+  .box { max-width: 460px; }
+  svg { width: 72px; height: 72px; opacity: .85; margin-bottom: 28px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 12px; letter-spacing: -.01em; }
+  p { font-size: 15px; line-height: 1.6; color: #a8a8c8; margin: 0 0 28px; }
+  a.retry {
+    display: inline-block; padding: 11px 26px; border-radius: 8px;
+    background: #fff; color: #19193a; text-decoration: none;
+    font-size: 15px; font-weight: 600; transition: opacity .15s;
+  }
+  a.retry:hover { opacity: .88; }
+  .detail {
+    margin-top: 32px; font-size: 12px; color: #5c5c85;
+    font-family: 'Cascadia Code', Consolas, monospace;
+    -webkit-user-select: text; user-select: text;
+  }
+  .status { margin-top: 18px; font-size: 13px; color: #7a7aa8; min-height: 18px; }
+</style>
+</head>
+<body>
+<div class="box">
+  <svg viewBox="0 0 512 512" aria-hidden="true">
+    <rect width="512" height="512" rx="48" fill="#22224d"/>
+    <g fill="none" stroke="#8a8ab8" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="305" y1="305" x2="378" y2="378" stroke-width="48"/>
+      <circle cx="222" cy="222" r="132" stroke-width="30"/>
+    </g>
+  </svg>
+  <h1>Não consegui alcançar o Technik</h1>
+  <p id="msg">Verifique a conexão com a internet. Assim que a rede voltar, eu tento de novo sozinho.</p>
+  <a class="retry" id="retry" href="#">Tentar de novo</a>
+  <div class="status" id="status"></div>
+  <div class="detail" id="detail"></div>
+</div>
+
+<script>
+  var params = new URLSearchParams(location.search);
+  var url = params.get('url') || '';
+  var code = params.get('code') || '';
+  var desc = params.get('desc') || '';
+
+  document.getElementById('retry').href = url;
+  document.getElementById('detail').textContent = desc ? desc + ' (' + code + ')' : '';
+
+  // 'auth' não é falha de rede: o servidor recusou o token deste computador.
+  // Tentar de novo não resolve nada, então o botão sai e o loop não começa.
+  var semAutorizacao = code === 'auth';
+
+  if (semAutorizacao) {
+    document.title = 'Technik — sem autorização';
+    document.querySelector('h1').textContent = 'Este computador não está autorizado';
+    document.getElementById('msg').textContent =
+      'O token de acesso está faltando ou foi revogado. Quem administra o sistema ' +
+      'precisa emitir um novo e gravá-lo neste computador.';
+    document.getElementById('retry').style.display = 'none';
+  } else if (code && code !== '-105' && code !== '-106' && code !== '-109') {
+    // ERR_NAME_NOT_RESOLVED / ERR_INTERNET_DISCONNECTED são queda de rede
+    // local. Outro código provavelmente é o servidor, e "verifique sua
+    // internet" seria conselho errado.
+    document.getElementById('msg').textContent =
+      'A internet parece estar funcionando, então provavelmente é o servidor que está fora do ar.';
+  }
+
+  var statusEl = document.getElementById('status');
+  var tries = 0;
+
+  function retry() {
+    if (!url) return;
+    tries++;
+    statusEl.textContent = 'Tentando reconectar…';
+    location.href = url;
+  }
+
+  // Volta sozinho quando o Windows avisa que a rede voltou.
+  window.addEventListener('online', function () { if (!semAutorizacao) retry(); });
+
+  // Rede que "volta" nem sempre dispara o evento (VPN, wi-fi trocando de AP),
+  // então também tentamos periodicamente — com espera crescente até 60s pra
+  // não martelar um servidor que está fora do ar.
+  function schedule() {
+    if (semAutorizacao) return;   // recusa de token não se resolve tentando de novo
+    var wait = Math.min(5000 * Math.pow(1.6, tries), 60000);
+    setTimeout(function () {
+      if (navigator.onLine) retry();
+      else { statusEl.textContent = 'Sem rede. Aguardando…'; schedule(); }
+    }, wait);
+  }
+  schedule();
+</script>
+</body>
+</html>

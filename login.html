@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<title>Technik · Entrar</title>
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+<link rel="icon" type="image/png" sizes="any" href="/assets/favicon.png" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Exo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+<link href="/brand-styles.css" rel="stylesheet" />
+<style>
+  body {
+    min-height: 100vh; margin: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px; background: var(--tk-bg-2);
+  }
+  .card {
+    width: 100%; max-width: 380px;
+    background: var(--tk-bg); border: 1px solid var(--tk-bg-3);
+    border-radius: 14px; padding: 40px 34px;
+    box-shadow: 0 10px 40px rgba(25, 25, 58, .10);
+  }
+  .brand { text-align: center; margin-bottom: 30px; }
+  .brand img { width: 56px; height: 56px; display: block; margin: 0 auto 14px; }
+  .brand h1 { font-size: 21px; font-weight: 700; margin: 0 0 5px; letter-spacing: -.01em; }
+  .brand p { font-size: 13.5px; color: var(--tk-muted); margin: 0; }
+
+  label { display: block; font-size: 12.5px; font-weight: 600; margin: 0 0 7px; letter-spacing: .01em; }
+  input {
+    width: 100%; box-sizing: border-box; padding: 11px 13px;
+    font: inherit; font-size: 14.5px;
+    border: 1px solid var(--tk-bg-3); border-radius: 8px;
+    background: var(--tk-bg); color: var(--tk-ink);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input:focus {
+    outline: none; border-color: var(--tk-primary);
+    box-shadow: 0 0 0 3px rgba(25, 25, 58, .09);
+  }
+  .campo { margin-bottom: 17px; }
+
+  button {
+    width: 100%; padding: 12px; margin-top: 6px;
+    font: inherit; font-size: 15px; font-weight: 600;
+    color: #fff; background: var(--tk-primary);
+    border: none; border-radius: 8px; cursor: pointer;
+    transition: opacity .15s;
+  }
+  button:hover:not(:disabled) { opacity: .9; }
+  button:disabled { opacity: .55; cursor: default; }
+
+  .erro {
+    display: none; margin: 0 0 17px;
+    padding: 10px 13px; border-radius: 8px;
+    background: #FDECEC; border: 1px solid #F5C2C2; color: #8B2020;
+    font-size: 13.5px; line-height: 1.45;
+  }
+  .erro.on { display: block; }
+  @media (prefers-color-scheme: dark) {
+    .erro { background: #3A1A1A; border-color: #6B2B2B; color: #F0B4B4; }
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="brand">
+    <img src="/assets/favicon.svg" alt="" />
+    <h1>Technik</h1>
+    <p>Entre para acessar o CRM</p>
+  </div>
+
+  <div class="erro" id="erro" role="alert"></div>
+
+  <form id="form" novalidate>
+    <div class="campo">
+      <label for="login">Usuário</label>
+      <input id="login" name="login" autocomplete="username" autocapitalize="none"
+             spellcheck="false" required autofocus />
+    </div>
+    <div class="campo">
+      <label for="senha">Senha</label>
+      <input id="senha" name="senha" type="password" autocomplete="current-password" required />
+    </div>
+    <button type="submit" id="btn">Entrar</button>
+  </form>
+</div>
+
+<script>
+  var form = document.getElementById('form');
+  var btn = document.getElementById('btn');
+  var erroEl = document.getElementById('erro');
+
+  // Pra onde ir depois de entrar. Só caminho relativo: um `next` apontando pra
+  // fora vira redirecionamento aberto, que é phishing de graça em cima do seu
+  // domínio.
+  function destino() {
+    var next = new URLSearchParams(location.search).get('next');
+    if (next && next.charAt(0) === '/' && next.charAt(1) !== '/') return next;
+    return '/crm';
+  }
+
+  function erro(msg) {
+    erroEl.textContent = msg;
+    erroEl.classList.add('on');
+  }
+
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    erroEl.classList.remove('on');
+
+    var login = document.getElementById('login').value.trim();
+    var senha = document.getElementById('senha').value;
+    if (!login || !senha) return erro('Preencha usuário e senha.');
+
+    btn.disabled = true;
+    btn.textContent = 'Entrando…';
+
+    try {
+      var r = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login: login, senha: senha }),
+      });
+      var data = await r.json().catch(function () { return {}; });
+
+      if (r.ok && data.ok) { location.href = destino(); return; }
+
+      // Mensagem única pra usuário errado e senha errada: dizer qual dos dois
+      // falhou entrega quais logins existem.
+      erro(r.status === 401 ? 'Usuário ou senha incorretos.'
+                            : (data.reason || 'Não consegui entrar. Tente de novo.'));
+    } catch (err) {
+      erro('Sem conexão com o servidor.');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Entrar';
+      document.getElementById('senha').select();
+    }
+  });
+</script>
+</body>
+</html>
