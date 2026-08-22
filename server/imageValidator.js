@@ -200,8 +200,12 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
   }
 
   let completion;
-  const _res = await aguardaOrcamento();
+  // ORDEM IMPORTA: a vaga de concorrencia vem ANTES da reserva de tokens.
+  // Ao contrario, as N chamadas de um carro (4 vistas x 2 lotes) passavam todas
+  // pela reserva e depois empacavam no semaforo — 320k reservados com 2
+  // executando. O pacer passava a bloquear a si mesmo com reserva fantasma.
   await acquireVision();
+  const _res = await aguardaOrcamento();
   try {
     completion = await client.chat.completions.create({
       model: VISION_MODEL,
