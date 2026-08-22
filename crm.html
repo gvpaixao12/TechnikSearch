@@ -48,7 +48,30 @@
   .cartao.pronto .tag { background: var(--tk-primary); color: #fff; }
   a { color: inherit; text-decoration: none; }
 
-  #usuarios { margin-top: 52px; }
+  #consumo, #usuarios { margin-top: 52px; }
+
+  /* 195px cabe os quatro medidores numa linha na largura do CRM (880px) sem
+     apertar o número grande; abaixo disso a grade quebra sozinha. */
+  .medidores { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(195px, 1fr)); }
+  .medidor {
+    background: var(--tk-bg); border: 1px solid var(--tk-bg-3);
+    border-radius: 12px; padding: 19px 20px;
+  }
+  .medidor .rotulo {
+    font-size: 11.5px; font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--tk-muted); margin-bottom: 9px;
+  }
+  .medidor .numero { font-size: 27px; font-weight: 700; letter-spacing: -.02em; line-height: 1.1; }
+  .medidor .numero small { font-size: 14px; font-weight: 500; color: var(--tk-muted); margin-left: 3px; }
+  .medidor .nota { font-size: 12.5px; color: var(--tk-muted); margin-top: 7px; line-height: 1.5; }
+  .barra { height: 6px; border-radius: 3px; background: var(--tk-bg-3); margin-top: 12px; overflow: hidden; }
+  .barra i { display: block; height: 100%; background: var(--tk-primary); border-radius: 3px; }
+  .medidor.atencao .numero { color: #B8860B; }
+  .medidor.atencao .barra i { background: #D9A520; }
+  .medidor.critico .numero { color: #B23A3A; }
+  .medidor.critico .barra i { background: #C0392B; }
+  #consumo .tabela-wrap { margin-top: 15px; }
+  #consumo td.num, #consumo th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .titulo-secao {
     display: flex; align-items: center; justify-content: space-between;
     gap: 16px; margin-bottom: 18px;
@@ -84,6 +107,19 @@
     font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em;
     border-radius: 4px; background: #FBE8C8; color: #8A5A00;
   }
+
+  .marca-admin {
+    display: inline-block; margin-left: 8px; padding: 2px 7px;
+    font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em;
+    border-radius: 4px; background: var(--tk-primary); color: #fff;
+  }
+  td.acoes button[disabled] { opacity: .4; cursor: not-allowed; }
+  .modal label.check {
+    display: flex; align-items: center; gap: 8px;
+    font-weight: 500; margin: 2px 0 16px; cursor: pointer;
+  }
+  .modal label.check input { width: auto; margin: 0; }
+  .modal label.check span { color: var(--tk-muted); font-weight: 400; }
 
   .aviso-pedidos {
     margin-bottom: 16px; padding: 13px 17px; border-radius: 10px;
@@ -169,6 +205,27 @@
     </div>
   </div>
 
+  <section id="consumo">
+    <div class="titulo-secao">
+      <h2>Consumo das APIs</h2>
+      <button class="acao leve" id="atualizar-consumo">Atualizar</button>
+    </div>
+    <div class="medidores" id="medidores">
+      <div class="medidor"><div class="rotulo">Carregando…</div></div>
+    </div>
+    <div class="tabela-wrap" id="detalhe-consumo" hidden>
+      <table>
+        <thead>
+          <tr>
+            <th>Onde</th><th>Modelo</th>
+            <th class="num">Chamadas</th><th class="num">Tokens</th><th class="num">Custo est.</th>
+          </tr>
+        </thead>
+        <tbody id="linhas-consumo"></tbody>
+      </table>
+    </div>
+  </section>
+
   <section id="usuarios">
     <div class="titulo-secao">
       <h2>Usuários</h2>
@@ -222,8 +279,22 @@
     return new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
   };
 
-  function abre(html) { modal.innerHTML = html; veu.hidden = false; }
-  function fecha() { veu.hidden = true; modal.innerHTML = ''; }
+  // Modal "insistente": só fecha pelo botão. A senha temporária aparece uma
+  // única vez, então fechar sem querer (Esc, clique fora) significa perder a
+  // senha — e, se for a sua própria, ficar trancado do lado de fora.
+  var insistente = false;
+
+  function abre(html, exigeBotao) {
+    modal.innerHTML = html;
+    insistente = exigeBotao === true;
+    veu.hidden = false;
+  }
+  function fecha() {
+    if (insistente) return;
+    veu.hidden = true; modal.innerHTML = '';
+  }
+  function fechaForcado() { insistente = false; fecha(); }
+
   veu.addEventListener('click', function (e) { if (e.target === veu) fecha(); });
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') fecha(); });
 
@@ -233,16 +304,39 @@
       var d = await r.json();
       if (!d.ok) throw new Error(d.reason || 'falhou');
 
+      var total = d.usuarios.length;
+      var totalAdmins = d.usuarios.filter(function (x) { return x.admin; }).length;
+
       linhas.innerHTML = d.usuarios.map(function (u) {
         var temp = u.senha_temporaria ? '<span class="marca-temp">senha temporária</span>' : '';
         var euMesmo = u.id === euId;
+
+        // As mesmas travas que o servidor aplica, refletidas na tela: botão que
+        // só existe pra dar erro é armadilha, não funcionalidade.
+        var ultimoUsuario = total <= 1;
+        var ultimoAdmin = u.admin && totalAdmins <= 1;
+        var podeRemover = !euMesmo && !ultimoUsuario && !ultimoAdmin;
+        var podeRebaixar = u.admin && !euMesmo && !ultimoAdmin;
+
+        var motivo = euMesmo ? 'Você não pode remover o próprio usuário'
+          : ultimoUsuario ? 'É o único usuário — removê-lo deixaria o sistema sem ninguém'
+          : ultimoAdmin ? 'É o último administrador'
+          : '';
+
+        var selo = u.admin ? '<span class="marca-admin">admin</span>' : '';
+
         return '<tr>' +
-          '<td><strong>' + esc(u.login) + '</strong>' + temp + '</td>' +
+          '<td><strong>' + esc(u.login) + '</strong>' + selo + temp + '</td>' +
           '<td>' + esc(u.nome || '—') + '</td>' +
           '<td>' + data(u.ultimo_acesso) + '</td>' +
           '<td class="acoes">' +
+            (u.admin
+              ? (podeRebaixar ? '<button class="acao leve" data-admin="' + u.id + '" data-valor="0" data-login="' + esc(u.login) + '">Tirar admin</button>' : '')
+              : '<button class="acao leve" data-admin="' + u.id + '" data-valor="1" data-login="' + esc(u.login) + '">Tornar admin</button>') +
             '<button class="acao leve" data-reset="' + u.id + '" data-login="' + esc(u.login) + '">Resetar senha</button>' +
-            (euMesmo ? '' : '<button class="acao leve perigo" data-remove="' + u.id + '" data-login="' + esc(u.login) + '">Remover</button>') +
+            (podeRemover
+              ? '<button class="acao leve perigo" data-remove="' + u.id + '" data-login="' + esc(u.login) + '">Remover</button>'
+              : '<button class="acao leve" disabled title="' + esc(motivo) + '">Remover</button>') +
           '</td></tr>';
       }).join('') || '<tr><td colspan="4" class="vazio">Nenhum usuário.</td></tr>';
     } catch (e) {
@@ -275,14 +369,32 @@
     if (b.id === 'novo') return formNovoUsuario();
 
     if (b.dataset.reset) {
-      if (!confirm('Gerar uma senha temporária para "' + b.dataset.login + '"?\n\nAs sessões abertas dele caem, e no próximo acesso ele terá que escolher uma senha nova.')) return;
+      var euMesmo = b.dataset.reset === euId;
+      // Resetar a PRÓPRIA senha derruba sua sessão na hora: se a temporária se
+      // perder, você fica trancado do lado de fora do seu próprio sistema.
+      var pergunta = euMesmo
+        ? 'ATENÇÃO: você está resetando a SUA senha.\n\n'
+          + 'Você será desconectado imediatamente e só volta a entrar com a senha '
+          + 'temporária que vou mostrar. Ela aparece UMA vez — anote antes de fechar.\n\n'
+          + 'Continuar?'
+        : 'Gerar uma senha temporária para "' + b.dataset.login + '"?\n\n'
+          + 'As sessões abertas dele caem, e no próximo acesso ele terá que escolher uma senha nova.';
+      if (!confirm(pergunta)) return;
+
       var r = await fetch('/api/usuarios/' + b.dataset.reset + '/resetar-senha', { method: 'POST' });
       var d = await r.json();
       if (!d.ok) return alert(d.reason || 'não consegui resetar');
+
       abre('<h3>Senha temporária</h3>' +
-        '<p>Entregue esta senha para <strong>' + esc(d.login) + '</strong>. Ela aparece uma única vez — não fica guardada em lugar nenhum.</p>' +
+        (euMesmo
+          ? '<p><strong>Esta é a sua senha.</strong> Sua sessão já caiu — é com ela que você volta a entrar, e depois escolhe a definitiva. Anote agora: ela não fica guardada em lugar nenhum.</p>'
+          : '<p>Entregue esta senha para <strong>' + esc(d.login) + '</strong>. Ela aparece uma única vez — não fica guardada em lugar nenhum.</p>') +
         '<div class="senha-gerada">' + esc(d.senhaTemporaria) + '</div>' +
-        '<div class="botoes"><button class="acao" id="fechar-modal">Entendi</button></div>');
+        '<div class="botoes"><button class="acao" id="fechar-modal">' +
+        (euMesmo ? 'Anotei, ir para o login' : 'Entendi') + '</button></div>',
+        true);   // insistente: só fecha pelo botão
+
+      if (euMesmo) { modal.dataset.irParaLogin = '1'; return; }
       carrega();
       return;
     }
@@ -296,13 +408,36 @@
       return;
     }
 
+    if (b.dataset.admin) {
+      var virar = b.dataset.valor === '1';
+      var txt = virar
+        ? 'Tornar "' + b.dataset.login + '" administrador?\n\nEle poderá criar, remover e resetar a senha de outros usuários.'
+        : 'Tirar o acesso de administrador de "' + b.dataset.login + '"?';
+      if (!confirm(txt)) return;
+      var ra = await fetch('/api/usuarios/' + b.dataset.admin + '/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ admin: virar }),
+      });
+      var da = await ra.json();
+      if (!da.ok) return alert(da.reason || 'não consegui alterar');
+      carrega();
+      return;
+    }
+
     if (b.dataset.atender) {
       await fetch('/api/pedidos-senha/' + b.dataset.atender + '/atender', { method: 'POST' });
       carregaPedidos();
       return;
     }
 
-    if (b.id === 'fechar-modal' || b.id === 'cancelar-modal') fecha();
+    if (b.id === 'fechar-modal' || b.id === 'cancelar-modal') {
+      var vaiProLogin = modal.dataset.irParaLogin === '1';
+      fechaForcado();
+      // Resetou a própria senha: a sessão já morreu no servidor, então ficar
+      // nesta tela só renderia erro em cada requisição.
+      if (vaiProLogin) location.href = '/login';
+    }
   });
 
   function formNovoUsuario() {
@@ -315,6 +450,8 @@
       '<input id="n-nome" placeholder="ex: Maria Silva" />' +
       '<label for="n-senha">Senha inicial</label>' +
       '<input id="n-senha" type="text" placeholder="mínimo 8 caracteres" />' +
+      '<label class="check"><input type="checkbox" id="n-admin" /> Administrador ' +
+      '<span>— pode gerenciar usuários</span></label>' +
       '<div class="botoes">' +
         '<button class="acao leve" id="cancelar-modal">Cancelar</button>' +
         '<button class="acao" id="salvar-usuario">Criar</button>' +
@@ -327,6 +464,7 @@
         login: document.getElementById('n-login').value.trim(),
         nome: document.getElementById('n-nome').value.trim(),
         senha: document.getElementById('n-senha').value,
+        admin: document.getElementById('n-admin').checked,
       };
       var r = await fetch('/api/usuarios', {
         method: 'POST',
@@ -345,6 +483,123 @@
     carrega();
     carregaPedidos();
   }).catch(function () { carrega(); carregaPedidos(); });
+
+  // ─── Consumo das APIs ──────────────────────────────────────────────────────
+  // Três perguntas, nesta ordem de urgência: (1) o saldo de busca acaba quando?
+  // (2) quanto a IA custou este mês? (3) a janela de rate limit está apertando?
+  var medidores = document.getElementById('medidores');
+  var detalhe = document.getElementById('detalhe-consumo');
+  var linhasConsumo = document.getElementById('linhas-consumo');
+
+  // Uma ficha de fotos gasta ~6 créditos (4 vistas, algumas com 2 tentativas).
+  // É estimativa grosseira e o rótulo diz isso — serve pra dar noção de fôlego.
+  var CREDITOS_POR_CARRO = 6;
+
+  var mil = function (n) { return Number(n || 0).toLocaleString('pt-BR'); };
+  var usd = function (n) { return 'US$ ' + Number(n || 0).toFixed(2); };
+
+  function medidor(o) {
+    return '<div class="medidor ' + (o.estado || '') + '">' +
+      '<div class="rotulo">' + esc(o.rotulo) + '</div>' +
+      '<div class="numero">' + esc(o.numero) + (o.unidade ? '<small>' + esc(o.unidade) + '</small>' : '') + '</div>' +
+      (o.barra != null ? '<div class="barra"><i style="width:' + Math.max(2, Math.min(100, o.barra)) + '%"></i></div>' : '') +
+      '<div class="nota">' + o.nota + '</div>' +
+    '</div>';
+  }
+
+  async function carregaConsumo(force) {
+    try {
+      var r = await fetch('/api/admin/usage' + (force ? '?force=1' : ''));
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.reason || 'falhou');
+      desenhaConsumo(d);
+    } catch (e) {
+      medidores.innerHTML = medidor({
+        rotulo: 'Consumo', numero: '—',
+        nota: 'Não consegui ler o consumo agora: ' + esc(e.message),
+      });
+    }
+  }
+
+  function desenhaConsumo(d) {
+    var cards = [];
+
+    // 1) Busca de imagens — o único saldo EXATO que algum provedor devolve.
+    var s = d.serper || {};
+    if (s.ok) {
+      var creditos = s.creditos || 0;
+      var estado = creditos < 1000 ? 'critico' : creditos < 5000 ? 'atencao' : '';
+      cards.push(medidor({
+        rotulo: 'Busca de fotos · Serper',
+        numero: mil(creditos), unidade: 'créditos',
+        estado: estado,
+        // A barra usa 30 mil como régua só pra dar forma ao número — não é teto
+        // da conta, e por isso a nota fala em carros, que é o que importa.
+        barra: (creditos / 30000) * 100,
+        nota: '≈ ' + mil(Math.floor(creditos / CREDITOS_POR_CARRO)) + ' carros com fotos novas' +
+              (s.cache ? ' · saldo de até 5 min atrás' : ''),
+      }));
+    } else {
+      cards.push(medidor({ rotulo: 'Busca de fotos · Serper', numero: '—', nota: esc(s.reason || 'sem leitura') }));
+    }
+
+    // 2) IA — custo do mês. Real se houver admin key; senão, estimado daqui.
+    var real = d.openai && d.openai.custoReal;
+    var estimado = d.mes && d.mes.total ? d.mes.total.custoUsd : 0;
+    cards.push(medidor({
+      rotulo: 'IA · gasto do mês',
+      numero: usd(real && real.ok ? real.mesUsd : estimado),
+      nota: real && real.ok
+        ? 'Valor real da OpenAI (Costs API).'
+        : 'Estimativa nossa, a partir dos tokens gastos. Pra ver o valor real, ' +
+          'crie uma admin key só-leitura na OpenAI e coloque em <code>OPENAI_ADMIN_KEY</code>.',
+    }));
+
+    // 3) Janela de rate limit — "vou tomar 429?", não "o dinheiro acabou".
+    var rl = (d.openai && d.openai.rateLimit) || {};
+    var janela = rl.visao || rl.texto;
+    if (janela && janela.tokensLimite) {
+      var pct = (janela.tokensRestantes / janela.tokensLimite) * 100;
+      cards.push(medidor({
+        rotulo: 'Janela de tokens (TPM)',
+        numero: Math.round(pct) + '%', unidade: 'livre',
+        estado: pct < 10 ? 'critico' : pct < 30 ? 'atencao' : '',
+        barra: pct,
+        nota: mil(janela.tokensRestantes) + ' de ' + mil(janela.tokensLimite) +
+              ' tokens/min · medido na última chamada',
+      }));
+    }
+
+    // 4) Movimento do dia — contexto pro resto.
+    var hoje = (d.hoje && d.hoje.total) || {};
+    cards.push(medidor({
+      rotulo: 'Hoje',
+      numero: mil(hoje.tokens), unidade: 'tokens',
+      nota: mil(hoje.chamadas) + ' chamadas de IA · ' + mil(hoje.buscas) + ' buscas' +
+            (d.fonte === 'memoria' ? ' · sem banco: zera se o servidor reiniciar' : ''),
+    }));
+
+    medidores.innerHTML = cards.join('');
+
+    var linhas = (d.mes && d.mes.linhas) || [];
+    if (!linhas.length) { detalhe.hidden = true; return; }
+    detalhe.hidden = false;
+    linhasConsumo.innerHTML = linhas.map(function (l) {
+      var tokens = Number(l.tokens_in) + Number(l.tokens_out);
+      return '<tr>' +
+        '<td>' + esc(l.provider) + ' · ' + esc(l.operacao) + '</td>' +
+        '<td>' + esc(l.modelo || '—') + '</td>' +
+        '<td class="num">' + mil(l.chamadas) + '</td>' +
+        '<td class="num">' + (tokens ? mil(tokens) : '—') + '</td>' +
+        '<td class="num">' + (Number(l.custo_usd) ? usd(l.custo_usd) : '—') + '</td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  document.getElementById('atualizar-consumo').addEventListener('click', function () {
+    carregaConsumo(true);
+  });
+  carregaConsumo(false);
 </script>
 </body>
 </html>

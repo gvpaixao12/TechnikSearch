@@ -78,7 +78,7 @@ export async function destroiSessao(token) {
 async function resolveSessao(token) {
   if (!token) return null;
   const row = await one(
-    `select s.usuario_id, u.login, u.nome, u.senha_temporaria
+    `select s.usuario_id, u.login, u.nome, u.senha_temporaria, u.admin
        from sessoes s join usuarios u on u.id = s.usuario_id
       where s.token_hash = $1 and s.expira_em > now()`,
     [hashToken(token)]
@@ -91,6 +91,7 @@ async function resolveSessao(token) {
   return {
     tipo: 'usuario', usuarioId: row.usuario_id, login: row.login, nome: row.nome,
     escopo: 'tudo',
+    admin: row.admin === true,
     // Enquanto true, `exigeAuth` só deixa passar a tela de troca de senha.
     precisaTrocarSenha: row.senha_temporaria === true,
   };
@@ -239,11 +240,36 @@ export async function limpaSessoesVencidas() {
 // ─── Usuários (tela de administração no CRM) ─────────────────────────────────
 
 export async function listaUsuarios() {
-  return q(`select id, login, nome, criado_em, ultimo_acesso, senha_temporaria
+  return q(`select id, login, nome, criado_em, ultimo_acesso, senha_temporaria, admin
               from usuarios order by criado_em`);
 }
 
-export async function criaUsuario({ login, nome, senha }) {
+// Middleware: gerenciar usuários é coisa de admin. Vem depois de exigeAuth,
+// então req.auth já existe.
+export function exigeAdmin(req, res, next) {
+  if (req.auth?.tipo === 'usuario' && req.auth.admin) return next();
+  const msg = 'só administradores gerenciam usuários';
+  if (req.path.startsWith('/api/')) return res.status(403).json({ ok: false, reason: msg });
+  return res.status(403).send(msg);
+}
+
+// Promove ou rebaixa. A trava importante é não deixar a base sem admin nenhum:
+// sem isso, ninguém conseguiria promover ninguém depois, e a recuperação viraria
+// SSH obrigatório.
+export async function defineAdmin({ id, admin, quemPede }) {
+  if (!admin) {
+    const { restantes } = await one(
+      'select count(*)::int as restantes from usuarios where admin and id <> $1', [id]
+    ) || {};
+    if (!restantes) throw new Error('não dá pra remover o último administrador — ninguém poderia promover outro depois');
+    if (id === quemPede) throw new Error('você não pode remover o próprio acesso de administrador');
+  }
+  const n = await exec('update usuarios set admin = $1 where id = $2', [admin === true, id]);
+  if (!n) throw new Error('usuário não encontrado');
+  return true;
+}
+
+export async function criaUsuario({ login, nome, senha, admin = false }) {
   const limpo = String(login || '').trim();
   if (!/^[a-zA-Z0-9._-]{3,40}$/.test(limpo)) {
     throw new Error('login deve ter 3 a 40 caracteres: letras, números, ponto, hífen ou underline');
@@ -253,16 +279,24 @@ export async function criaUsuario({ login, nome, senha }) {
 
   const hash = await hashSenha(senha);   // valida o tamanho mínimo
   const row = await one(
-    'insert into usuarios (login, nome, senha_hash) values ($1, $2, $3) returning id',
-    [limpo, (nome || '').trim() || null, hash]
+    'insert into usuarios (login, nome, senha_hash, admin) values ($1, $2, $3, $4) returning id',
+    [limpo, (nome || '').trim() || null, hash, admin === true]
   );
   return row?.id || null;
 }
 
 export async function removeUsuario(id, quemPede) {
   if (id === quemPede) throw new Error('você não pode remover o próprio usuário');
+
   const { total } = await one('select count(*)::int as total from usuarios') || {};
   if (total <= 1) throw new Error('não dá pra remover o último usuário — ninguém entraria depois');
+
+  // Idem pra admin: remover o último deixaria a base sem quem administre.
+  const { admins } = await one(
+    'select count(*)::int as admins from usuarios where admin and id <> $1', [id]
+  ) || {};
+  if (!admins) throw new Error('não dá pra remover o último administrador');
+
   await exec('delete from usuarios where id = $1', [id]);   // sessões caem no cascade
   return true;
 }

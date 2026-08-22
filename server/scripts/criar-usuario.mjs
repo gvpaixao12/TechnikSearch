@@ -5,6 +5,11 @@
 // Aplica o auth-schema.sql antes, se as tabelas ainda não existirem — o SQL é
 // todo `create ... if not exists`, então rodar de novo não faz mal.
 //
+// Quem passa por aqui sai SEMPRE como administrador e com a senha definitiva
+// (senha_temporaria = false). Este é o caminho de bootstrap e de recuperação:
+// quem tem SSH da máquina já pode tudo, e sair daqui sem poder administrar
+// deixaria a instalação sem ninguém capaz de criar o segundo usuário.
+//
 // A senha vai por argumento porque este script roda sem terminal interativo.
 // Consequência: ela fica no histórico do shell. Depois de criar, vale limpar
 // (`history -c` no bash, ou rodar com um espaço na frente do comando).
@@ -34,14 +39,22 @@ try {
 
   const existente = await one('select id from usuarios where lower(login) = lower($1)', [login]);
   if (existente) {
-    await exec('update usuarios set senha_hash = $1, nome = coalesce($2, nome) where id = $3',
-      [hash, nome || null, existente.id]);
+    // `senha_temporaria = false` importa: este script é o caminho de
+    // recuperação por SSH, e quem chega aqui está definindo a senha DEFINITIVA.
+    // Sem isso, a pessoa entraria e seria obrigada a trocar a senha que acabou
+    // de escolher.
+    await exec(
+      `update usuarios set senha_hash = $1, nome = coalesce($2, nome),
+                           senha_temporaria = false, admin = true
+        where id = $3`,
+      [hash, nome || null, existente.id]
+    );
     // Trocar a senha invalida os logins abertos — senão trocar por suspeita de
     // vazamento não expulsaria quem já estava dentro.
     const n = await exec('delete from sessoes where usuario_id = $1', [existente.id]);
     console.log(`senha de "${login}" atualizada (${n} sessão(ões) encerrada(s))`);
   } else {
-    await exec('insert into usuarios (login, nome, senha_hash) values ($1, $2, $3)',
+    await exec('insert into usuarios (login, nome, senha_hash, admin) values ($1, $2, $3, true)',
       [login, nome || null, hash]);
     console.log(`usuário "${login}" criado`);
   }

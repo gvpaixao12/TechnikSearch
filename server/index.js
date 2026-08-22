@@ -16,6 +16,7 @@ import { getOrBuildImages, listCachedCars, addManualImages, rebuildCarImages, ge
 import { saveConsulta, listConsultas, getConsulta, getStats } from './history.js';
 import { saveFeedback, listFeedback } from './feedback.js';
 import { saveRascunho, listRascunhos, getRascunho, deleteRascunho } from './rascunhos.js';
+import { painelUso, saldoSerper } from './usage.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
@@ -23,6 +24,7 @@ import {
   leCookie, identifica, exigeAuth, limpaSessoesVencidas, COOKIE,
   listaUsuarios, criaUsuario, removeUsuario, resetaSenha, trocaSenhaPropria,
   registraPedidoSenha, listaPedidosSenha, marcaPedidoAtendido,
+  exigeAdmin, defineAdmin,
 } from './auth.js';
 
 const app = express();
@@ -120,6 +122,7 @@ app.get('/api/me', (req, res) => {
     escopo: a.escopo,
     // O CRM usa isto pra não oferecer "remover" no próprio usuário.
     usuarioId: a.usuarioId || null,
+    admin: a.admin === true,
   });
 });
 
@@ -150,22 +153,22 @@ app.post('/api/trocar-senha', async (req, res) => {
 
 // ─── Administração de usuários (só no CRM) ───────────────────────────────────
 
-app.get('/api/usuarios', exigeAuth('crm'), async (_req, res) => {
+app.get('/api/usuarios', exigeAuth('crm'), exigeAdmin, async (_req, res) => {
   try { res.json({ ok: true, usuarios: await listaUsuarios() }); }
   catch (e) { res.status(500).json({ ok: false, reason: e.message }); }
 });
 
-app.post('/api/usuarios', exigeAuth('crm'), async (req, res) => {
+app.post('/api/usuarios', exigeAuth('crm'), exigeAdmin, async (req, res) => {
   try {
-    const { login, nome, senha } = req.body || {};
-    const id = await criaUsuario({ login, nome, senha });
+    const { login, nome, senha, admin } = req.body || {};
+    const id = await criaUsuario({ login, nome, senha, admin });
     res.json({ ok: true, id });
   } catch (e) {
     res.status(400).json({ ok: false, reason: e.message });
   }
 });
 
-app.delete('/api/usuarios/:id', exigeAuth('crm'), async (req, res) => {
+app.delete('/api/usuarios/:id', exigeAuth('crm'), exigeAdmin, async (req, res) => {
   try {
     await removeUsuario(req.params.id, req.auth.usuarioId);
     res.json({ ok: true });
@@ -175,7 +178,7 @@ app.delete('/api/usuarios/:id', exigeAuth('crm'), async (req, res) => {
 });
 
 // Devolve a senha temporária UMA vez — não fica recuperável depois.
-app.post('/api/usuarios/:id/resetar-senha', exigeAuth('crm'), async (req, res) => {
+app.post('/api/usuarios/:id/resetar-senha', exigeAuth('crm'), exigeAdmin, async (req, res) => {
   try {
     const r = await resetaSenha(req.params.id);
     res.json({ ok: true, ...r });
@@ -184,12 +187,21 @@ app.post('/api/usuarios/:id/resetar-senha', exigeAuth('crm'), async (req, res) =
   }
 });
 
-app.get('/api/pedidos-senha', exigeAuth('crm'), async (_req, res) => {
+app.post('/api/usuarios/:id/admin', exigeAuth('crm'), exigeAdmin, async (req, res) => {
+  try {
+    await defineAdmin({ id: req.params.id, admin: req.body?.admin === true, quemPede: req.auth.usuarioId });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ ok: false, reason: e.message });
+  }
+});
+
+app.get('/api/pedidos-senha', exigeAuth('crm'), exigeAdmin, async (_req, res) => {
   try { res.json({ ok: true, pedidos: await listaPedidosSenha() }); }
   catch (e) { res.status(500).json({ ok: false, reason: e.message }); }
 });
 
-app.post('/api/pedidos-senha/:id/atender', exigeAuth('crm'), async (req, res) => {
+app.post('/api/pedidos-senha/:id/atender', exigeAuth('crm'), exigeAdmin, async (req, res) => {
   try {
     await marcaPedidoAtendido(req.params.id, req.auth.usuarioId);
     res.json({ ok: true });
@@ -239,6 +251,18 @@ app.get('/api/health', async (_req, res) => {
     catalogBuiltAt,
     time: new Date().toISOString(),
   });
+});
+
+// Consumo das APIs pagas — quanto de crédito/token ainda existe. Fica atrás do
+// escopo `crm` porque expõe saldo e gasto da conta, não do cliente.
+app.get('/api/admin/usage', exigeAuth('crm'), async (req, res) => {
+  try {
+    // ?force=1 fura o cache de 5 min do saldo do Serper (botão "atualizar").
+    if (req.query.force) await saldoSerper({ force: true });
+    res.json(await painelUso());
+  } catch (e) {
+    res.status(500).json({ ok: false, reason: e.message });
+  }
 });
 
 app.get('/api/fipe/marcas', async (_req, res, next) => {

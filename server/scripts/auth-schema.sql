@@ -80,3 +80,17 @@ create table if not exists public.pedidos_senha (
 
 create index if not exists pedidos_senha_pendentes_idx
   on public.pedidos_senha (criado_em desc) where atendido_em is null;
+
+-- ─── Administrador ───────────────────────────────────────────────────────────
+-- Quem é admin gerencia usuários (criar, resetar senha, remover, promover).
+-- Quem não é entra normal e usa o sistema, mas não enxerga essa parte.
+
+alter table public.usuarios
+  add column if not exists admin boolean not null default false;
+
+-- Bootstrap: se ninguém for admin ainda, o usuário mais antigo vira. Sem isto,
+-- uma base que já existia ficaria sem NINGUÉM capaz de administrar depois da
+-- migração — e não haveria como promover alguém pela tela.
+update public.usuarios set admin = true
+ where id = (select id from public.usuarios order by criado_em limit 1)
+   and not exists (select 1 from public.usuarios where admin);
