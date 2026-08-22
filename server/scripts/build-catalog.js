@@ -55,6 +55,22 @@ const TOP_BRANDS = new Set(TOP_BRANDS_ORDERED);
 // Build direcionado: --brands=porsche,ferrari,... processa só essas marcas
 // (casa pelo nome exato em minúsculas da FIPE). Útil pra preencher um segmento
 // sem revarrer o catálogo inteiro. Sobrepõe a lista TOP_BRANDS.
+// Filtro por NAMEPLATE: --models=polo,virtus,t-cross processa so os modelos
+// cujo nome casa com um desses termos. Aplicado ANTES do getAnos, que e o ponto
+// crucial: sem ele, um --brands=vw gasta 547 requisicoes so pra enumerar os
+// modelos da marca, e a cota da FIPE (~500 req antes do bloqueio) acaba antes de
+// chegar no carro que interessa. Com ele, buscar "polo,virtus,t-cross" custa
+// algumas dezenas de requisicoes em vez de centenas.
+const MODELS_ARG = (process.argv.find(a => a.startsWith('--models=')) || '').slice('--models='.length);
+const MODELS_FILTER = MODELS_ARG
+  ? MODELS_ARG.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+  : null;
+function modeloInteressa(nome) {
+  if (!MODELS_FILTER) return true;
+  const n = String(nome).toLowerCase();
+  return MODELS_FILTER.some(t => n.includes(t));
+}
+
 const BRANDS_ARG = (process.argv.find(a => a.startsWith('--brands=')) || '').slice('--brands='.length);
 const BRANDS_FILTER = BRANDS_ARG
   ? new Set(BRANDS_ARG.split(',').map(s => s.trim().toLowerCase()).filter(Boolean))
@@ -213,6 +229,15 @@ async function main() {
       errosTotal++;
       brandReport.push({ marca: marca.nome, status: 'FALHOU', modelos: 0, entries: 0, erros: 1 });
       continue;
+    }
+    if (MODELS_FILTER) {
+      const antes = modelos.length;
+      modelos = modelos.filter(m => modeloInteressa(m.nome));
+      console.log(`  [${ts()}] --models: ${modelos.length} de ${antes} modelos casaram (${antes - modelos.length} pulados sem gastar request)`);
+      if (modelos.length === 0) {
+        brandReport.push({ marca: marca.nome, status: 'ok', modelos: 0, entries: 0, erros: 0 });
+        continue;
+      }
     }
     modelosTotal += modelos.length;
 
