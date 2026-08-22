@@ -48,7 +48,28 @@
   .cartao.pronto .tag { background: var(--tk-primary); color: #fff; }
   a { color: inherit; text-decoration: none; }
 
-  #consumo, #usuarios { margin-top: 52px; }
+  /* Abas: a barra vira a navegação do CRM. Cada painel é uma tela inteira, e
+     só uma existe no DOM visível por vez. */
+  .abas {
+    display: flex; gap: 4px; margin: 0 0 30px;
+    border-bottom: 1px solid var(--tk-bg-3);
+  }
+  .aba {
+    font: inherit; font-size: 14px; font-weight: 500;
+    padding: 11px 16px; margin-bottom: -1px;
+    background: none; color: var(--tk-muted);
+    border: none; border-bottom: 2px solid transparent;
+    cursor: pointer;
+  }
+  .aba:hover { color: var(--tk-ink); }
+  .aba.ativa { color: var(--tk-ink); font-weight: 600; border-bottom-color: var(--tk-primary); }
+  .aba .bolinha {
+    display: inline-block; width: 7px; height: 7px; margin-left: 6px;
+    border-radius: 50%; background: #D9A520; vertical-align: middle;
+  }
+  .painel[hidden] { display: none; }
+
+  #consumo, #usuarios { margin-top: 0; }
 
   /* 195px cabe os quatro medidores numa linha na largura do CRM (880px) sem
      apertar o número grande; abaixo disso a grade quebra sozinha. */
@@ -180,6 +201,14 @@
 
 <main>
   <h1>CRM</h1>
+
+  <nav class="abas" id="abas">
+    <button class="aba ativa" data-aba="inicio">Início</button>
+    <button class="aba" data-aba="uso">Uso</button>
+    <button class="aba" data-aba="usuarios" id="aba-btn-usuarios" hidden>Usuários</button>
+  </nav>
+
+  <section class="painel" id="painel-inicio">
   <p class="sub">
     A autenticação está no ar. Os módulos abaixo ainda não foram construídos —
     o plano de cada um está em <code>PLANO-DESKTOP-CRM.md</code>.
@@ -205,6 +234,9 @@
     </div>
   </div>
 
+  </section>
+
+  <section class="painel" id="painel-uso" hidden>
   <section id="consumo">
     <div class="titulo-secao">
       <h2>Consumo das APIs</h2>
@@ -226,6 +258,9 @@
     </div>
   </section>
 
+  </section>
+
+  <section class="painel" id="painel-usuarios" hidden>
   <section id="usuarios">
     <div class="titulo-secao">
       <h2>Usuários</h2>
@@ -245,6 +280,7 @@
       </table>
     </div>
   </section>
+  </section>
 </main>
 
 <div class="véu" id="veu" hidden>
@@ -261,6 +297,41 @@
     fetch('/api/logout', { method: 'POST' })
       .finally(function () { location.href = '/login'; });
   });
+
+  // ─── Abas ──────────────────────────────────────────────────────────────────
+  // O hash da URL é a fonte da verdade da aba aberta: assim o F5 (e o voltar do
+  // navegador) devolve a mesma tela, em vez de jogar de volta no Início.
+  var ABAS = ['inicio', 'uso', 'usuarios'];
+  var jaCarregou = {};
+
+  function mostraAba(nome) {
+    if (ABAS.indexOf(nome) === -1) nome = 'inicio';
+    var btn = document.querySelector('.aba[data-aba="' + nome + '"]');
+    if (btn && btn.hidden) nome = 'inicio';        // aba que este usuário não tem
+
+    ABAS.forEach(function (a) {
+      document.getElementById('painel-' + a).hidden = a !== nome;
+      var b = document.querySelector('.aba[data-aba="' + a + '"]');
+      if (b) b.classList.toggle('ativa', a === nome);
+    });
+
+    if (location.hash.slice(1) !== nome) {
+      history.replaceState(null, '', nome === 'inicio' ? location.pathname : '#' + nome);
+    }
+
+    // Cada aba busca os próprios dados quando abre — nada de gastar chamada de
+    // API por tela que ninguém olhou. O consumo recarrega toda vez (o saldo do
+    // Serper tem cache de 5 min no servidor); a lista de usuários, só na
+    // primeira, porque ela se recarrega sozinha depois de cada ação.
+    if (nome === 'uso') carregaConsumo(false);
+    if (nome === 'usuarios' && !jaCarregou.usuarios) { jaCarregou.usuarios = true; carrega(); }
+  }
+
+  document.getElementById('abas').addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('.aba') : null;
+    if (b) mostraAba(b.dataset.aba);
+  });
+  window.addEventListener('hashchange', function () { mostraAba(location.hash.slice(1)); });
 
   // ─── Usuários ──────────────────────────────────────────────────────────────
   var veu = document.getElementById('veu');
@@ -333,7 +404,11 @@
             (u.admin
               ? (podeRebaixar ? '<button class="acao leve" data-admin="' + u.id + '" data-valor="0" data-login="' + esc(u.login) + '">Tirar admin</button>' : '')
               : '<button class="acao leve" data-admin="' + u.id + '" data-valor="1" data-login="' + esc(u.login) + '">Tornar admin</button>') +
-            '<button class="acao leve" data-reset="' + u.id + '" data-login="' + esc(u.login) + '">Resetar senha</button>' +
+            // Na própria linha: "alterar" (você digita a nova, continua logado).
+            // Resetar a si mesmo só serviria pra se trancar do lado de fora.
+            (euMesmo
+              ? '<button class="acao leve" id="minha-senha">Alterar senha</button>'
+              : '<button class="acao leve" data-reset="' + u.id + '" data-login="' + esc(u.login) + '">Resetar senha</button>') +
             (podeRemover
               ? '<button class="acao leve perigo" data-remove="' + u.id + '" data-login="' + esc(u.login) + '">Remover</button>'
               : '<button class="acao leve" disabled title="' + esc(motivo) + '">Remover</button>') +
@@ -349,6 +424,11 @@
       var r = await fetch('/api/pedidos-senha');
       var d = await r.json();
       var box = document.getElementById('pedidos');
+      var abaUsuarios = document.getElementById('aba-btn-usuarios');
+      // Com a aba fechada o aviso ficaria invisível; a bolinha é o que sobra
+      // dele na barra de navegação.
+      abaUsuarios.innerHTML = 'Usuários' +
+        (d.ok && d.pedidos.length ? '<span class="bolinha" title="' + d.pedidos.length + ' pedido(s) de senha"></span>' : '');
       if (!d.ok || !d.pedidos.length) { box.innerHTML = ''; return; }
 
       box.innerHTML = '<div class="aviso-pedidos"><strong>' + d.pedidos.length +
@@ -368,33 +448,23 @@
 
     if (b.id === 'novo') return formNovoUsuario();
 
+    if (b.id === 'minha-senha') return formMinhaSenha();
+
     if (b.dataset.reset) {
-      var euMesmo = b.dataset.reset === euId;
-      // Resetar a PRÓPRIA senha derruba sua sessão na hora: se a temporária se
-      // perder, você fica trancado do lado de fora do seu próprio sistema.
-      var pergunta = euMesmo
-        ? 'ATENÇÃO: você está resetando a SUA senha.\n\n'
-          + 'Você será desconectado imediatamente e só volta a entrar com a senha '
-          + 'temporária que vou mostrar. Ela aparece UMA vez — anote antes de fechar.\n\n'
-          + 'Continuar?'
-        : 'Gerar uma senha temporária para "' + b.dataset.login + '"?\n\n'
-          + 'As sessões abertas dele caem, e no próximo acesso ele terá que escolher uma senha nova.';
-      if (!confirm(pergunta)) return;
+      if (!confirm('Gerar uma senha temporária para "' + b.dataset.login + '"?\n\n'
+        + 'As sessões abertas dele caem, e no próximo acesso ele terá que escolher uma senha nova.')) return;
 
       var r = await fetch('/api/usuarios/' + b.dataset.reset + '/resetar-senha', { method: 'POST' });
       var d = await r.json();
       if (!d.ok) return alert(d.reason || 'não consegui resetar');
 
+      // Insistente: a senha aparece uma única vez, e fechar sem querer (Esc,
+      // clique fora) significa ter que resetar de novo.
       abre('<h3>Senha temporária</h3>' +
-        (euMesmo
-          ? '<p><strong>Esta é a sua senha.</strong> Sua sessão já caiu — é com ela que você volta a entrar, e depois escolhe a definitiva. Anote agora: ela não fica guardada em lugar nenhum.</p>'
-          : '<p>Entregue esta senha para <strong>' + esc(d.login) + '</strong>. Ela aparece uma única vez — não fica guardada em lugar nenhum.</p>') +
+        '<p>Entregue esta senha para <strong>' + esc(d.login) + '</strong>. Ela aparece uma única vez — não fica guardada em lugar nenhum.</p>' +
         '<div class="senha-gerada">' + esc(d.senhaTemporaria) + '</div>' +
-        '<div class="botoes"><button class="acao" id="fechar-modal">' +
-        (euMesmo ? 'Anotei, ir para o login' : 'Entendi') + '</button></div>',
-        true);   // insistente: só fecha pelo botão
-
-      if (euMesmo) { modal.dataset.irParaLogin = '1'; return; }
+        '<div class="botoes"><button class="acao" id="fechar-modal">Entendi</button></div>',
+        true);
       carrega();
       return;
     }
@@ -431,14 +501,54 @@
       return;
     }
 
-    if (b.id === 'fechar-modal' || b.id === 'cancelar-modal') {
-      var vaiProLogin = modal.dataset.irParaLogin === '1';
-      fechaForcado();
-      // Resetou a própria senha: a sessão já morreu no servidor, então ficar
-      // nesta tela só renderia erro em cada requisição.
-      if (vaiProLogin) location.href = '/login';
-    }
+    if (b.id === 'fechar-modal' || b.id === 'cancelar-modal') fechaForcado();
   });
+
+  // Trocar a própria senha sem perder a sessão. Diferente do "resetar", que é
+  // pros outros: aqui você digita a nova e continua logado.
+  function formMinhaSenha() {
+    abre('<h3>Alterar minha senha</h3>' +
+      '<p>Suas outras sessões (outro navegador, outro computador) serão encerradas. Esta continua.</p>' +
+      '<p class="erro" id="erro-modal" style="display:none"></p>' +
+      '<label for="s-atual">Senha atual</label>' +
+      '<input id="s-atual" type="password" autocomplete="current-password" />' +
+      '<label for="s-nova">Nova senha</label>' +
+      '<input id="s-nova" type="password" autocomplete="new-password" placeholder="mínimo 8 caracteres" />' +
+      '<label for="s-nova2">Repita a nova senha</label>' +
+      '<input id="s-nova2" type="password" autocomplete="new-password" />' +
+      '<div class="botoes">' +
+        '<button class="acao leve" id="cancelar-modal">Cancelar</button>' +
+        '<button class="acao" id="salvar-senha">Salvar</button>' +
+      '</div>');
+
+    setTimeout(function () { document.getElementById('s-atual').focus(); }, 0);
+
+    document.getElementById('salvar-senha').addEventListener('click', async function () {
+      var erroEl = document.getElementById('erro-modal');
+      var mostra = function (m) { erroEl.textContent = m; erroEl.style.display = 'block'; };
+      erroEl.style.display = 'none';
+
+      var atual = document.getElementById('s-atual').value;
+      var nova = document.getElementById('s-nova').value;
+      var nova2 = document.getElementById('s-nova2').value;
+
+      if (!atual) return mostra('Informe a senha atual.');
+      if (nova.length < 8) return mostra('A nova senha precisa de pelo menos 8 caracteres.');
+      if (nova !== nova2) return mostra('As duas senhas novas não são iguais.');
+      if (nova === atual) return mostra('A nova senha é igual à atual.');
+
+      var r = await fetch('/api/trocar-senha', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ senhaAtual: atual, senha: nova }),
+      });
+      var d = await r.json().catch(function () { return {}; });
+      if (!d.ok) return mostra(d.reason || 'não consegui alterar');
+
+      fecha();
+      alert('Senha alterada. Você continua conectado aqui.');
+    });
+  }
 
   function formNovoUsuario() {
     abre('<h3>Novo usuário</h3>' +
@@ -480,9 +590,16 @@
 
   fetch('/api/me').then(function (r) { return r.json(); }).then(function (d) {
     if (d.ok) euId = d.usuarioId || null;
-    carrega();
-    carregaPedidos();
-  }).catch(function () { carrega(); carregaPedidos(); });
+    // A aba de usuários só existe pra admin — o servidor recusa o resto
+    // (exigeAdmin), e aba que só sabe dar erro é armadilha.
+    if (d.ok && d.admin) {
+      document.getElementById('aba-btn-usuarios').hidden = false;
+      // Pedidos de senha carregam no boot, mesmo com a aba fechada: é aviso que
+      // não pode depender de alguém clicar pra aparecer.
+      carregaPedidos();
+    }
+    mostraAba(location.hash.slice(1));
+  }).catch(function () { mostraAba(location.hash.slice(1)); });
 
   // ─── Consumo das APIs ──────────────────────────────────────────────────────
   // Três perguntas, nesta ordem de urgência: (1) o saldo de busca acaba quando?
@@ -599,7 +716,6 @@
   document.getElementById('atualizar-consumo').addEventListener('click', function () {
     carregaConsumo(true);
   });
-  carregaConsumo(false);
 </script>
 </body>
 </html>

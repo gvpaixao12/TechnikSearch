@@ -327,8 +327,22 @@ export async function resetaSenha(usuarioId) {
   return { login: row.login, senhaTemporaria: temporaria };
 }
 
-// A própria pessoa escolhendo a senha nova, já autenticada com a temporária.
-export async function trocaSenhaPropria({ usuarioId, tokenAtual, novaSenha }) {
+// A própria pessoa trocando a senha. Dois caminhos chegam aqui:
+//
+//   1. veio da senha temporária → não pede a atual, porque ela acabou de provar
+//      que a conhece ao fazer login com ela;
+//   2. trocou por vontade própria, já logada → PEDE a senha atual. Sem isso,
+//      uma sessão esquecida aberta viraria troca de senha por quem passasse na
+//      frente do computador.
+export async function trocaSenhaPropria({ usuarioId, tokenAtual, senhaAtual, novaSenha }) {
+  const u = await one('select senha_hash, senha_temporaria from usuarios where id = $1', [usuarioId]);
+  if (!u) throw new Error('usuário não encontrado');
+
+  if (u.senha_temporaria !== true) {
+    if (!senhaAtual) throw new Error('informe a senha atual');
+    if (!await verificaSenha(senhaAtual, u.senha_hash)) throw new Error('senha atual incorreta');
+  }
+
   const hash = await hashSenha(novaSenha);
   await exec('update usuarios set senha_hash = $1, senha_temporaria = false where id = $2',
     [hash, usuarioId]);

@@ -139,10 +139,11 @@ app.post('/api/trocar-senha', async (req, res) => {
     if (req.auth?.tipo !== 'usuario') {
       return res.status(403).json({ ok: false, reason: 'só usuários trocam senha' });
     }
-    const { senha } = req.body || {};
+    const { senha, senhaAtual } = req.body || {};
     await trocaSenhaPropria({
       usuarioId: req.auth.usuarioId,
       tokenAtual: leCookie(req, COOKIE),
+      senhaAtual,
       novaSenha: senha,
     });
     res.json({ ok: true });
