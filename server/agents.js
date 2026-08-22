@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { briefingToText } from './briefing.js';
+import { registraLLM, registraRateLimit } from './usage.js';
 
 // Provedor de texto (curador + vendedor). Default: Groq (Llama 3.3 70B) — grátis,
 // mas com teto diário de tokens. Pra trocar de provedor SEM editar código, basta
@@ -13,7 +14,13 @@ const MODEL = USE_CUSTOM_LLM
   ? (process.env.LLM_MODEL || 'gpt-4o-mini')
   : 'llama-3.3-70b-versatile';
 
-console.log(`[llm] texto via ${USE_CUSTOM_LLM ? (process.env.LLM_BASE_URL || 'https://api.openai.com/v1') : 'groq'} · model=${MODEL}`);
+// Quem está pagando esta conta — só pra etiquetar o consumo no painel de uso.
+const BASE_URL = USE_CUSTOM_LLM ? (process.env.LLM_BASE_URL || 'https://api.openai.com/v1') : 'groq';
+const PROVIDER = /groq/i.test(BASE_URL) ? 'groq'
+  : /anthropic/i.test(BASE_URL) ? 'anthropic'
+  : USE_CUSTOM_LLM ? 'openai' : 'groq';
+
+console.log(`[llm] texto via ${BASE_URL} · model=${MODEL}`);
 
 let _client = null;
 function getClient() {
@@ -187,7 +194,9 @@ ${VENDOR_SCHEMA_DESC}`;
 
 async function runChat({ system, user, maxTokens = 3500 }) {
   const client = getClient();
-  const completion = await client.chat.completions.create({
+  // `.withResponse()` entrega a resposta HTTP junto: é de onde saem os headers
+  // x-ratelimit-*, o único sinal de quanto ainda cabe na janela da conta.
+  const { data: completion, response } = await client.chat.completions.create({
     model: MODEL,
     temperature: 0.3,
     max_tokens: maxTokens,
@@ -196,7 +205,9 @@ async function runChat({ system, user, maxTokens = 3500 }) {
       { role: 'system', content: system },
       { role: 'user', content: user },
     ],
-  });
+  }).withResponse();
+  registraRateLimit(response?.headers, 'texto');
+  registraLLM({ provider: PROVIDER, modelo: MODEL, operacao: 'texto', usage: completion?.usage });
   const text = completion.choices?.[0]?.message?.content;
   if (!text) throw new Error('Resposta vazia do modelo');
   const finishReason = completion.choices?.[0]?.finish_reason;

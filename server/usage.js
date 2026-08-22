@@ -17,6 +17,10 @@
 //
 //   Groq    → free tier; conta chamada e token só pra saber quanto correu.
 //
+//   FIPE    → não tem quota nem saldo: o risco é bloqueio por IP. Então o que
+//             se mede aqui é requisição que saiu de verdade (cache não conta) e
+//             quantas voltaram 429.
+//
 // Nada aqui pode derrubar uma chamada de verdade: todo caminho de gravação é
 // fire-and-forget e engole o próprio erro. Sem DATABASE_URL (dev local) o
 // módulo continua funcionando, só que os números vivem em memória e zeram
@@ -61,9 +65,9 @@ function _viraODia() {
 }
 
 function _acumula(mapa, linha) {
-  const k = `${linha.provider}|${linha.modelo || ''}|${linha.operacao}`;
+  const k = `${linha.provider}|${linha.modelo || ''}|${linha.operacao}|${linha.resultado || ''}`;
   const a = mapa.get(k) || {
-    provider: linha.provider, modelo: linha.modelo, operacao: linha.operacao,
+    provider: linha.provider, modelo: linha.modelo, operacao: linha.operacao, resultado: linha.resultado || null,
     chamadas: 0, tokens_in: 0, tokens_out: 0, unidades: 0, custo_usd: 0,
   };
   a.chamadas += 1;
@@ -89,13 +93,13 @@ async function _flush() {
   try {
     const { q } = await import('./db.js');
     // Um INSERT com N linhas: ($1,$2,…), ($8,$9,…)…
-    const cols = 7;
+    const cols = 8;
     const valores = lote.map((_, i) =>
       `(${Array.from({ length: cols }, (_, j) => `$${i * cols + j + 1}`).join(',')})`).join(',');
     const params = lote.flatMap(l =>
-      [l.provider, l.modelo, l.operacao, l.tokens_in, l.tokens_out, l.unidades, l.custo_usd]);
+      [l.provider, l.modelo, l.operacao, l.resultado || null, l.tokens_in, l.tokens_out, l.unidades, l.custo_usd]);
     await q(
-      `insert into uso_api (provider, modelo, operacao, tokens_in, tokens_out, unidades, custo_usd)
+      `insert into uso_api (provider, modelo, operacao, resultado, tokens_in, tokens_out, unidades, custo_usd)
        values ${valores}`, params);
   } catch (e) {
     _dbMorto = true;
@@ -138,6 +142,17 @@ export function registraBusca({ provider = 'serper', creditos = 1 } = {}) {
   _registra({
     provider, modelo: null, operacao: 'busca',
     tokens_in: 0, tokens_out: 0, unidades: creditos, custo_usd: 0,
+  });
+}
+
+// Uma ida à FIPE que REALMENTE saiu pra internet — resposta servida do cache
+// em disco não conta. É de propósito: a FIPE não tem quota nem saldo, o risco
+// dela é bloqueio por IP (já aconteceu com a VPS), e quem provoca bloqueio é
+// requisição de verdade. `resultado`: ok | 429 | erro.
+export function registraFipe({ resultado = 'ok' } = {}) {
+  _registra({
+    provider: 'fipe', modelo: null, operacao: 'consulta', resultado,
+    tokens_in: 0, tokens_out: 0, unidades: 1, custo_usd: 0,
   });
 }
 
@@ -257,7 +272,7 @@ function _doMapa(mapa) {
 async function _doBanco(desde) {
   const { q } = await import('./db.js');
   return q(
-    `select provider, modelo, operacao,
+    `select provider, modelo, operacao, resultado,
             count(*)::int           as chamadas,
             sum(tokens_in)::bigint  as tokens_in,
             sum(tokens_out)::bigint as tokens_out,
@@ -265,14 +280,21 @@ async function _doBanco(desde) {
             sum(custo_usd)::float   as custo_usd
        from uso_api
       where criado_em >= $1
-      group by provider, modelo, operacao
+      group by provider, modelo, operacao, resultado
       order by custo_usd desc`, [desde]);
 }
 
 function _totaliza(linhas) {
-  const t = { chamadas: 0, tokens: 0, buscas: 0, custoUsd: 0 };
+  const t = { chamadas: 0, tokens: 0, buscas: 0, custoUsd: 0, fipe: 0, fipe429: 0 };
   for (const l of linhas) {
-    t.chamadas += Number(l.chamadas);
+    const n = Number(l.chamadas);
+    if (l.provider === 'fipe') {
+      // FIPE não é chamada de IA nem custa dinheiro: entra na própria conta.
+      t.fipe += n;
+      if (l.resultado === '429') t.fipe429 += n;
+      continue;
+    }
+    t.chamadas += n;
     t.tokens += Number(l.tokens_in) + Number(l.tokens_out);
     if (l.operacao === 'busca') t.buscas += Number(l.unidades);
     t.custoUsd += Number(l.custo_usd);

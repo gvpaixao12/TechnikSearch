@@ -27,3 +27,8 @@ create table if not exists public.uso_api (
 
 create index if not exists uso_api_criado_em_idx on public.uso_api (criado_em desc);
 create index if not exists uso_api_provider_idx  on public.uso_api (provider, criado_em desc);
+
+-- Como foi a chamada, quando isso importa: 'ok' | '429' | 'erro'. Só a FIPE
+-- preenche hoje (o risco dela é bloqueio por IP, não saldo); nas linhas de LLM
+-- e busca fica null.
+alter table public.uso_api add column if not exists resultado text;

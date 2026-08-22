@@ -3,6 +3,8 @@
 // ilimitado, mas só cobre modelos populares); se < 4 fotos boas numa view,
 // completa com Serper.dev (proxy do Google Images, free tier 2.5k buscas).
 
+import { registraBusca } from './usage.js';
+
 const COMMONS_API = 'https://commons.wikimedia.org/w/api.php';
 const SERPER_URL = 'https://google.serper.dev/images';
 const MIN_WIDTH = 600;
@@ -65,6 +67,10 @@ async function searchSerper(query, { num = 10 } = {}) {
     body: JSON.stringify({ q: query, num, gl: 'br', hl: 'pt-br' }),
     signal: AbortSignal.timeout(10000),
   });
+  // 1 request = 1 crédito, e o crédito some mesmo que a resposta venha vazia.
+  // Por isso conta ANTES do throw: o painel precisa ver o que foi gasto, não o
+  // que deu certo.
+  if (res.status !== 429) registraBusca({ creditos: 1 });
   if (!res.ok) throw new Error(`Serper HTTP ${res.status}`);
   const json = await res.json();
   return (json.images || [])

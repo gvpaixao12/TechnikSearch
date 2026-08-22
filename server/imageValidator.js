@@ -4,6 +4,7 @@
 
 import OpenAI from 'openai';
 import { splitModelo } from './classify.js';
+import { registraLLM, registraRateLimit } from './usage.js';
 
 // Provedor de visão. Default: reaproveita a conta OpenAI do texto (LLM_API_KEY)
 // com gpt-4o-mini — confiável, sem teto diário (TPD) e bom em ler volante/placa.
@@ -207,13 +208,17 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
   await acquireVision();
   const _res = await aguardaOrcamento();
   try {
-    completion = await client.chat.completions.create({
+    // `.withResponse()` traz os headers x-ratelimit-* junto — é aqui que dá pra
+    // ver a janela da conta encolhendo ANTES do 429 chegar.
+    const rodada = await client.chat.completions.create({
       model: VISION_MODEL,
       temperature: 0.1,
       max_tokens: 150,
       response_format: { type: 'json_object' },
       messages: [{ role: 'user', content }],
-    });
+    }).withResponse();
+    completion = rodada.data;
+    registraRateLimit(rodada.response?.headers, 'visao');
   } catch (e) {
     const msg = String(e.message || '');
     const is429 = /429|rate.limit|too many/i.test(msg);
@@ -268,6 +273,14 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
   _consec429 = 0;
   // Consumo REAL da chamada — realimenta a estimativa do pacer de TPM.
   _registraUso(_res, completion?.usage?.total_tokens);
+  // …e vai também pro medidor de consumo (painel do CRM). São coisas
+  // diferentes: o pacer acima só enxerga os últimos 60s.
+  registraLLM({
+    provider: USE_OPENAI_VISION ? 'openai' : 'groq',
+    modelo: VISION_MODEL,
+    operacao: 'visao',
+    usage: completion?.usage,
+  });
 
   const text = completion.choices?.[0]?.message?.content || '{}';
   try {

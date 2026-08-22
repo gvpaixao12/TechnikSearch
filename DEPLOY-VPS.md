@@ -282,3 +282,28 @@ cd /opt/technik/server && node scripts/aplicar-schema.mjs auth-schema.sql
 
 Idempotente (tudo é `if not exists`), então rodar de novo não faz mal. Use este
 em vez do `criar-usuario.mjs` quando não quiser mexer em senha de ninguém.
+
+### Monitor de consumo das APIs
+
+O painel fica em **CRM → Consumo das APIs** e lê `GET /api/admin/usage`. Pra
+gravar o histórico (sem isso ele funciona, mas zera a cada restart):
+
+```bash
+cd /opt/technik/server && node scripts/aplicar-schema.mjs uso-api-schema.sql
+```
+
+O que cada número é, e de onde vem:
+
+| Medidor | Fonte | Exato? |
+|---|---|---|
+| Créditos do Serper | `GET google.serper.dev/account` | sim — é o saldo real |
+| Gasto do mês | Costs API da OpenAI, se houver `OPENAI_ADMIN_KEY` | sim |
+| Gasto do mês (sem admin key) | estimativa a partir dos tokens de cada resposta | aproximado |
+| Janela de tokens (TPM) | headers `x-ratelimit-*` da última chamada | sim, mas é "vou tomar 429?", não saldo |
+| FIPE · hoje | contagem própria em `fipe.js`, só do que saiu pra internet | sim — resposta de cache não entra |
+
+A `OPENAI_ADMIN_KEY` é uma **admin key só-leitura** (Settings → Organization →
+Admin keys), separada da `LLM_API_KEY` — chave de projeto não tem permissão de
+ler custo, devolve `Missing scopes: api.usage.read`.
+
+Pra conferir tudo sem abrir o navegador: `node scripts/diag-usage.js`.

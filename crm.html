@@ -72,8 +72,20 @@
   #consumo, #usuarios { margin-top: 0; }
 
   /* 195px cabe os quatro medidores numa linha na largura do CRM (880px) sem
-     apertar o número grande; abaixo disso a grade quebra sozinha. */
+     apertar o número grande; abaixo disso a grade quebra sozinha. Os quatro são
+     os que respondem "está acabando?" — o movimento do dia é contexto e vai na
+     tira abaixo, senão vira um quinto cartão espremido. */
   .medidores { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(195px, 1fr)); }
+  .tira-hoje {
+    display: flex; flex-wrap: wrap; gap: 6px 22px; align-items: baseline;
+    margin-top: 14px; padding: 13px 20px;
+    background: var(--tk-bg); border: 1px solid var(--tk-bg-3); border-radius: 12px;
+    font-size: 13px; color: var(--tk-muted);
+  }
+  .tira-hoje strong { color: var(--tk-ink); font-weight: 600; }
+  .tira-hoje .titulo {
+    font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  }
   .medidor {
     background: var(--tk-bg); border: 1px solid var(--tk-bg-3);
     border-radius: 12px; padding: 19px 20px;
@@ -245,6 +257,7 @@
     <div class="medidores" id="medidores">
       <div class="medidor"><div class="rotulo">Carregando…</div></div>
     </div>
+    <div class="tira-hoje" id="tira-hoje"></div>
     <div class="tabela-wrap" id="detalhe-consumo" hidden>
       <table>
         <thead>
@@ -607,6 +620,7 @@
   var medidores = document.getElementById('medidores');
   var detalhe = document.getElementById('detalhe-consumo');
   var linhasConsumo = document.getElementById('linhas-consumo');
+  var tiraHoje = document.getElementById('tira-hoje');
 
   // Uma ficha de fotos gasta ~6 créditos (4 vistas, algumas com 2 tentativas).
   // É estimativa grosseira e o rótulo diz isso — serve pra dar noção de fôlego.
@@ -614,6 +628,15 @@
 
   var mil = function (n) { return Number(n || 0).toLocaleString('pt-BR'); };
   var usd = function (n) { return 'US$ ' + Number(n || 0).toFixed(2); };
+
+  // Milhões de tokens por extenso não cabem no cartão — e ninguém lê "3.184.902"
+  // como número, lê como borrão.
+  var compacto = function (n) {
+    n = Number(n || 0);
+    if (n >= 1e6) return (n / 1e6).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) + ' mi';
+    if (n >= 10e3) return Math.round(n / 1e3).toLocaleString('pt-BR') + ' mil';
+    return mil(n);
+  };
 
   function medidor(o) {
     return '<div class="medidor ' + (o.estado || '') + '">' +
@@ -687,24 +710,46 @@
       }));
     }
 
-    // 4) Movimento do dia — contexto pro resto.
-    var hoje = (d.hoje && d.hoje.total) || {};
+    // 4) FIPE — não tem saldo pra acabar; o que machuca é bloqueio por IP.
+    // Por isso o número é requisição que saiu de verdade (cache não entra) e o
+    // alarme é a taxa de 429.
+    var fipeHoje = (d.hoje && d.hoje.total && d.hoje.total.fipe) || 0;
+    var fipe429 = (d.hoje && d.hoje.total && d.hoje.total.fipe429) || 0;
+    var taxa429 = fipeHoje ? (fipe429 / fipeHoje) * 100 : 0;
     cards.push(medidor({
-      rotulo: 'Hoje',
-      numero: mil(hoje.tokens), unidade: 'tokens',
-      nota: mil(hoje.chamadas) + ' chamadas de IA · ' + mil(hoje.buscas) + ' buscas' +
-            (d.fonte === 'memoria' ? ' · sem banco: zera se o servidor reiniciar' : ''),
+      rotulo: 'FIPE · hoje',
+      numero: mil(fipeHoje), unidade: 'requisições',
+      estado: taxa429 >= 20 ? 'critico' : fipe429 > 0 ? 'atencao' : '',
+      nota: fipe429
+        ? mil(fipe429) + ' bloqueio(s) 429 · ' + Math.round(taxa429) + '% das idas'
+        : (fipeHoje ? 'nenhum 429' : 'nada saiu daqui hoje — tudo veio do cache'),
     }));
 
     medidores.innerHTML = cards.join('');
+
+    // Movimento do dia: é contexto, não medidor — ninguém precisa dele grande.
+    var hoje = (d.hoje && d.hoje.total) || {};
+    tiraHoje.innerHTML =
+      '<span class="titulo">Hoje</span>' +
+      '<span><strong>' + compacto(hoje.tokens) + '</strong> tokens</span>' +
+      '<span><strong>' + mil(hoje.chamadas) + '</strong> chamadas de IA</span>' +
+      '<span><strong>' + mil(hoje.buscas) + '</strong> buscas</span>' +
+      '<span><strong>' + mil(hoje.fipe) + '</strong> idas à FIPE</span>' +
+      (d.fonte === 'memoria'
+        ? '<span>· sem banco: zera se o servidor reiniciar</span>'
+        : '');
 
     var linhas = (d.mes && d.mes.linhas) || [];
     if (!linhas.length) { detalhe.hidden = true; return; }
     detalhe.hidden = false;
     linhasConsumo.innerHTML = linhas.map(function (l) {
       var tokens = Number(l.tokens_in) + Number(l.tokens_out);
+      // Na FIPE o que distingue uma linha da outra é o desfecho (ok / 429),
+      // não o modelo — por isso ele entra aqui, junto do nome.
+      var onde = esc(l.provider) + ' · ' + esc(l.operacao) +
+        (l.resultado ? ' (' + esc(l.resultado) + ')' : '');
       return '<tr>' +
-        '<td>' + esc(l.provider) + ' · ' + esc(l.operacao) + '</td>' +
+        '<td>' + onde + '</td>' +
         '<td>' + esc(l.modelo || '—') + '</td>' +
         '<td class="num">' + mil(l.chamadas) + '</td>' +
         '<td class="num">' + (tokens ? mil(tokens) : '—') + '</td>' +
