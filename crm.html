@@ -47,6 +47,87 @@
   }
   .cartao.pronto .tag { background: var(--tk-primary); color: #fff; }
   a { color: inherit; text-decoration: none; }
+
+  #usuarios { margin-top: 52px; }
+  .titulo-secao {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; margin-bottom: 18px;
+  }
+  .titulo-secao h2 { font-size: 19px; margin: 0; letter-spacing: -.01em; }
+
+  button.acao {
+    font: inherit; font-size: 13.5px; font-weight: 600;
+    padding: 8px 16px; border-radius: 7px; cursor: pointer;
+    background: var(--tk-primary); color: #fff; border: none;
+  }
+  button.acao:hover { opacity: .9; }
+  button.acao.leve {
+    background: none; color: var(--tk-ink); border: 1px solid var(--tk-bg-3);
+    font-weight: 500; padding: 6px 12px; font-size: 13px;
+  }
+  button.acao.leve:hover { border-color: var(--tk-primary); opacity: 1; }
+  button.acao.perigo:hover { border-color: #C0392B; color: #C0392B; }
+
+  .tabela-wrap {
+    overflow-x: auto;
+    background: var(--tk-bg); border: 1px solid var(--tk-bg-3); border-radius: 12px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 13px 18px; border-bottom: 1px solid var(--tk-bg-3); }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--tk-muted); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: none; }
+  td.acoes { text-align: right; white-space: nowrap; }
+  td.acoes button { margin-left: 7px; }
+  .vazio { color: var(--tk-muted); text-align: center; padding: 26px; }
+  .marca-temp {
+    display: inline-block; margin-left: 8px; padding: 2px 7px;
+    font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em;
+    border-radius: 4px; background: #FBE8C8; color: #8A5A00;
+  }
+
+  .aviso-pedidos {
+    margin-bottom: 16px; padding: 13px 17px; border-radius: 10px;
+    background: #FFF8E6; border: 1px solid #F0DDB0; color: #6B4E00; font-size: 13.5px;
+  }
+  .aviso-pedidos strong { font-weight: 600; }
+  .aviso-pedidos ul { margin: 8px 0 0; padding-left: 19px; }
+
+  .véu {
+    position: fixed; inset: 0; z-index: 20;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+    background: rgba(14, 14, 31, .55);
+  }
+  .véu[hidden] { display: none; }
+  .modal {
+    width: 100%; max-width: 400px;
+    background: var(--tk-bg); border-radius: 14px; padding: 30px 28px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, .3);
+  }
+  .modal h3 { font-size: 17px; margin: 0 0 9px; }
+  .modal p { font-size: 13.5px; color: var(--tk-muted); line-height: 1.55; margin: 0 0 18px; }
+  .modal label { display: block; font-size: 12.5px; font-weight: 600; margin: 0 0 6px; }
+  .modal input {
+    width: 100%; box-sizing: border-box; padding: 10px 12px; margin-bottom: 14px;
+    font: inherit; font-size: 14px;
+    border: 1px solid var(--tk-bg-3); border-radius: 8px;
+    background: var(--tk-bg); color: var(--tk-ink);
+  }
+  .modal input:focus { outline: none; border-color: var(--tk-primary); }
+  .modal .botoes { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
+  .modal .erro { color: #B23A3A; font-size: 13px; margin: 0 0 14px; }
+
+  .senha-gerada {
+    font-family: 'Cascadia Code', Consolas, monospace; font-size: 17px;
+    letter-spacing: .04em; text-align: center;
+    padding: 15px; margin: 0 0 16px;
+    background: var(--tk-bg-2); border: 1px dashed var(--tk-primary-3); border-radius: 9px;
+    user-select: all;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .aviso-pedidos { background: #33290F; border-color: #5C4A1A; color: #E8D19A; }
+    .marca-temp { background: #4A3A10; color: #E8C77A; }
+  }
 </style>
 </head>
 <body>
@@ -87,7 +168,31 @@
          da vinculação com as consultas antigas.</p>
     </div>
   </div>
+
+  <section id="usuarios">
+    <div class="titulo-secao">
+      <h2>Usuários</h2>
+      <button class="acao" id="novo">Novo usuário</button>
+    </div>
+
+    <div id="pedidos"></div>
+
+    <div class="tabela-wrap">
+      <table id="tabela">
+        <thead>
+          <tr><th>Usuário</th><th>Nome</th><th>Último acesso</th><th></th></tr>
+        </thead>
+        <tbody id="linhas">
+          <tr><td colspan="4" class="vazio">Carregando…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 </main>
+
+<div class="véu" id="veu" hidden>
+  <div class="modal" id="modal"></div>
+</div>
 
 <script>
   fetch('/api/me')
@@ -99,6 +204,147 @@
     fetch('/api/logout', { method: 'POST' })
       .finally(function () { location.href = '/login'; });
   });
+
+  // ─── Usuários ──────────────────────────────────────────────────────────────
+  var veu = document.getElementById('veu');
+  var modal = document.getElementById('modal');
+  var linhas = document.getElementById('linhas');
+  var euId = null;
+
+  var esc = function (s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  };
+
+  var data = function (iso) {
+    if (!iso) return '—';
+    return new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+  };
+
+  function abre(html) { modal.innerHTML = html; veu.hidden = false; }
+  function fecha() { veu.hidden = true; modal.innerHTML = ''; }
+  veu.addEventListener('click', function (e) { if (e.target === veu) fecha(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') fecha(); });
+
+  async function carrega() {
+    try {
+      var r = await fetch('/api/usuarios');
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.reason || 'falhou');
+
+      linhas.innerHTML = d.usuarios.map(function (u) {
+        var temp = u.senha_temporaria ? '<span class="marca-temp">senha temporária</span>' : '';
+        var euMesmo = u.id === euId;
+        return '<tr>' +
+          '<td><strong>' + esc(u.login) + '</strong>' + temp + '</td>' +
+          '<td>' + esc(u.nome || '—') + '</td>' +
+          '<td>' + data(u.ultimo_acesso) + '</td>' +
+          '<td class="acoes">' +
+            '<button class="acao leve" data-reset="' + u.id + '" data-login="' + esc(u.login) + '">Resetar senha</button>' +
+            (euMesmo ? '' : '<button class="acao leve perigo" data-remove="' + u.id + '" data-login="' + esc(u.login) + '">Remover</button>') +
+          '</td></tr>';
+      }).join('') || '<tr><td colspan="4" class="vazio">Nenhum usuário.</td></tr>';
+    } catch (e) {
+      linhas.innerHTML = '<tr><td colspan="4" class="vazio">Não consegui carregar os usuários.</td></tr>';
+    }
+  }
+
+  async function carregaPedidos() {
+    try {
+      var r = await fetch('/api/pedidos-senha');
+      var d = await r.json();
+      var box = document.getElementById('pedidos');
+      if (!d.ok || !d.pedidos.length) { box.innerHTML = ''; return; }
+
+      box.innerHTML = '<div class="aviso-pedidos"><strong>' + d.pedidos.length +
+        ' pedido(s) de recuperação de senha:</strong><ul>' +
+        d.pedidos.map(function (p) {
+          return '<li>' + esc(p.login_informado) + ' — ' + data(p.criado_em) +
+            ' <button class="acao leve" data-atender="' + p.id + '">Marcar resolvido</button></li>';
+        }).join('') + '</ul></div>';
+    } catch (e) { /* o aviso some, o resto da tela continua */ }
+  }
+
+  // Um listener só no documento: as linhas são reescritas a cada carga, e
+  // religar handler em cada botão depois de cada render vaza listener.
+  document.addEventListener('click', async function (e) {
+    var b = e.target.closest ? e.target.closest('button') : null;
+    if (!b) return;
+
+    if (b.id === 'novo') return formNovoUsuario();
+
+    if (b.dataset.reset) {
+      if (!confirm('Gerar uma senha temporária para "' + b.dataset.login + '"?\n\nAs sessões abertas dele caem, e no próximo acesso ele terá que escolher uma senha nova.')) return;
+      var r = await fetch('/api/usuarios/' + b.dataset.reset + '/resetar-senha', { method: 'POST' });
+      var d = await r.json();
+      if (!d.ok) return alert(d.reason || 'não consegui resetar');
+      abre('<h3>Senha temporária</h3>' +
+        '<p>Entregue esta senha para <strong>' + esc(d.login) + '</strong>. Ela aparece uma única vez — não fica guardada em lugar nenhum.</p>' +
+        '<div class="senha-gerada">' + esc(d.senhaTemporaria) + '</div>' +
+        '<div class="botoes"><button class="acao" id="fechar-modal">Entendi</button></div>');
+      carrega();
+      return;
+    }
+
+    if (b.dataset.remove) {
+      if (!confirm('Remover o usuário "' + b.dataset.login + '"? Isso apaga o acesso dele e não dá pra desfazer.')) return;
+      var rr = await fetch('/api/usuarios/' + b.dataset.remove, { method: 'DELETE' });
+      var dd = await rr.json();
+      if (!dd.ok) return alert(dd.reason || 'não consegui remover');
+      carrega();
+      return;
+    }
+
+    if (b.dataset.atender) {
+      await fetch('/api/pedidos-senha/' + b.dataset.atender + '/atender', { method: 'POST' });
+      carregaPedidos();
+      return;
+    }
+
+    if (b.id === 'fechar-modal' || b.id === 'cancelar-modal') fecha();
+  });
+
+  function formNovoUsuario() {
+    abre('<h3>Novo usuário</h3>' +
+      '<p>Ele entra pelo navegador com login e senha. O app desktop não usa usuário — usa token de dispositivo.</p>' +
+      '<p class="erro" id="erro-modal" style="display:none"></p>' +
+      '<label for="n-login">Usuário</label>' +
+      '<input id="n-login" autocapitalize="none" spellcheck="false" placeholder="ex: maria" />' +
+      '<label for="n-nome">Nome</label>' +
+      '<input id="n-nome" placeholder="ex: Maria Silva" />' +
+      '<label for="n-senha">Senha inicial</label>' +
+      '<input id="n-senha" type="text" placeholder="mínimo 8 caracteres" />' +
+      '<div class="botoes">' +
+        '<button class="acao leve" id="cancelar-modal">Cancelar</button>' +
+        '<button class="acao" id="salvar-usuario">Criar</button>' +
+      '</div>');
+
+    document.getElementById('salvar-usuario').addEventListener('click', async function () {
+      var erroEl = document.getElementById('erro-modal');
+      erroEl.style.display = 'none';
+      var body = {
+        login: document.getElementById('n-login').value.trim(),
+        nome: document.getElementById('n-nome').value.trim(),
+        senha: document.getElementById('n-senha').value,
+      };
+      var r = await fetch('/api/usuarios', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      var d = await r.json();
+      if (!d.ok) { erroEl.textContent = d.reason || 'não consegui criar'; erroEl.style.display = 'block'; return; }
+      fecha();
+      carrega();
+    });
+  }
+
+  fetch('/api/me').then(function (r) { return r.json(); }).then(function (d) {
+    if (d.ok) euId = d.usuarioId || null;
+    carrega();
+    carregaPedidos();
+  }).catch(function () { carrega(); carregaPedidos(); });
 </script>
 </body>
 </html>

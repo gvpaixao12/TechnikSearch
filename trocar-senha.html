@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<title>Technik · Nova senha</title>
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Exo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+<link href="/brand-styles.css" rel="stylesheet" />
+<style>
+  body {
+    min-height: 100vh; margin: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px; background: var(--tk-bg-2);
+  }
+  .card {
+    width: 100%; max-width: 400px;
+    background: var(--tk-bg); border: 1px solid var(--tk-bg-3);
+    border-radius: 14px; padding: 40px 34px;
+    box-shadow: 0 10px 40px rgba(25, 25, 58, .10);
+  }
+  h1 { font-size: 20px; margin: 0 0 9px; letter-spacing: -.01em; }
+  .sub { font-size: 13.5px; color: var(--tk-muted); line-height: 1.55; margin: 0 0 26px; }
+
+  label { display: block; font-size: 12.5px; font-weight: 600; margin: 0 0 7px; }
+  input {
+    width: 100%; box-sizing: border-box; padding: 11px 13px;
+    font: inherit; font-size: 14.5px;
+    border: 1px solid var(--tk-bg-3); border-radius: 8px;
+    background: var(--tk-bg); color: var(--tk-ink);
+  }
+  input:focus {
+    outline: none; border-color: var(--tk-primary);
+    box-shadow: 0 0 0 3px rgba(25, 25, 58, .09);
+  }
+  .campo { margin-bottom: 16px; }
+  .dica { font-size: 12px; color: var(--tk-muted); margin: 7px 0 0; }
+  .dica.ruim { color: #B23A3A; }
+  .dica.boa { color: #2E7D46; }
+
+  button {
+    width: 100%; padding: 12px; margin-top: 8px;
+    font: inherit; font-size: 15px; font-weight: 600;
+    color: #fff; background: var(--tk-primary);
+    border: none; border-radius: 8px; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+
+  .erro {
+    display: none; margin: 0 0 17px; padding: 10px 13px; border-radius: 8px;
+    background: #FDECEC; border: 1px solid #F5C2C2; color: #8B2020; font-size: 13.5px;
+  }
+  .erro.on { display: block; }
+  .sair { margin: 18px 0 0; text-align: center; font-size: 13px; }
+  .sair a { color: var(--tk-muted); }
+  @media (prefers-color-scheme: dark) {
+    .erro { background: #3A1A1A; border-color: #6B2B2B; color: #F0B4B4; }
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Escolha uma senha nova</h1>
+  <p class="sub">
+    Você entrou com uma senha temporária. Defina a sua antes de continuar —
+    ela substitui a temporária imediatamente.
+  </p>
+
+  <div class="erro" id="erro" role="alert"></div>
+
+  <form id="form">
+    <div class="campo">
+      <label for="senha">Nova senha</label>
+      <input id="senha" type="password" autocomplete="new-password" required autofocus />
+      <p class="dica" id="dica">Mínimo de 8 caracteres.</p>
+    </div>
+    <div class="campo">
+      <label for="senha2">Repita a nova senha</label>
+      <input id="senha2" type="password" autocomplete="new-password" required />
+    </div>
+    <button type="submit" id="btn">Salvar e continuar</button>
+  </form>
+
+  <p class="sair"><a href="#" id="sair">Sair</a></p>
+</div>
+
+<script>
+  var form = document.getElementById('form');
+  var btn = document.getElementById('btn');
+  var erroEl = document.getElementById('erro');
+  var s1 = document.getElementById('senha');
+  var s2 = document.getElementById('senha2');
+  var dica = document.getElementById('dica');
+
+  function erro(msg) { erroEl.textContent = msg; erroEl.classList.add('on'); }
+
+  s1.addEventListener('input', function () {
+    var v = s1.value;
+    dica.className = 'dica' + (v.length === 0 ? '' : v.length < 8 ? ' ruim' : ' boa');
+    dica.textContent = v.length === 0 ? 'Mínimo de 8 caracteres.'
+      : v.length < 8 ? 'Faltam ' + (8 - v.length) + ' caractere(s).'
+      : 'Comprimento ok.';
+  });
+
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    erroEl.classList.remove('on');
+
+    if (s1.value.length < 8) return erro('A senha precisa de pelo menos 8 caracteres.');
+    if (s1.value !== s2.value) { erro('As duas senhas não são iguais.'); s2.select(); return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Salvando…';
+    try {
+      var r = await fetch('/api/trocar-senha', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ senha: s1.value }),
+      });
+      var data = await r.json().catch(function () { return {}; });
+      if (r.ok && data.ok) { location.href = '/crm'; return; }
+      erro(data.reason || 'Não consegui salvar. Tente de novo.');
+    } catch (err) {
+      erro('Sem conexão com o servidor.');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Salvar e continuar';
+    }
+  });
+
+  document.getElementById('sair').addEventListener('click', function (e) {
+    e.preventDefault();
+    fetch('/api/logout', { method: 'POST' }).finally(function () { location.href = '/login'; });
+  });
+</script>
+</body>
+</html>

@@ -21,6 +21,8 @@ import { randomUUID } from 'node:crypto';
 import {
   autentica, criaSessao, destroiSessao, setCookieSessao, limpaCookieSessao,
   leCookie, identifica, exigeAuth, limpaSessoesVencidas, COOKIE,
+  listaUsuarios, criaUsuario, removeUsuario, resetaSenha, trocaSenhaPropria,
+  registraPedidoSenha, listaPedidosSenha, marcaPedidoAtendido,
 } from './auth.js';
 
 const app = express();
@@ -72,11 +74,28 @@ app.post('/api/login', async (req, res) => {
     if (!u) return res.status(401).json({ ok: false, reason: 'usuário ou senha incorretos' });
     const token = await criaSessao({ usuarioId: u.id, userAgent: req.headers['user-agent'] });
     setCookieSessao(req, res, token);
-    res.json({ ok: true, usuario: { login: u.login, nome: u.nome } });
+    // `trocarSenha` avisa o frontend que a sessão só alcança /trocar-senha —
+    // é o caso de quem entrou com a temporária que o admin gerou.
+    res.json({
+      ok: true,
+      usuario: { login: u.login, nome: u.nome },
+      trocarSenha: u.senhaTemporaria === true,
+    });
   } catch (e) {
     console.error('[login] falhou:', e.message);
     res.status(500).json({ ok: false, reason: 'erro ao entrar' });
   }
+});
+
+// "Esqueci minha senha": registra o pedido pro admin ver no CRM. Não há e-mail
+// no projeto — o admin gera uma senha temporária e entrega por fora.
+//
+// Responde igual exista ou não o login: resposta diferente pra login
+// inexistente entregaria quais existem a quem ficasse testando.
+app.post('/api/pedido-senha', async (req, res) => {
+  try { await registraPedidoSenha(req.body?.login); }
+  catch (e) { console.warn('[pedido-senha] falhou:', e.message); }
+  res.json({ ok: true });
 });
 
 app.post('/api/logout', async (req, res) => {
@@ -99,7 +118,84 @@ app.get('/api/me', (req, res) => {
     tipo: a.tipo,
     nome: a.tipo === 'usuario' ? (a.nome || a.login) : a.nome,
     escopo: a.escopo,
+    // O CRM usa isto pra não oferecer "remover" no próprio usuário.
+    usuarioId: a.usuarioId || null,
   });
+});
+
+// ─── Troca de senha ──────────────────────────────────────────────────────────
+// Alcançável mesmo com senha temporária — é a única coisa que é (ver
+// LIBERADO_COM_SENHA_TEMPORARIA em auth.js).
+
+app.get('/trocar-senha', (_req, res) => {
+  res.sendFile(path.join(FRONTEND_DIR, 'trocar-senha.html'));
+});
+
+app.post('/api/trocar-senha', async (req, res) => {
+  try {
+    if (req.auth?.tipo !== 'usuario') {
+      return res.status(403).json({ ok: false, reason: 'só usuários trocam senha' });
+    }
+    const { senha } = req.body || {};
+    await trocaSenhaPropria({
+      usuarioId: req.auth.usuarioId,
+      tokenAtual: leCookie(req, COOKIE),
+      novaSenha: senha,
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ ok: false, reason: e.message });
+  }
+});
+
+// ─── Administração de usuários (só no CRM) ───────────────────────────────────
+
+app.get('/api/usuarios', exigeAuth('crm'), async (_req, res) => {
+  try { res.json({ ok: true, usuarios: await listaUsuarios() }); }
+  catch (e) { res.status(500).json({ ok: false, reason: e.message }); }
+});
+
+app.post('/api/usuarios', exigeAuth('crm'), async (req, res) => {
+  try {
+    const { login, nome, senha } = req.body || {};
+    const id = await criaUsuario({ login, nome, senha });
+    res.json({ ok: true, id });
+  } catch (e) {
+    res.status(400).json({ ok: false, reason: e.message });
+  }
+});
+
+app.delete('/api/usuarios/:id', exigeAuth('crm'), async (req, res) => {
+  try {
+    await removeUsuario(req.params.id, req.auth.usuarioId);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ ok: false, reason: e.message });
+  }
+});
+
+// Devolve a senha temporária UMA vez — não fica recuperável depois.
+app.post('/api/usuarios/:id/resetar-senha', exigeAuth('crm'), async (req, res) => {
+  try {
+    const r = await resetaSenha(req.params.id);
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    res.status(400).json({ ok: false, reason: e.message });
+  }
+});
+
+app.get('/api/pedidos-senha', exigeAuth('crm'), async (_req, res) => {
+  try { res.json({ ok: true, pedidos: await listaPedidosSenha() }); }
+  catch (e) { res.status(500).json({ ok: false, reason: e.message }); }
+});
+
+app.post('/api/pedidos-senha/:id/atender', exigeAuth('crm'), async (req, res) => {
+  try {
+    await marcaPedidoAtendido(req.params.id, req.auth.usuarioId);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ ok: false, reason: e.message });
+  }
 });
 
 // A raiz não tem tela própria: manda cada um pro seu lugar. O desktop chega

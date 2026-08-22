@@ -61,6 +61,31 @@
   @media (prefers-color-scheme: dark) {
     .erro { background: #3A1A1A; border-color: #6B2B2B; color: #F0B4B4; }
   }
+
+  .rodape { margin: 20px 0 0; text-align: center; font-size: 13px; }
+  .rodape a { color: var(--tk-muted); text-decoration: none; }
+  .rodape a:hover { color: var(--tk-ink); text-decoration: underline; }
+
+  .véu {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+    background: rgba(14, 14, 31, .55);
+  }
+  .véu[hidden] { display: none; }
+  .modal {
+    width: 100%; max-width: 380px;
+    background: var(--tk-bg); border-radius: 14px; padding: 30px 28px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, .3);
+  }
+  .modal h2 { font-size: 17px; margin: 0 0 9px; }
+  .modal p { font-size: 13.5px; color: var(--tk-muted); line-height: 1.55; margin: 0 0 20px; }
+  .botoes { display: flex; gap: 10px; margin-top: 6px; }
+  .botoes button { margin-top: 0; }
+  button.secundario {
+    background: none; color: var(--tk-ink);
+    border: 1px solid var(--tk-bg-3);
+  }
+  button.secundario:hover:not(:disabled) { border-color: var(--tk-primary); opacity: 1; }
 </style>
 </head>
 <body>
@@ -85,6 +110,28 @@
     </div>
     <button type="submit" id="btn">Entrar</button>
   </form>
+
+  <p class="rodape"><a href="#" id="esqueci">Esqueci minha senha</a></p>
+</div>
+
+<div class="véu" id="veu" hidden>
+  <div class="modal">
+    <h2>Esqueci minha senha</h2>
+    <p id="modal-texto">
+      Informe seu usuário. O administrador vai gerar uma senha temporária e
+      entregar pra você — no primeiro acesso com ela, você escolhe a definitiva.
+    </p>
+    <form id="form-pedido">
+      <div class="campo">
+        <label for="pedido-login">Usuário</label>
+        <input id="pedido-login" autocapitalize="none" spellcheck="false" required />
+      </div>
+      <div class="botoes">
+        <button type="button" class="secundario" id="cancelar">Cancelar</button>
+        <button type="submit" id="btn-pedido">Enviar pedido</button>
+      </div>
+    </form>
+  </div>
 </div>
 
 <script>
@@ -125,6 +172,9 @@
       });
       var data = await r.json().catch(function () { return {}; });
 
+      // Entrou com a senha temporária que o admin gerou: a sessão só alcança a
+      // troca de senha, então não adianta mandar pro destino normal.
+      if (r.ok && data.ok && data.trocarSenha) { location.href = '/trocar-senha'; return; }
       if (r.ok && data.ok) { location.href = destino(); return; }
 
       // Mensagem única pra usuário errado e senha errada: dizer qual dos dois
@@ -138,6 +188,50 @@
       btn.textContent = 'Entrar';
       document.getElementById('senha').select();
     }
+  });
+
+  // ─── Esqueci minha senha ───────────────────────────────────────────────────
+  var veu = document.getElementById('veu');
+  var formPedido = document.getElementById('form-pedido');
+  var btnPedido = document.getElementById('btn-pedido');
+
+  document.getElementById('esqueci').addEventListener('click', function (e) {
+    e.preventDefault();
+    document.getElementById('pedido-login').value = document.getElementById('login').value.trim();
+    veu.hidden = false;
+    document.getElementById('pedido-login').focus();
+  });
+
+  function fecha() { veu.hidden = true; }
+  document.getElementById('cancelar').addEventListener('click', fecha);
+  veu.addEventListener('click', function (e) { if (e.target === veu) fecha(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') fecha(); });
+
+  formPedido.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var quem = document.getElementById('pedido-login').value.trim();
+    if (!quem) return;
+
+    btnPedido.disabled = true;
+    btnPedido.textContent = 'Enviando…';
+    try {
+      await fetch('/api/pedido-senha', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login: quem }),
+      });
+    } catch (err) { /* mesmo sem rede, a mensagem abaixo não muda */ }
+
+    // Confirmação idêntica exista ou não o usuário — do contrário, esta tela
+    // viraria um jeito de descobrir quais logins existem.
+    formPedido.style.display = 'none';
+    document.querySelector('.modal h2').textContent = 'Pedido registrado';
+    document.getElementById('modal-texto').innerHTML =
+      'Se esse usuário existir, o administrador vai ver o pedido e gerar uma ' +
+      'senha temporária. <a href="#" id="voltar">Voltar</a>';
+    document.getElementById('voltar').addEventListener('click', function (ev) {
+      ev.preventDefault(); location.reload();
+    });
   });
 </script>
 </body>

@@ -78,7 +78,7 @@ export async function destroiSessao(token) {
 async function resolveSessao(token) {
   if (!token) return null;
   const row = await one(
-    `select s.usuario_id, u.login, u.nome
+    `select s.usuario_id, u.login, u.nome, u.senha_temporaria
        from sessoes s join usuarios u on u.id = s.usuario_id
       where s.token_hash = $1 and s.expira_em > now()`,
     [hashToken(token)]
@@ -88,7 +88,12 @@ async function resolveSessao(token) {
   // sessão não se justifica.
   exec('update sessoes set ultimo_uso = now() where token_hash = $1', [hashToken(token)])
     .catch(() => { /* irrelevante se falhar */ });
-  return { tipo: 'usuario', usuarioId: row.usuario_id, login: row.login, nome: row.nome, escopo: 'tudo' };
+  return {
+    tipo: 'usuario', usuarioId: row.usuario_id, login: row.login, nome: row.nome,
+    escopo: 'tudo',
+    // Enquanto true, `exigeAuth` só deixa passar a tela de troca de senha.
+    precisaTrocarSenha: row.senha_temporaria === true,
+  };
 }
 
 // ─── Dispositivos ────────────────────────────────────────────────────────────
@@ -165,10 +170,27 @@ const alcanca = (escopo, exigido) => escopo === 'tudo' || escopo === exigido;
 //
 // Responde 401 em JSON pra /api/* e redireciona pro login nas páginas — quem
 // chama fetch quer um status pra tratar, quem digitou a URL quer ver a tela.
+// Rotas que uma sessão com senha temporária ainda alcança. Precisa incluir o
+// logout: senão quem entrou com a temporária e desistiu ficaria preso.
+const LIBERADO_COM_SENHA_TEMPORARIA = new Set([
+  '/trocar-senha', '/api/trocar-senha', '/api/logout', '/api/me',
+]);
+
 export function exigeAuth(escopo = 'busca') {
   return async (req, res, next) => {
     try {
       const quem = await identifica(req);
+
+      // Senha temporária: a pessoa está autenticada, mas o único lugar aonde
+      // pode ir é trocar a senha. Sem esta trava bastaria navegar pra outro
+      // lugar e a temporária viraria permanente.
+      if (quem?.precisaTrocarSenha && !LIBERADO_COM_SENHA_TEMPORARIA.has(req.path)) {
+        if (req.path.startsWith('/api/')) {
+          return res.status(403).json({ ok: false, reason: 'troque a senha antes de continuar', trocarSenha: true });
+        }
+        return res.redirect('/trocar-senha');
+      }
+
       if (quem && alcanca(quem.escopo, escopo)) { req.auth = quem; return next(); }
 
       if (req.path.startsWith('/api/')) {
@@ -190,7 +212,10 @@ export function exigeAuth(escopo = 'busca') {
 // ─── Login ───────────────────────────────────────────────────────────────────
 
 export async function autentica({ login, senha }) {
-  const u = await one('select id, login, nome, senha_hash from usuarios where lower(login) = lower($1)', [login || '']);
+  const u = await one(
+    'select id, login, nome, senha_hash, senha_temporaria from usuarios where lower(login) = lower($1)',
+    [login || '']
+  );
   // Mesmo sem usuário, roda um scrypt descartável: sem isso, "usuário não
   // existe" responde na hora e "senha errada" demora, e dá pra descobrir quais
   // logins existem só cronometrando.
@@ -200,7 +225,7 @@ export async function autentica({ login, senha }) {
   }
   if (!await verificaSenha(senha || '', u.senha_hash)) return null;
   exec('update usuarios set ultimo_acesso = now() where id = $1', [u.id]).catch(() => {});
-  return { id: u.id, login: u.login, nome: u.nome };
+  return { id: u.id, login: u.login, nome: u.nome, senhaTemporaria: u.senha_temporaria === true };
 }
 
 // Varre sessões vencidas. Chamado de vez em quando pelo index.js — sem isso a
@@ -209,6 +234,96 @@ export async function limpaSessoesVencidas() {
   const n = await exec('delete from sessoes where expira_em < now()');
   if (n) console.log(`[auth] ${n} sessão(ões) vencida(s) removida(s)`);
   return n;
+}
+
+// ─── Usuários (tela de administração no CRM) ─────────────────────────────────
+
+export async function listaUsuarios() {
+  return q(`select id, login, nome, criado_em, ultimo_acesso, senha_temporaria
+              from usuarios order by criado_em`);
+}
+
+export async function criaUsuario({ login, nome, senha }) {
+  const limpo = String(login || '').trim();
+  if (!/^[a-zA-Z0-9._-]{3,40}$/.test(limpo)) {
+    throw new Error('login deve ter 3 a 40 caracteres: letras, números, ponto, hífen ou underline');
+  }
+  const jaExiste = await one('select 1 from usuarios where lower(login) = lower($1)', [limpo]);
+  if (jaExiste) throw new Error('já existe um usuário com esse login');
+
+  const hash = await hashSenha(senha);   // valida o tamanho mínimo
+  const row = await one(
+    'insert into usuarios (login, nome, senha_hash) values ($1, $2, $3) returning id',
+    [limpo, (nome || '').trim() || null, hash]
+  );
+  return row?.id || null;
+}
+
+export async function removeUsuario(id, quemPede) {
+  if (id === quemPede) throw new Error('você não pode remover o próprio usuário');
+  const { total } = await one('select count(*)::int as total from usuarios') || {};
+  if (total <= 1) throw new Error('não dá pra remover o último usuário — ninguém entraria depois');
+  await exec('delete from usuarios where id = $1', [id]);   // sessões caem no cascade
+  return true;
+}
+
+// Alfabeto sem 0/O/1/l/I: a senha vai ser lida em voz alta ou digitada à mão,
+// e confundir caractere aqui vira "não funciona" sem motivo aparente.
+const ALFABETO = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+function senhaLegivel(tamanho = 12) {
+  const bytes = crypto.randomBytes(tamanho);
+  return [...bytes].map(b => ALFABETO[b % ALFABETO.length]).join('');
+}
+
+// Admin reseta a senha de alguém. Devolve a temporária UMA vez, pra ser
+// entregue por fora (não há e-mail no projeto). No próximo login, a pessoa é
+// obrigada a escolher uma senha própria.
+export async function resetaSenha(usuarioId) {
+  const temporaria = senhaLegivel();
+  const hash = await hashSenha(temporaria);
+  const row = await one(
+    `update usuarios set senha_hash = $1, senha_temporaria = true
+      where id = $2 returning login`,
+    [hash, usuarioId]
+  );
+  if (!row) throw new Error('usuário não encontrado');
+  // Derruba o que estiver aberto: se a senha foi resetada por suspeita, deixar
+  // sessão viva anularia o reset.
+  await exec('delete from sessoes where usuario_id = $1', [usuarioId]);
+  return { login: row.login, senhaTemporaria: temporaria };
+}
+
+// A própria pessoa escolhendo a senha nova, já autenticada com a temporária.
+export async function trocaSenhaPropria({ usuarioId, tokenAtual, novaSenha }) {
+  const hash = await hashSenha(novaSenha);
+  await exec('update usuarios set senha_hash = $1, senha_temporaria = false where id = $2',
+    [hash, usuarioId]);
+  // Mantém só a sessão de quem está trocando; qualquer outra que existisse com
+  // a senha antiga morre aqui.
+  await exec('delete from sessoes where usuario_id = $1 and token_hash <> $2',
+    [usuarioId, hashToken(tokenAtual || '')]);
+  return true;
+}
+
+// ─── Pedidos de "esqueci minha senha" ────────────────────────────────────────
+
+export async function registraPedidoSenha(login) {
+  const texto = String(login || '').trim().slice(0, 120);
+  if (!texto) return false;
+  // Grava mesmo que o login não exista — ver o comentário no schema.
+  await exec('insert into pedidos_senha (login_informado) values ($1)', [texto]);
+  return true;
+}
+
+export async function listaPedidosSenha() {
+  return q(`select id, login_informado, criado_em
+              from pedidos_senha where atendido_em is null
+             order by criado_em desc limit 50`);
+}
+
+export async function marcaPedidoAtendido(id, adminId) {
+  return exec('update pedidos_senha set atendido_em = now(), atendido_por = $1 where id = $2',
+    [adminId, id]);
 }
 
 export async function listaDispositivos() {

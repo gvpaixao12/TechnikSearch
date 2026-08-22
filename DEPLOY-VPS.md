@@ -247,3 +247,38 @@ O instalador precisa ser **1.0.3 ou mais novo**. Versões anteriores apontavam
 pra raiz do site, que agora é o login — elas abrem numa tela onde o app não tem
 senha pra digitar. E o 1.0.3 só funciona depois que este deploy estiver no ar,
 porque antes dele `/busca` não existe.
+
+### Reset de senha (sem e-mail)
+
+O projeto não envia e-mail, então o fluxo é o de TI corporativa: o admin gera
+uma senha temporária dentro do app e entrega por fora (WhatsApp, pessoalmente).
+
+1. A pessoa clica em **"Esqueci minha senha"** na tela de login e informa o
+   usuário. Isso registra um pedido — a tela responde igual exista ou não o
+   login, senão viraria um jeito de descobrir quais existem.
+2. Você entra no CRM e vê o aviso de pedidos pendentes na seção **Usuários**.
+3. Clica em **Resetar senha**. O app mostra a temporária **uma única vez** e
+   derruba as sessões abertas daquela pessoa.
+4. Ela entra com a temporária e é **obrigada** a escolher uma definitiva antes
+   de alcançar qualquer outra tela.
+
+A trava do passo 4 é o que faz isso valer: enquanto a senha for temporária, a
+sessão só alcança `/trocar-senha`. Sem ela bastaria navegar pra outro lugar e a
+temporária viraria permanente.
+
+### Criar usuários
+
+Pela tela: **CRM → Usuários → Novo usuário**. Pela SSH, quando você estiver
+trancado do lado de fora, continua valendo o `criar-usuario.mjs`.
+
+Um usuário não pode remover a si mesmo, e o último usuário do sistema não pode
+ser removido — senão ninguém entraria depois.
+
+### Aplicar mudanças de schema num deploy
+
+```bash
+cd /opt/technik/server && node scripts/aplicar-schema.mjs auth-schema.sql
+```
+
+Idempotente (tudo é `if not exists`), então rodar de novo não faz mal. Use este
+em vez do `criar-usuario.mjs` quando não quiser mexer em senha de ninguém.
