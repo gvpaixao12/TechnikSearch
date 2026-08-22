@@ -37,6 +37,17 @@ const TYPE_RULES = [
     /\bhr-?v\b/i, /\bwr-?v\b/i, /\bzr-?v\b/i, /\bcr-?v\b/i,
     // Fiat
     /\bpulse\b/i, /\bfastback\b/i,
+    // Jaguar — os tres 'Pace' sao os crossovers da marca. Sem isso ficavam
+    // 'unknown' e sumiam de QUALQUER busca por SUV, porque recommend.js:100
+    // exclui tipo que nao casa com o pedido.
+    /\bf-?pace\b/i, /\be-?pace\b/i, /\bi-?pace\b/i,
+    // Lexus — a nomenclatura e <letra><numero>: NX/RX/UX/LX/GX sao os SUVs.
+    // Exigem DIGITO de proposito: sem isso /\blx\b/ casava com 'CITY Hatchback
+    // LX 1.5' — LX ali e acabamento da Honda. Todo Lexus traz numero no nome.
+    // TRES digitos de proposito. Sem exigir digito, /\blx\b/ casava com 'CITY
+    // Hatchback LX 1.5' (LX = acabamento Honda); com \b no fim, 'LS-460L' nao
+    // casava por causa do L final. Todo Lexus e <sigla><3 digitos>.
+    /\b(?:nx|rx|ux|lx|gx)-?\d{3}/i,
     // Caoa Chery / Haval / chineses
     /\btiggo\b/i, /\bhaval\b/i, /\bsong\b/i, /\byuan\b/i, /\bjolion\b/i,
     // Toyota
@@ -110,6 +121,11 @@ const TYPE_RULES = [
 
   // ─── SEDAN ─────────────────────────────────────────────────────────────
   { type: 'sedan', patterns: [
+    // Jaguar — XE/XF/XJ e os antigos X-Type/S-Type sao todos sedas. Os
+    // crossovers da marca terminam em -Pace e ja foram capturados no bloco SUV.
+    /\bxe\b/i, /\bxf\b/i, /\bxj\b/i, /\bx-?type\b/i, /\bs-?type\b/i,
+    // Lexus — ES/LS/IS/GS sao os sedas (SUVs sao NX/RX/UX/LX/GX, acima).
+    /\b(?:es|ls|is|gs)-?\d{3}/i,
     /\bsedan\b/i, /\bsed\.\b|\bsed\b/i,
     // Brasileiros populares
     /\bonix\s*plus\b/i, /\bonix\s*sed/i, /\bcorsa\s*sedan\b/i,
@@ -157,6 +173,7 @@ const TYPE_RULES = [
 
   // ─── HATCH ─────────────────────────────────────────────────────────────
   { type: 'hatch', patterns: [
+    /\bct\s?200h?\b/i,   // Lexus CT200h — hatch compacto
     /\bhatch\b/i,
     /\bonix\b(?!\s*plus|\s*sed)/i, /\bcobalt\s*hatch\b/i, /\bmeriva\b/i,
     /\bgol\b(?!\s*sed)/i, /\bup\b/i, /\bfox\b/i, /\bpolo\b/i, /\bgolf\b/i, /\bscirocco\b/i,
