@@ -12,7 +12,8 @@ const API_BASE = window.API_BASE !== undefined
 
 const NAV = [
   { id: 'new',     label: 'Nova consulta', icon: <Icon.Plus />,   badge: '⌘N' },
-  { id: 'history', label: 'Histórico',     icon: <Icon.History /> },
+  { id: 'drafts',  label: 'Rascunhos',     icon: <Icon.Bookmark /> },
+  { id: 'stock',   label: 'Estoque',       icon: <Icon.Car /> },
   { id: 'settings',label: 'Ajustes',       icon: <Icon.Settings /> },
 ];
 
@@ -224,6 +225,26 @@ function App() {
     }
   }
 
+  // Handoff vindo do CRM: /busca#consulta=<id> abre aquela recomendação.
+  // A lista de consultas mora no CRM (privacidade — ver o comentário do
+  // DraftsView), mas quem sabe DESENHAR o resultado é esta tela. O hash é o
+  // contrato entre as duas: link comum, sem estado compartilhado.
+  //
+  // O hash é consumido (replaceState) depois de abrir, senão um F5 depois de o
+  // consultor ter mexido no briefing jogaria tudo fora e recarregaria a consulta
+  // salva por cima.
+  useEffect(() => {
+    function abrePeloHash() {
+      const m = /^#consulta=(.+)$/.exec(location.hash);
+      if (!m) return;
+      history.replaceState(null, '', location.pathname + location.search);
+      openConsulta(decodeURIComponent(m[1]));
+    }
+    abrePeloHash();
+    window.addEventListener('hashchange', abrePeloHash);
+    return () => window.removeEventListener('hashchange', abrePeloHash);
+  }, []);
+
   // Loading flow + real backend call
   const [loadStep, setLoadStep] = useState(0);
   const [recommendation, setRecommendation] = useState(null);
@@ -329,14 +350,16 @@ function App() {
           </button>
           <div className="tk-topbar__title">
             <span className="tk-eyebrow">
-              {activeNav === 'history' && 'Atendimentos salvos'}
+              {activeNav === 'drafts' && 'Briefings em aberto'}
+              {activeNav === 'stock' && 'Pátio da loja'}
               {activeNav === 'settings' && 'Configurações'}
               {activeNav === 'new' && stage === 'form' && 'Nova consulta · etapa 1/2'}
               {activeNav === 'new' && stage === 'loading' && 'Calculando recomendações'}
               {activeNav === 'new' && stage === 'results' && 'Recomendações · entrega ao cliente'}
             </span>
             <h1>
-              {activeNav === 'history' && 'Histórico de consultas'}
+              {activeNav === 'drafts' && 'Rascunhos'}
+              {activeNav === 'stock' && 'Estoque'}
               {activeNav === 'settings' && 'Ajustes'}
               {activeNav === 'new' && stage === 'form' && 'Briefing do perfil'}
               {activeNav === 'new' && stage === 'loading' && 'Cruzando catálogo'}
@@ -372,8 +395,10 @@ function App() {
           </div>
         </header>
 
-        {activeNav === 'history' ? (
-          <HistoryView onOpen={openConsulta} onNew={() => handleNav('new')} onResumeDraft={resumeDraft} />
+        {activeNav === 'drafts' ? (
+          <DraftsView onNew={() => handleNav('new')} onResumeDraft={resumeDraft} />
+        ) : activeNav === 'stock' ? (
+          <StockView />
         ) : activeNav === 'settings' ? (
           <SettingsView />
         ) : (
@@ -1793,40 +1818,39 @@ function LoadingView({ step, error, onRetry, onCancel }) {
   );
 }
 
-// ─── HISTORY VIEW ─────────────────────────────────────────────
-// Lista os atendimentos salvos (resumo) com filtro por cliente.
-// Clicar numa consulta chama onOpen(id) → o App recarrega o resultado salvo.
-function HistoryView({ onOpen, onNew, onResumeDraft }) {
-  const [state, setState] = useState({ loading: true, error: null, consultas: [] });
-  const [drafts, setDrafts] = useState([]);
-  const [query, setQuery] = useState('');
-  const [expanded, setExpanded] = useState({}); // overrides manuais de abrir/fechar por cliente
+// ─── DRAFTS VIEW ──────────────────────────────────────────────
+// Rascunhos: briefings salvos pela metade, pra retomar depois.
+//
+// O histórico de consultas ENTREGUES não mora mais aqui — foi pro CRM
+// (crm.html, aba "Histórico"), e a rota que o alimenta subiu pra escopo `crm`.
+// O motivo é privacidade: esta é a tela que o app desktop abre, e é ela que o
+// cliente final vê por cima do ombro enquanto olha os carros; a lista de
+// consultas carrega nome, perfil e orçamento de todos os outros compradores.
+//
+// Rascunho ficou porque "Salvar rascunho" é um botão desta mesma tela — sem um
+// lugar pra reabrir, ele viraria um botão que só sabe salvar.
+//
+// Pra reabrir uma consulta antiga o caminho é CRM → Histórico → clique, que cai
+// aqui como /busca#consulta=<id> (ver o efeito do hash no App).
+function DraftsView({ onNew, onResumeDraft }) {
+  const [state, setState] = useState({ loading: true, error: null, drafts: [] });
 
   useEffect(() => {
     let cancelled = false;
-    setState({ loading: true, error: null, consultas: [] });
-
-    fetch(`${API_BASE}/api/consultas?limit=100`)
+    fetch(`${API_BASE}/api/rascunhos?limit=100`)
       .then(r => r.json())
       .then(j => {
         if (cancelled) return;
-        if (!j.ok) throw new Error(j.reason || 'Falha ao carregar histórico');
-        setState({ loading: false, error: null, consultas: j.consultas });
+        if (!j.ok) throw new Error(j.reason || 'Falha ao carregar rascunhos');
+        setState({ loading: false, error: null, drafts: j.rascunhos });
       })
-      .catch(e => { if (!cancelled) setState({ loading: false, error: e.message, consultas: [] }); });
-
-    // Rascunhos: independente do histórico — se a tabela não existir, só não aparece.
-    fetch(`${API_BASE}/api/rascunhos?limit=100`)
-      .then(r => r.json())
-      .then(j => { if (!cancelled && j.ok) setDrafts(j.rascunhos); })
-      .catch(() => { /* rascunhos indisponíveis — ignora */ });
-
+      .catch(e => { if (!cancelled) setState({ loading: false, error: e.message, drafts: [] }); });
     return () => { cancelled = true; };
   }, []);
 
   async function removeDraft(id) {
     if (!window.confirm('Excluir este rascunho?')) return;
-    setDrafts(ds => ds.filter(d => d.id !== id)); // otimista
+    setState(s => ({ ...s, drafts: s.drafts.filter(d => d.id !== id) })); // otimista
     try {
       const r = await fetch(`${API_BASE}/api/rascunhos/${id}`, { method: 'DELETE' });
       const j = await r.json();
@@ -1837,52 +1861,10 @@ function HistoryView({ onOpen, onNew, onResumeDraft }) {
     }
   }
 
-  const TYPE_LABEL = { suv: 'SUV', sedan: 'Sedan', hatch: 'Hatch', pickup: 'Picape', coupe: 'Esportivo', minivan: 'Minivan' };
   const fmtDate = (s) => new Date(s).toLocaleString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-  // Filtro por cliente: casa nome ou perfil resumido.
-  const q = query.trim().toLowerCase();
-  const filtered = useMemo(() => {
-    if (!q) return state.consultas;
-    return state.consultas.filter(c =>
-      `${c.client_name || ''} ${c.client_segment || ''}`.toLowerCase().includes(q)
-    );
-  }, [state.consultas, q]);
-
-  // Agrupa por nome de cliente (mesmo esquema de Ajustes: card colapsável por
-  // grupo). As consultas já chegam ordenadas por data desc da API; os grupos
-  // são ordenados pela consulta mais recente de cada cliente.
-  const groups = useMemo(() => {
-    const map = new Map();
-    for (const c of filtered) {
-      const name = (c.client_name || '').trim() || 'Sem nome';
-      if (!map.has(name)) map.set(name, []);
-      map.get(name).push(c);
-    }
-    return [...map.entries()]
-      .map(([name, items]) => ({
-        name,
-        items,
-        count: items.length,
-        latest: items.reduce((m, c) => (c.created_at > m ? c.created_at : m), items[0].created_at),
-        total: items.reduce((n, c) => n + (c.total_resultados || 0), 0),
-      }))
-      .sort((a, b) => String(b.latest).localeCompare(String(a.latest)));
-  }, [filtered]);
-
-  // Buscando → grupos abrem por padrão. Sem busca → começam fechados. `expanded`
-  // guarda só os overrides manuais; ao mudar a busca, zeramos pro novo default.
-  const defaultOpen = !!q;
-  useEffect(() => { setExpanded({}); }, [q]);
-  function toggleGroup(name) {
-    setExpanded(e => {
-      const cur = name in e ? e[name] : defaultOpen;
-      return { ...e, [name]: !cur };
-    });
-  }
-
   if (state.loading) {
-    return <div className="tk-results tk-scroll"><div className="tk-help" style={{ padding: 28 }}>Carregando histórico…</div></div>;
+    return <div className="tk-results tk-scroll"><div className="tk-help" style={{ padding: 28 }}>Carregando rascunhos…</div></div>;
   }
 
   if (state.error) {
@@ -1890,11 +1872,11 @@ function HistoryView({ onOpen, onNew, onResumeDraft }) {
       <div className="tk-results tk-scroll">
         <div className="tk-results__hero">
           <div>
-            <span className="tk-eyebrow" style={{ color: '#c0392b' }}>Histórico indisponível</span>
-            <h1>Não consegui carregar o histórico.</h1>
+            <span className="tk-eyebrow" style={{ color: '#c0392b' }}>Rascunhos indisponíveis</span>
+            <h1>Não consegui carregar os rascunhos.</h1>
             <p style={{ color: 'var(--tk-muted)' }}><strong>Detalhe:</strong> {state.error}</p>
             <p style={{ color: 'var(--tk-muted)', fontSize: 13 }}>
-              Confirme que a tabela <code>consultas</code> existe no Supabase (rode <code>server/scripts/consultas-schema.sql</code> no SQL Editor) e que o backend tem as chaves Supabase no <code>.env</code>.
+              Confirme que a tabela <code>rascunhos</code> existe (rode <code>server/scripts/rascunhos-schema.sql</code>) e que o backend alcança o banco.
             </p>
           </div>
         </div>
@@ -1906,152 +1888,713 @@ function HistoryView({ onOpen, onNew, onResumeDraft }) {
     <div className="tk-results tk-scroll">
       <div className="tk-results__hero">
         <div>
-          <span className="tk-eyebrow">Atendimentos salvos</span>
-          <h1>{state.consultas.length} consulta{state.consultas.length !== 1 ? 's' : ''} no histórico.</h1>
-          <p>Cada recomendação entregue fica registrada aqui. Clique pra reabrir os resultados exatamente como foram apresentados ao cliente.</p>
+          <span className="tk-eyebrow">Briefings em aberto</span>
+          <h1>{state.drafts.length} rascunho{state.drafts.length !== 1 ? 's' : ''} salvo{state.drafts.length !== 1 ? 's' : ''}.</h1>
+          <p>Briefings que você começou e ainda não buscou. Retomar reabre o formulário como estava. O histórico das consultas já entregues fica no CRM.</p>
         </div>
       </div>
 
-      {drafts.length > 0 && (
-        <div style={{ marginBottom: 28 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-            <Icon.Bookmark style={{ color: 'var(--tk-secondary)' }} />
-            <span className="tk-eyebrow" style={{ margin: 0 }}>Rascunhos · {drafts.length}</span>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {drafts.map(d => (
-              <div key={d.id}
-                style={{
-                  display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12, alignItems: 'center',
-                  padding: '13px 16px', borderRadius: 12,
-                  border: '1px dashed var(--tk-line)', background: 'var(--tk-bg)',
-                }}>
-                <button onClick={() => onResumeDraft(d.id)}
-                  title="Retomar este rascunho"
-                  style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', font: 'inherit', color: 'var(--tk-ink)', padding: 0 }}>
-                  <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: '-0.01em' }}>{d.client_name || 'Sem nome'}</span>
-                  <span style={{ fontFamily: 'var(--tk-font-mono)', fontSize: 11, color: 'var(--tk-muted)' }}>
-                    Editado {fmtDate(d.updated_at || d.created_at)}
-                  </span>
-                </button>
-                <button onClick={() => onResumeDraft(d.id)} className="tk-btn tk-btn-ghost" style={{ padding: '6px 12px', fontSize: 13 }}>
-                  Retomar <Icon.ChevronRight />
-                </button>
-                <button onClick={() => removeDraft(d.id)} title="Excluir rascunho"
-                  style={{ width: 34, height: 34, borderRadius: 8, border: '1px solid var(--tk-line)', background: 'var(--tk-bg)', color: 'var(--tk-muted)', cursor: 'pointer', display: 'grid', placeItems: 'center' }}>
-                  <Icon.Trash />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {state.consultas.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-          <div style={{ position: 'relative', flex: '1 1 320px', maxWidth: 420 }}>
-            <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--tk-muted)', display: 'flex', pointerEvents: 'none' }}>
-              <Icon.Search />
-            </span>
-            <input
-              type="text"
-              className="tk-input"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Escape') setQuery(''); }}
-              placeholder="Filtrar por cliente…"
-              style={{ paddingLeft: 38, paddingRight: query ? 34 : 14 }}
-            />
-            {query && (
-              <button onClick={() => setQuery('')} title="Limpar filtro"
-                style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', width: 22, height: 22, borderRadius: '50%', border: 'none', background: 'var(--tk-bg-3)', color: 'var(--tk-ink)', cursor: 'pointer', fontSize: 15, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
-            )}
-          </div>
-          {q && (
-            <span className="tk-help" style={{ fontFamily: 'var(--tk-font-mono)', fontSize: 11 }}>
-              {filtered.length} de {state.consultas.length}
-            </span>
-          )}
-        </div>
-      )}
-
-      {state.consultas.length === 0 ? (
+      {state.drafts.length === 0 ? (
         <div className="tk-help" style={{ padding: '28px 4px' }}>
-          Nenhuma consulta salva ainda.{' '}
-          <button onClick={onNew} style={{ background: 'none', border: 'none', color: 'var(--tk-primary)', cursor: 'pointer', textDecoration: 'underline', font: 'inherit' }}>Fazer a primeira</button>.
-        </div>
-      ) : filtered.length === 0 ? (
-        <div className="tk-help" style={{ padding: '28px 4px' }}>
-          Nenhum cliente corresponde a “<strong>{query.trim()}</strong>”.
+          Nenhum rascunho salvo.{' '}
+          <button onClick={onNew} style={{ background: 'none', border: 'none', color: 'var(--tk-primary)', cursor: 'pointer', textDecoration: 'underline', font: 'inherit' }}>Começar uma consulta</button>{' '}
+          e usar “Salvar rascunho” guarda o briefing aqui.
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {groups.map(g => {
-            const open = g.name in expanded ? expanded[g.name] : defaultOpen;
-            return (
-              <div key={g.name} style={{ border: '1px solid var(--tk-line)', borderRadius: 12, overflow: 'hidden', background: 'var(--tk-bg)' }}>
-                {/* Cabeçalho do cliente */}
-                <button onClick={() => toggleGroup(g.name)}
-                  style={{
-                    width: '100%', display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 12, alignItems: 'center',
-                    padding: '14px 16px', border: 'none', background: 'var(--tk-bg-2)', cursor: 'pointer',
-                    font: 'inherit', color: 'var(--tk-ink)', textAlign: 'left',
-                  }}>
-                  <span style={{ display: 'inline-flex', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s ease', color: 'var(--tk-muted)' }}>
-                    <Icon.ChevronRight />
-                  </span>
-                  <span style={{ fontWeight: 700, fontSize: 16, letterSpacing: '-0.01em' }}>{g.name}</span>
-                  <span style={{ display: 'flex', gap: 6, alignItems: 'center', fontFamily: 'var(--tk-font-mono)', fontSize: 11, color: 'var(--tk-muted)' }}>
-                    {g.count} consulta{g.count !== 1 ? 's' : ''}
-                    <span style={{ opacity: 0.4 }}>·</span>
-                    <span>última {fmtDate(g.latest)}</span>
-                  </span>
-                </button>
-
-                {/* Consultas do cliente */}
-                {open && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 16px 14px' }}>
-                    {g.items.map(c => (
-                      <button key={c.id} onClick={() => onOpen(c.id)} className="tk-hist-row"
-                        style={{
-                          display: 'grid', gridTemplateColumns: '1fr auto', gap: 14, alignItems: 'center',
-                          textAlign: 'left', padding: '15px 18px', borderRadius: 12,
-                          border: '1px solid var(--tk-line)', background: 'var(--tk-bg)', cursor: 'pointer',
-                          fontFamily: 'var(--tk-font)', color: 'var(--tk-ink)',
-                        }}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, flexWrap: 'wrap' }}>
-                            <span style={{ fontFamily: 'var(--tk-font-mono)', fontWeight: 700, fontSize: 13, letterSpacing: '-0.01em', color: 'var(--tk-ink)' }}>{fmtDate(c.created_at)}</span>
-                            {c.client_segment && <span style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--tk-secondary)' }}>{c.client_segment}</span>}
-                            {!c.ok && <span style={{ fontSize: 9.5, fontWeight: 700, color: '#c0392b', textTransform: 'uppercase', letterSpacing: '0.08em', border: '1px solid currentColor', borderRadius: 4, padding: '1px 5px' }}>sem resultado</span>}
-                          </div>
-                          <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, fontFamily: 'var(--tk-font-mono)', fontSize: 11, color: 'var(--tk-muted)', letterSpacing: '0.01em' }}>
-                            <span style={{ color: 'var(--tk-secondary)', fontWeight: 500 }}>{c.total_resultados} resultado{c.total_resultados !== 1 ? 's' : ''}</span>
-                            {(c.orcamento_min != null && c.orcamento_max != null) && (
-                              <><span style={{ opacity: 0.4 }}>·</span><span>{fmtBRL(c.orcamento_min)}–{fmtBRL(c.orcamento_max)}</span></>
-                            )}
-                            {c.tipos?.length > 0 && (
-                              <><span style={{ opacity: 0.4 }}>·</span><span>{c.tipos.map(t => TYPE_LABEL[t] || t).join(', ')}</span></>
-                            )}
-                          </div>
-                          {c.top_models?.length > 0 && (
-                            <div style={{ marginTop: 7, fontSize: 13, fontWeight: 500, lineHeight: 1.35, color: 'var(--tk-ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {c.top_models.slice(0, 3).join('  ·  ')}
-                              {c.top_models.length > 3 && <span style={{ color: 'var(--tk-muted)', fontWeight: 600 }}>{`  +${c.top_models.length - 3}`}</span>}
-                            </div>
-                          )}
-                        </div>
-                        <Icon.ChevronRight style={{ color: 'var(--tk-muted)' }} />
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {state.drafts.map(d => (
+            <div key={d.id}
+              style={{
+                display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12, alignItems: 'center',
+                padding: '13px 16px', borderRadius: 12,
+                border: '1px dashed var(--tk-line)', background: 'var(--tk-bg)',
+              }}>
+              <button onClick={() => onResumeDraft(d.id)}
+                title="Retomar este rascunho"
+                style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', font: 'inherit', color: 'var(--tk-ink)', padding: 0 }}>
+                <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: '-0.01em' }}>{d.client_name || 'Sem nome'}</span>
+                <span style={{ fontFamily: 'var(--tk-font-mono)', fontSize: 11, color: 'var(--tk-muted)' }}>
+                  Editado {fmtDate(d.updated_at || d.created_at)}
+                </span>
+              </button>
+              <button onClick={() => onResumeDraft(d.id)} className="tk-btn tk-btn-ghost" style={{ padding: '6px 12px', fontSize: 13 }}>
+                Retomar <Icon.ChevronRight />
+              </button>
+              <button onClick={() => removeDraft(d.id)} title="Excluir rascunho"
+                style={{ width: 34, height: 34, borderRadius: 8, border: '1px solid var(--tk-line)', background: 'var(--tk-bg)', color: 'var(--tk-muted)', cursor: 'pointer', display: 'grid', placeItems: 'center' }}>
+                <Icon.Trash />
+              </button>
+            </div>
+          ))}
         </div>
       )}
     </div>
+  );
+}
+
+// ─── ESTOQUE ──────────────────────────────────────────────────
+// O pátio da loja: os carros que a Technik TEM pra vender, cadastrados à mão.
+//
+// Por que mora aqui, ao lado da busca, e não no CRM: é a mesma tela em que o
+// consultor está com o cliente na frente. Ele acabou de entregar o Top 10, o
+// cliente pergunta "e aí, o que vocês têm no pátio?" — a resposta precisa estar
+// a um clique, com foto do carro de verdade, e não do modelo.
+//
+// Nada aqui é buscado nem inferido: marca, km, cor e preço são o que o
+// consultor digitou; a foto é a que ele subiu. Campo em branco continua em
+// branco — a mesma regra da ficha técnica dos resultados, onde string vazia é
+// melhor que número inventado.
+
+const ESTOQUE_FILTROS = [
+  { id: 'disponivel', label: 'No pátio' },
+  { id: 'baixado',    label: 'Baixados' },
+  { id: 'todos',      label: 'Todos' },
+];
+
+// Motivos de baixa como chips: clicar rende mais dado que digitar, mesma razão
+// dos chips de motivo no feedback da busca. "Outro" abre o campo livre.
+const BAIXA_MOTIVOS = ['Vendido', 'Devolvido ao dono', 'Troca', 'Outro'];
+
+// Sugestões dos campos que têm vocabulário curto. Vão como <datalist> e não
+// como <select>: o consultor pode digitar qualquer coisa (existe carro com
+// câmbio que não está nesta lista), mas quem digita o comum não erra de grafia.
+const CAMBIOS = ['Manual', 'Automático', 'Automatizado', 'CVT'];
+const COMBUSTIVEIS = ['Flex', 'Gasolina', 'Etanol', 'Diesel', 'Híbrido', 'Elétrico'];
+
+// O `numeric` do Postgres chega como STRING pelo driver `pg` ("38500.00"), então
+// tudo que for preço passa por Number antes de virar texto.
+const fmtPreco = (n) => (n == null || n === '' ? '' : fmtBRL(Math.round(Number(n))));
+const fmtKm = (n) => (n == null || n === '' ? '' : Number(n).toLocaleString('pt-BR') + ' km');
+const fmtDia = (s) => (s ? new Date(s).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' }) : '');
+
+// "2019/2020", ou só o que existir. Nunca inventa o par: ano de fabricação em
+// branco não vira o ano do modelo.
+function fmtAnos(v) {
+  const f = v.ano_fabricacao, m = v.ano_modelo;
+  if (f && m) return f === m ? String(m) : `${f}/${m}`;
+  return String(f || m || '');
+}
+
+// Valor vindo do banco pronto pro <input>: null vira '', e "38500.00" vira
+// "38500" (o backend reinterpreta na volta — ver `numero()` em estoque.js).
+function paraCampo(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'number') return String(v);
+  const n = Number(v);
+  return Number.isFinite(n) && String(v).includes('.') ? String(n) : String(v);
+}
+
+function lerComoDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => reject(new Error('não consegui ler ' + file.name));
+    fr.readAsDataURL(file);
+  });
+}
+
+async function apiEstoque(path, { method = 'GET', body } = {}) {
+  const r = await fetch(`${API_BASE}/api/estoque${path}`, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const j = await r.json();
+  if (!r.ok || !j.ok) throw new Error(j.reason || `HTTP ${r.status}`);
+  return j;
+}
+
+function StockView() {
+  const [state, setState] = useState({ loading: true, error: null, veiculos: [], resumo: null });
+  const [busca, setBusca] = useState('');
+  const [filtro, setFiltro] = useState('disponivel');
+  const [editando, setEditando] = useState(null);   // {} = novo, veículo = editar
+  const [fotosDe, setFotosDe] = useState(null);
+  const [baixando, setBaixando] = useState(null);
+  const [confirm, setConfirm] = useState(null);
+
+  // Recarrega a cada troca de filtro e a cada pausa na digitação. O debounce de
+  // 300ms existe porque a busca vai ao banco: sem ele, "Corolla" dispararia sete
+  // consultas e a última a voltar (não a última digitada) venceria a corrida.
+  useEffect(() => {
+    let cancelado = false;
+    const t = setTimeout(() => {
+      const params = new URLSearchParams();
+      if (busca.trim()) params.set('busca', busca.trim());
+      params.set('status', filtro);
+      fetch(`${API_BASE}/api/estoque?${params}`)
+        .then(r => r.json())
+        .then(j => {
+          if (cancelado) return;
+          if (!j.ok) throw new Error(j.reason || 'Falha ao carregar o estoque');
+          setState({ loading: false, error: null, veiculos: j.veiculos, resumo: j.resumo });
+        })
+        .catch(e => { if (!cancelado) setState(s => ({ ...s, loading: false, error: e.message })); });
+    }, 300);
+    return () => { cancelado = true; clearTimeout(t); };
+  }, [busca, filtro]);
+
+  // Troca UM veículo na lista sem ir ao banco de novo (upload de foto, capa).
+  // O resumo não muda nesses casos — quando muda (baixa, exclusão), a tela
+  // recarrega inteira.
+  function substitui(v) {
+    setState(s => ({ ...s, veiculos: s.veiculos.map(x => (x.id === v.id ? v : x)) }));
+  }
+
+  async function recarregaTudo() {
+    try {
+      const params = new URLSearchParams();
+      if (busca.trim()) params.set('busca', busca.trim());
+      params.set('status', filtro);
+      const j = await apiEstoque(`?${params}`);
+      setState({ loading: false, error: null, veiculos: j.veiculos, resumo: j.resumo });
+    } catch (e) {
+      setState(s => ({ ...s, error: e.message }));
+    }
+  }
+
+  function pedeExcluir(v) {
+    setConfirm({
+      title: 'Excluir do cadastro',
+      message: `Isso apaga ${v.marca} ${v.modelo} e todas as fotos dele, sem volta. Se o carro foi VENDIDO, use "Dar baixa" — assim o registro da venda continua no histórico.`,
+      confirmLabel: 'Excluir mesmo assim',
+      danger: true,
+      onConfirm: async () => {
+        try { await apiEstoque(`/${v.id}`, { method: 'DELETE' }); await recarregaTudo(); }
+        catch (e) { alert('Não consegui excluir: ' + e.message); }
+      },
+    });
+  }
+
+  async function reabre(v) {
+    try { await apiEstoque(`/${v.id}/reabrir`, { method: 'POST' }); await recarregaTudo(); }
+    catch (e) { alert('Não consegui reabrir: ' + e.message); }
+  }
+
+  const r = state.resumo;
+
+  if (state.loading) {
+    return <div className="tk-results tk-scroll"><div className="tk-help" style={{ padding: 28 }}>Carregando estoque…</div></div>;
+  }
+
+  if (state.error && state.veiculos.length === 0) {
+    return (
+      <div className="tk-results tk-scroll">
+        <div className="tk-results__hero">
+          <div>
+            <span className="tk-eyebrow" style={{ color: '#c0392b' }}>Estoque indisponível</span>
+            <h1>Não consegui carregar o estoque.</h1>
+            <p style={{ color: 'var(--tk-muted)' }}><strong>Detalhe:</strong> {state.error}</p>
+            <p style={{ color: 'var(--tk-muted)', fontSize: 13 }}>
+              Confirme que a tabela <code>estoque</code> existe (rode{' '}
+              <code>node server/scripts/aplicar-schema.mjs estoque-schema.sql</code>) e que o backend alcança o banco.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+    <div className="tk-results tk-scroll">
+      <div className="tk-results__hero">
+        <div>
+          <span className="tk-eyebrow">Pátio da loja</span>
+          <h1>
+            {r ? `${r.disponivel} carro${r.disponivel !== 1 ? 's' : ''} no pátio` : 'Estoque'}
+            {r && r.baixado > 0 ? <span style={{ color: 'var(--tk-muted)', fontWeight: 400 }}> · {r.baixado} com baixa</span> : null}
+          </h1>
+          <p>
+            Cadastro manual: o que está aqui é o que você digitou e fotografou — nada vem da FIPE nem da IA.
+            {r && r.valorDisponivel > 0 ? ` Somando os preços pedidos, ${fmtPreco(r.valorDisponivel)} parados no pátio.` : ''}
+          </p>
+        </div>
+      </div>
+
+      {/* Barra: busca + filtro + cadastrar */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 20 }}>
+        <input className="tk-search-inline" value={busca} onChange={e => setBusca(e.target.value)}
+          placeholder="Marca, modelo, versão ou placa" style={{ width: 260 }} />
+        <div style={{ display: 'flex', gap: 6 }}>
+          {ESTOQUE_FILTROS.map(f => (
+            <button key={f.id} className={`tk-chip ${filtro === f.id ? 'is-active' : ''}`}
+              onClick={() => setFiltro(f.id)}>{f.label}</button>
+          ))}
+        </div>
+        <button className="tk-btn tk-btn-primary" style={{ marginLeft: 'auto' }}
+          onClick={() => setEditando({})}>
+          <Icon.Plus /> Cadastrar veículo
+        </button>
+      </div>
+
+      {state.error && (
+        <div style={{ fontSize: 13, color: '#c0392b', marginBottom: 12 }}>{state.error}</div>
+      )}
+
+      {state.veiculos.length === 0 ? (
+        <div className="tk-help" style={{ padding: '28px 4px' }}>
+          {busca.trim()
+            ? <>Nenhum veículo casa com “{busca.trim()}”{filtro !== 'todos' ? ' neste filtro' : ''}.</>
+            : filtro === 'baixado'
+            ? <>Nenhuma baixa registrada ainda.</>
+            : <>Nenhum carro no pátio.{' '}
+                <button onClick={() => setEditando({})} style={{ background: 'none', border: 'none', color: 'var(--tk-primary)', cursor: 'pointer', textDecoration: 'underline', font: 'inherit' }}>Cadastrar o primeiro</button>.</>}
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(272px, 1fr))', gap: 14 }}>
+          {state.veiculos.map(v => (
+            <StockCard key={v.id} v={v}
+              onFotos={() => setFotosDe(v)}
+              onEditar={() => setEditando(v)}
+              onBaixa={() => setBaixando(v)}
+              onReabrir={() => reabre(v)}
+              onExcluir={() => pedeExcluir(v)} />
+          ))}
+        </div>
+      )}
+    </div>
+
+    {editando && (
+      <StockFormModal veiculo={editando}
+        onClose={() => setEditando(null)}
+        onSaved={async () => { setEditando(null); await recarregaTudo(); }} />
+    )}
+    {fotosDe && (
+      <StockPhotoModal veiculo={fotosDe}
+        onClose={() => setFotosDe(null)}
+        onUpdated={v => { substitui(v); setFotosDe(v); }} />
+    )}
+    {baixando && (
+      <StockBaixaModal veiculo={baixando}
+        onClose={() => setBaixando(null)}
+        onDone={async () => { setBaixando(null); await recarregaTudo(); }} />
+    )}
+    {confirm && (
+      <ConfirmDialog
+        title={confirm.title} message={confirm.message}
+        confirmLabel={confirm.confirmLabel} danger={confirm.danger}
+        onConfirm={() => { const fn = confirm.onConfirm; setConfirm(null); if (fn) fn(); }}
+        onCancel={() => setConfirm(null)} />
+    )}
+    </>
+  );
+}
+
+// Card de um veículo. A capa é a foto marcada como tal no backend (sempre há
+// uma, se houver foto); sem foto nenhuma o lugar dela fica cinza e DIZ que está
+// vazio, em vez de puxar uma imagem genérica do modelo — o cliente que olha
+// esta tela precisa estar vendo o carro que ele vai buscar no pátio.
+function StockCard({ v, onFotos, onEditar, onBaixa, onReabrir, onExcluir }) {
+  const fotos = Array.isArray(v.fotos) ? v.fotos : [];
+  const capa = fotos.find(f => f.capa) || fotos[0];
+  const baixado = v.status === 'baixado';
+  const anos = fmtAnos(v);
+  const meta = [anos, fmtKm(v.km), v.cor].filter(Boolean).join(' · ');
+
+  return (
+    <div className="tk-card" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', opacity: baixado ? 0.66 : 1 }}>
+      <div style={{ position: 'relative', aspectRatio: '16 / 10', background: 'var(--tk-bg-2)' }}>
+        {capa ? (
+          <img src={capa.url} alt={`${v.marca} ${v.modelo}`} loading="lazy"
+            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', filter: baixado ? 'grayscale(1)' : 'none' }} />
+        ) : (
+          <button onClick={onFotos}
+            style={{ width: '100%', height: '100%', border: 'none', background: 'none', cursor: 'pointer', display: 'grid', placeItems: 'center', gap: 6, color: 'var(--tk-muted)' }}>
+            <Icon.Camera width={22} height={22} />
+            <span style={{ fontSize: 11.5, fontWeight: 600 }}>Sem foto — adicionar</span>
+          </button>
+        )}
+        {baixado && (
+          <span style={{ position: 'absolute', left: 8, top: 8, fontSize: 9, fontWeight: 800, letterSpacing: '0.1em', padding: '3px 7px', borderRadius: 5, background: 'rgba(10,10,25,0.78)', color: '#fff' }}>
+            BAIXADO
+          </span>
+        )}
+        {fotos.length > 0 && (
+          <button onClick={onFotos} title="Gerenciar fotos"
+            style={{ position: 'absolute', right: 8, bottom: 8, display: 'flex', alignItems: 'center', gap: 4, padding: '4px 8px', borderRadius: 999, border: 'none', background: 'rgba(10,10,25,0.62)', color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>
+            <Icon.Camera width={12} height={12} /> {fotos.length}
+          </button>
+        )}
+      </div>
+
+      <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 15, letterSpacing: '-0.01em', lineHeight: 1.25 }}>
+            {v.marca} {v.modelo}
+          </div>
+          {v.versao && <div style={{ fontSize: 12.5, color: 'var(--tk-secondary)', lineHeight: 1.3 }}>{v.versao}</div>}
+        </div>
+
+        {meta && (
+          <div style={{ fontFamily: 'var(--tk-font-mono)', fontSize: 11, color: 'var(--tk-muted)' }}>{meta}</div>
+        )}
+
+        {v.preco != null && (
+          <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--tk-ink)' }}>{fmtPreco(v.preco)}</div>
+        )}
+
+        {baixado && (
+          <div style={{ fontSize: 11.5, color: 'var(--tk-muted)', lineHeight: 1.4 }}>
+            {[v.baixa_motivo, fmtDia(v.baixa_em)].filter(Boolean).join(' · ')}
+            {v.preco_venda != null && <> · saiu por <strong>{fmtPreco(v.preco_venda)}</strong></>}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 6, marginTop: 'auto', paddingTop: 8, flexWrap: 'wrap' }}>
+          <button className="tk-btn tk-btn-ghost" style={{ padding: '5px 10px', fontSize: 12.5 }} onClick={onFotos}>
+            <Icon.Camera width={13} height={13} /> Fotos
+          </button>
+          <button className="tk-btn tk-btn-ghost" style={{ padding: '5px 10px', fontSize: 12.5 }} onClick={onEditar}>
+            Editar
+          </button>
+          {baixado ? (
+            <button className="tk-btn tk-btn-ghost" style={{ padding: '5px 10px', fontSize: 12.5 }} onClick={onReabrir}>
+              Reabrir
+            </button>
+          ) : (
+            <button className="tk-btn tk-btn-ghost" style={{ padding: '5px 10px', fontSize: 12.5 }} onClick={onBaixa}>
+              Dar baixa
+            </button>
+          )}
+          <button onClick={onExcluir} title="Excluir do cadastro"
+            style={{ marginLeft: 'auto', width: 30, height: 30, borderRadius: 8, border: '1px solid var(--tk-line)', background: 'var(--tk-bg)', color: 'var(--tk-muted)', cursor: 'pointer', display: 'grid', placeItems: 'center' }}>
+            <Icon.Trash width={14} height={14} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Campo do formulário. Existe pra que o rótulo, o espaçamento e o `tk-input`
+// não sejam recopiados doze vezes logo abaixo.
+function CampoEstoque({ label, valor, onChange, placeholder, sugestoes, largo = false, area = false }) {
+  const id = `estq-${label.toLowerCase().replace(/[^a-z]+/g, '-')}`;
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 5, gridColumn: largo ? '1 / -1' : 'auto' }}>
+      <span className="tk-label">{label}</span>
+      {area ? (
+        <textarea className="tk-input" rows={3} value={valor} placeholder={placeholder}
+          onChange={e => onChange(e.target.value)} style={{ resize: 'vertical', fontFamily: 'inherit' }} />
+      ) : (
+        <>
+          <input className="tk-input" value={valor} placeholder={placeholder}
+            list={sugestoes ? id : undefined}
+            onChange={e => onChange(e.target.value)} />
+          {sugestoes && (
+            <datalist id={id}>{sugestoes.map(s => <option key={s} value={s} />)}</datalist>
+          )}
+        </>
+      )}
+    </label>
+  );
+}
+
+// Cadastro/edição. Só marca e modelo são obrigatórios: um consignado costuma
+// entrar no sistema antes de o documento chegar, e travar o cadastro por falta
+// de placa faria o consultor inventar uma.
+function StockFormModal({ veiculo, onClose, onSaved }) {
+  const novo = !veiculo.id;
+  const [f, setF] = useState(() => ({
+    marca: paraCampo(veiculo.marca), modelo: paraCampo(veiculo.modelo),
+    versao: paraCampo(veiculo.versao),
+    ano_fabricacao: paraCampo(veiculo.ano_fabricacao), ano_modelo: paraCampo(veiculo.ano_modelo),
+    km: paraCampo(veiculo.km), cor: paraCampo(veiculo.cor), placa: paraCampo(veiculo.placa),
+    cambio: paraCampo(veiculo.cambio), combustivel: paraCampo(veiculo.combustivel),
+    preco: paraCampo(veiculo.preco), notas: paraCampo(veiculo.notas),
+  }));
+  const [busy, setBusy] = useState(false);
+  const [erro, setErro] = useState(null);
+
+  const set = (k) => (valor) => setF(atual => ({ ...atual, [k]: valor }));
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !busy) onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [busy]);
+
+  async function salva(e) {
+    e.preventDefault();
+    setBusy(true); setErro(null);
+    try {
+      await apiEstoque(novo ? '' : `/${veiculo.id}`, { method: novo ? 'POST' : 'PUT', body: f });
+      onSaved();
+    } catch (err) {
+      setErro(err.message);
+      setBusy(false);
+    }
+  }
+
+  return ReactDOM.createPortal(
+    <div onClick={() => { if (!busy) onClose(); }} style={{
+      position: 'fixed', inset: 0, zIndex: 999999,
+      background: 'rgba(10,10,25,0.55)', backdropFilter: 'blur(3px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }}>
+      <form onClick={e => e.stopPropagation()} onSubmit={salva} style={{
+        background: 'var(--tk-bg)', borderRadius: 16, width: '100%', maxWidth: 560,
+        maxHeight: '90vh', display: 'flex', flexDirection: 'column',
+        boxShadow: '0 40px 120px rgba(0,0,0,0.4)', overflow: 'hidden',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '18px 20px', borderBottom: '1px solid var(--tk-line)' }}>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--tk-muted)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>Estoque</div>
+            <div style={{ fontWeight: 700, fontSize: 17, lineHeight: 1.2 }}>{novo ? 'Cadastrar veículo' : 'Editar veículo'}</div>
+          </div>
+          <button type="button" onClick={() => { if (!busy) onClose(); }} aria-label="Fechar"
+            style={{ width: 34, height: 34, borderRadius: '50%', border: 'none', background: 'var(--tk-bg-2)', color: 'var(--tk-ink)', fontSize: 20, cursor: busy ? 'not-allowed' : 'pointer', lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={{ padding: 20, overflowY: 'auto', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <CampoEstoque label="Marca *" valor={f.marca} onChange={set('marca')} placeholder="Toyota" />
+          <CampoEstoque label="Modelo *" valor={f.modelo} onChange={set('modelo')} placeholder="Corolla" />
+          <CampoEstoque label="Versão" valor={f.versao} onChange={set('versao')} placeholder="XEi 2.0 Flex" largo />
+          <CampoEstoque label="Ano de fabricação" valor={f.ano_fabricacao} onChange={set('ano_fabricacao')} placeholder="2019" />
+          <CampoEstoque label="Ano do modelo" valor={f.ano_modelo} onChange={set('ano_modelo')} placeholder="2020" />
+          <CampoEstoque label="Quilometragem" valor={f.km} onChange={set('km')} placeholder="48.000" />
+          <CampoEstoque label="Cor" valor={f.cor} onChange={set('cor')} placeholder="Prata" />
+          <CampoEstoque label="Placa" valor={f.placa} onChange={set('placa')} placeholder="ABC1D23" />
+          <CampoEstoque label="Câmbio" valor={f.cambio} onChange={set('cambio')} placeholder="Automático" sugestoes={CAMBIOS} />
+          <CampoEstoque label="Combustível" valor={f.combustivel} onChange={set('combustivel')} placeholder="Flex" sugestoes={COMBUSTIVEIS} />
+          <CampoEstoque label="Preço pedido" valor={f.preco} onChange={set('preco')} placeholder="98.900" />
+          <CampoEstoque label="Observações" valor={f.notas} onChange={set('notas')} placeholder="Único dono, revisões na concessionária, pequeno risco no para-choque…" largo area />
+
+          <div className="tk-help" style={{ gridColumn: '1 / -1', fontSize: 11.5 }}>
+            Só marca e modelo são obrigatórios. O que você não souber, deixe em branco —
+            fica em branco na tela, e é melhor assim do que um número chutado.
+          </div>
+          {erro && <div style={{ gridColumn: '1 / -1', fontSize: 13, color: '#c0392b' }}>{erro}</div>}
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', padding: '14px 20px', borderTop: '1px solid var(--tk-line)' }}>
+          <button type="button" className="tk-btn tk-btn-ghost" onClick={onClose} disabled={busy}>Cancelar</button>
+          <button type="submit" className="tk-btn tk-btn-primary" disabled={busy}>
+            {busy ? 'Salvando…' : (novo ? <><Icon.Plus /> Cadastrar</> : <><Icon.Check /> Salvar</>)}
+          </button>
+        </div>
+      </form>
+    </div>,
+    document.body
+  );
+}
+
+// Dar baixa. Não apaga nada: o carro sai do pátio e a linha vira o registro da
+// saída (por quanto e por quê). Quem quer apagar de verdade usa a lixeira do
+// card, que avisa disso.
+function StockBaixaModal({ veiculo, onClose, onDone }) {
+  const [motivo, setMotivo] = useState('Vendido');
+  const [outro, setOutro] = useState('');
+  const [preco, setPreco] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [erro, setErro] = useState(null);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !busy) onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [busy]);
+
+  async function confirma() {
+    setBusy(true); setErro(null);
+    try {
+      await apiEstoque(`/${veiculo.id}/baixa`, {
+        method: 'POST',
+        body: { motivo: motivo === 'Outro' ? outro : motivo, preco_venda: preco },
+      });
+      onDone();
+    } catch (e) {
+      setErro(e.message);
+      setBusy(false);
+    }
+  }
+
+  return ReactDOM.createPortal(
+    <div onClick={() => { if (!busy) onClose(); }} style={{
+      position: 'fixed', inset: 0, zIndex: 999999,
+      background: 'rgba(10,10,25,0.55)', backdropFilter: 'blur(3px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--tk-bg)', borderRadius: 16, width: '100%', maxWidth: 420,
+        boxShadow: '0 40px 120px rgba(0,0,0,0.4)', overflow: 'hidden',
+      }}>
+        <div style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--tk-muted)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>Dar baixa</div>
+            <div style={{ fontWeight: 700, fontSize: 17, lineHeight: 1.25 }}>{veiculo.marca} {veiculo.modelo}</div>
+            {veiculo.versao && <div style={{ fontSize: 12.5, color: 'var(--tk-secondary)' }}>{veiculo.versao}</div>}
+          </div>
+
+          <div>
+            <div className="tk-label" style={{ marginBottom: 7 }}>O que aconteceu?</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {BAIXA_MOTIVOS.map(m => (
+                <button key={m} className={`tk-chip ${motivo === m ? 'is-active' : ''}`}
+                  onClick={() => setMotivo(m)} disabled={busy}>{m}</button>
+              ))}
+            </div>
+            {motivo === 'Outro' && (
+              <input className="tk-input" value={outro} onChange={e => setOutro(e.target.value)}
+                placeholder="Descreva em poucas palavras" style={{ marginTop: 8 }} />
+            )}
+          </div>
+
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <span className="tk-label">
+              Preço de saída <span className="tk-mono" style={{ fontWeight: 500 }}>opcional</span>
+            </span>
+            <input className="tk-input" value={preco} onChange={e => setPreco(e.target.value)}
+              placeholder={veiculo.preco != null ? paraCampo(veiculo.preco) : '95.000'} />
+          </label>
+
+          <div className="tk-help" style={{ fontSize: 11.5 }}>
+            O veículo sai do pátio, mas o cadastro fica: é dele que sai por quanto o carro
+            saiu e quanto tempo ficou parado. Dá pra reabrir depois.
+          </div>
+          {erro && <div style={{ fontSize: 13, color: '#c0392b' }}>{erro}</div>}
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', padding: '0 22px 20px' }}>
+          <button className="tk-btn tk-btn-ghost" onClick={onClose} disabled={busy}>Cancelar</button>
+          <button className="tk-btn tk-btn-primary" onClick={confirma}
+            disabled={busy || (motivo === 'Outro' && !outro.trim())}>
+            {busy ? 'Dando baixa…' : <><Icon.Check /> Confirmar baixa</>}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// Fotos do veículo: sobe, escolhe a capa e exclui. Sem "buscar com IA" como no
+// catálogo — a foto de um carro de estoque é a do carro, não a do modelo, e
+// nenhuma busca na web sabe qual é a deste aqui.
+function StockPhotoModal({ veiculo, onClose, onUpdated }) {
+  const [v, setV] = useState(veiculo);
+  const [busy, setBusy] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const [confirm, setConfirm] = useState(null);
+  const fileRef = React.useRef(null);
+  const fotos = Array.isArray(v.fotos) ? v.fotos : [];
+
+  function aplica(novo, texto) {
+    setV(novo);
+    onUpdated(novo);
+    if (texto) setMsg({ tone: 'ok', text: texto });
+  }
+
+  async function onFilesChosen(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (files.length === 0) return;
+    setBusy('upload'); setMsg(null);
+    try {
+      const imagens = await Promise.all(files.map(lerComoDataUrl));
+      const j = await apiEstoque(`/${v.id}/fotos`, { method: 'POST', body: { fotos: imagens } });
+      aplica(j.veiculo, `${j.adicionadas} foto${j.adicionadas !== 1 ? 's' : ''} adicionada${j.adicionadas !== 1 ? 's' : ''}.`);
+    } catch (err) {
+      setMsg({ tone: 'err', text: 'Falha no upload: ' + err.message });
+    } finally { setBusy(null); }
+  }
+
+  async function excluiFoto(url) {
+    setBusy('delete'); setMsg(null);
+    try {
+      const j = await apiEstoque(`/${v.id}/fotos/excluir`, { method: 'POST', body: { url } });
+      aplica(j.veiculo, 'Foto excluída.');
+    } catch (err) {
+      setMsg({ tone: 'err', text: 'Falha ao excluir: ' + err.message });
+    } finally { setBusy(null); }
+  }
+
+  async function defineCapaFoto(url) {
+    setBusy('capa'); setMsg(null);
+    try {
+      const j = await apiEstoque(`/${v.id}/fotos/capa`, { method: 'POST', body: { url } });
+      aplica(j.veiculo, 'Capa trocada.');
+    } catch (err) {
+      setMsg({ tone: 'err', text: 'Falha ao trocar a capa: ' + err.message });
+    } finally { setBusy(null); }
+  }
+
+  const toneColor = { ok: '#1a7a4a', err: '#c0392b' };
+
+  return (
+    <>
+    {ReactDOM.createPortal(
+    <div onClick={() => { if (!busy) onClose(); }} style={{
+      position: 'fixed', inset: 0, zIndex: 999999,
+      background: 'rgba(10,10,25,0.55)', backdropFilter: 'blur(3px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--tk-bg)', borderRadius: 16, width: '100%', maxWidth: 520,
+        maxHeight: '88vh', display: 'flex', flexDirection: 'column',
+        boxShadow: '0 40px 120px rgba(0,0,0,0.4)', overflow: 'hidden',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '18px 20px', borderBottom: '1px solid var(--tk-line)', flexShrink: 0 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 10, color: 'var(--tk-muted)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>
+              {v.marca}{fmtAnos(v) ? ` · ${fmtAnos(v)}` : ''}
+            </div>
+            <div style={{ fontWeight: 700, fontSize: 17, lineHeight: 1.2 }}>{v.modelo}</div>
+            <div style={{ marginTop: 4, fontSize: 12, color: fotos.length ? '#1a7a4a' : 'var(--tk-muted)' }}>
+              {fotos.length ? `${fotos.length} foto${fotos.length !== 1 ? 's' : ''} deste carro` : 'sem foto ainda'}
+            </div>
+          </div>
+          <button onClick={() => { if (!busy) onClose(); }} aria-label="Fechar"
+            style={{ width: 34, height: 34, flexShrink: 0, borderRadius: '50%', border: 'none', background: 'var(--tk-bg-2)', color: 'var(--tk-ink)', fontSize: 20, cursor: busy ? 'not-allowed' : 'pointer', lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
+          <button onClick={() => fileRef.current && fileRef.current.click()} disabled={!!busy}
+            className="tk-btn tk-btn-primary" style={{ justifyContent: 'center', width: '100%', opacity: busy ? 0.6 : 1 }}>
+            {busy === 'upload' ? 'Enviando…' : <><Icon.Upload /> Adicionar fotos</>}
+          </button>
+          <input ref={fileRef} type="file" accept="image/*" multiple onChange={onFilesChosen} style={{ display: 'none' }} />
+
+          <div className="tk-help" style={{ fontSize: 11.5 }}>
+            Dá pra mandar várias de uma vez. A estrela marca a capa — é a foto que aparece
+            no card da lista.
+          </div>
+
+          {msg && <div style={{ fontSize: 13, fontWeight: 500, color: toneColor[msg.tone] }}>{msg.text}</div>}
+
+          {fotos.length === 0 ? (
+            <div className="tk-help" style={{ fontSize: 12 }}>Nenhuma foto ainda.</div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(104px, 1fr))', gap: 8 }}>
+              {fotos.map(foto => (
+                <div key={foto.url} style={{ position: 'relative', aspectRatio: '4 / 3', borderRadius: 8, overflow: 'hidden', border: foto.capa ? '2px solid #f5b301' : '1px solid var(--tk-line)' }}>
+                  <img src={foto.url} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                  <button onClick={() => defineCapaFoto(foto.url)} disabled={!!busy || foto.capa}
+                    title={foto.capa ? 'Esta é a capa' : 'Usar como capa'}
+                    style={{ position: 'absolute', right: 27, top: 3, width: 20, height: 20, borderRadius: '50%', border: 'none', background: 'rgba(0,0,0,0.5)', color: foto.capa ? '#f5b301' : 'rgba(255,255,255,0.7)', cursor: busy || foto.capa ? 'default' : 'pointer', display: 'grid', placeItems: 'center', padding: 0 }}>
+                    <Icon.Star width={11} height={11} />
+                  </button>
+                  <button onClick={() => setConfirm({ url: foto.url })} disabled={!!busy} title="Excluir esta foto"
+                    style={{ position: 'absolute', right: 3, top: 3, width: 20, height: 20, borderRadius: '50%', border: 'none', background: 'rgba(192,57,43,0.92)', color: '#fff', cursor: busy ? 'not-allowed' : 'pointer', display: 'grid', placeItems: 'center', padding: 0 }}>
+                    <Icon.Trash width={11} height={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+    )}
+    {confirm && (
+      <ConfirmDialog
+        message="Excluir esta foto?" confirmLabel="Excluir" danger
+        onConfirm={() => { const url = confirm.url; setConfirm(null); excluiFoto(url); }}
+        onCancel={() => setConfirm(null)} />
+    )}
+    </>
   );
 }
 

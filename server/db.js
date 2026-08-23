@@ -55,6 +55,32 @@ export async function exec(text, params = []) {
   return res.rowCount;
 }
 
+// Roda várias queries numa transação. `fn` recebe um `q`/`exec` amarrados à
+// MESMA conexão — usar os do módulo aqui dentro pegaria outra conexão do pool e
+// ficaria de fora do BEGIN, que é o jeito silencioso de a transação não servir
+// pra nada.
+//
+// Existe por causa de `excluiCliente`: apagar o cliente e anonimizar as
+// consultas dele têm que acontecer juntos ou nenhum — parar no meio deixaria
+// consulta anonimizada com o cliente ainda no banco.
+export async function tx(fn) {
+  const cliente = await getPool().connect();
+  try {
+    await cliente.query('begin');
+    const r = await fn({
+      q: async (text, params = []) => (await cliente.query(text, params)).rows,
+      exec: async (text, params = []) => (await cliente.query(text, params)).rowCount,
+    });
+    await cliente.query('commit');
+    return r;
+  } catch (e) {
+    await cliente.query('rollback').catch(() => { /* conexão já morta */ });
+    throw e;
+  } finally {
+    cliente.release();
+  }
+}
+
 // ─── O footgun do driver `pg` ────────────────────────────────────────────────
 // O driver serializa um array JS como ARRAY DO POSTGRES. Isso é o que você quer
 // nas colunas `text[]` (tipos, top_models, combustiveis, prioridades, motivos)

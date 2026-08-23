@@ -144,7 +144,7 @@ export function viewCounts(images) {
 // Converte um data URL (base64, vindo do upload manual) em Buffer. Aceita só
 // imagens; devolve null se não bater o formato ou passar do teto de tamanho.
 const MANUAL_MAX_BYTES = 25 * 1024 * 1024; // 25 MB por foto (será redimensionada)
-function dataUrlToBuffer(dataUrl) {
+export function dataUrlToBuffer(dataUrl) {
   if (typeof dataUrl !== 'string') return null;
   const m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(dataUrl.trim());
   if (!m) return null;

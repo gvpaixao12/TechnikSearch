@@ -16,6 +16,14 @@ import { getOrBuildImages, listCachedCars, addManualImages, rebuildCarImages, ge
 import { saveConsulta, listConsultas, getConsulta, getStats } from './history.js';
 import { saveFeedback, listFeedback } from './feedback.js';
 import { saveRascunho, listRascunhos, getRascunho, deleteRascunho } from './rascunhos.js';
+import {
+  listClientes, getCliente, criaCliente, atualizaCliente, excluiCliente,
+  vinculaConsulta, desvinculaConsulta,
+} from './clientes.js';
+import {
+  listEstoque, resumoEstoque, getVeiculo, criaVeiculo, atualizaVeiculo,
+  daBaixa, reabreVeiculo, excluiVeiculo, adicionaFotos, removeFoto, defineCapa,
+} from './estoque.js';
 import { painelUso, saldoSerper } from './usage.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -46,6 +54,17 @@ app.post('/api/supabase/cars/manual-photos', exigeAuth('busca'), express.json({ 
     }
     const result = await addManualImages({ marca, modelo, ano: Number(ano), dataUrls: images, view });
     res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(400).json({ ok: false, reason: e.message });
+  }
+});
+
+// Fotos de um veículo do estoque (base64). Mesmo motivo do parser dedicado
+// acima: body grande, então precisa ser registrada ANTES do parser global de
+// 1mb. O resto do CRUD de estoque está lá embaixo, com os outros recursos.
+app.post('/api/estoque/:id/fotos', exigeAuth('busca'), express.json({ limit: '40mb' }), async (req, res) => {
+  try {
+    res.json({ ok: true, ...(await adicionaFotos(req.params.id, req.body?.fotos)) });
   } catch (e) {
     res.status(400).json({ ok: false, reason: e.message });
   }
@@ -320,7 +339,13 @@ app.post('/api/recommend', async (req, res, next) => {
 });
 
 // ─── Histórico de consultas ──────────────────────────────────────
-app.get('/api/consultas/stats', async (_req, res) => {
+// A LISTA exige escopo `crm`, o registro avulso não. A diferença é de
+// privacidade, não de organização: a lista é o cadastro de quem já foi
+// atendido (nome, perfil, orçamento de cada comprador), e a tela do desktop é
+// vista pelo cliente final por cima do ombro. Já `/:id` é a lista de carros
+// daquela consulta — é o que o consultor está mostrando, e o desktop precisa
+// alcançar pra reabrir uma recomendação pelo link vindo do CRM.
+app.get('/api/consultas/stats', exigeAuth('crm'), async (_req, res) => {
   try {
     res.json({ ok: true, stats: await getStats() });
   } catch (e) {
@@ -328,7 +353,7 @@ app.get('/api/consultas/stats', async (_req, res) => {
   }
 });
 
-app.get('/api/consultas', async (req, res) => {
+app.get('/api/consultas', exigeAuth('crm'), async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
     res.json({ ok: true, consultas: await listConsultas({ limit }) });
@@ -347,6 +372,134 @@ app.get('/api/consultas/:id', async (req, res) => {
   }
 });
 
+// ─── Clientes (CRM) ──────────────────────────────────────────────
+// Tudo aqui é escopo `crm`: é o cadastro de terceiros (os compradores do
+// cliente), com telefone e e-mail. O token de dispositivo — que é o que o app
+// desktop carrega, e o desktop é a tela que o comprador vê — não alcança nada
+// disto de propósito.
+//
+// Erro vira 400, e não 503 como no histórico: aqui quem errou provavelmente foi
+// o pedido (nome vazio, id que não existe), não o banco.
+const erroCliente = (res, e) => res.status(400).json({ ok: false, reason: e.message });
+
+app.get('/api/clientes', exigeAuth('crm'), async (req, res) => {
+  try {
+    res.json({ ok: true, clientes: await listClientes({ busca: req.query.busca }) });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+app.get('/api/clientes/:id', exigeAuth('crm'), async (req, res) => {
+  try {
+    res.json({ ok: true, cliente: await getCliente(req.params.id) });
+  } catch (e) { erroCliente(res, e); }
+});
+
+app.post('/api/clientes', exigeAuth('crm'), async (req, res) => {
+  try {
+    res.json({ ok: true, cliente: await criaCliente(req.body || {}) });
+  } catch (e) { erroCliente(res, e); }
+});
+
+app.put('/api/clientes/:id', exigeAuth('crm'), async (req, res) => {
+  try {
+    res.json({ ok: true, cliente: await atualizaCliente(req.params.id, req.body || {}) });
+  } catch (e) { erroCliente(res, e); }
+});
+
+// Apaga a linha e anonimiza o que apontava pra ela — ver excluiCliente.
+// O resultado diz quantas consultas foram anonimizadas porque isso é
+// irreversível, e a tela avisa antes de perguntar "tem certeza?".
+app.delete('/api/clientes/:id', exigeAuth('crm'), async (req, res) => {
+  try {
+    res.json({ ok: true, ...(await excluiCliente(req.params.id)) });
+  } catch (e) { erroCliente(res, e); }
+});
+
+// Vinculação assistida: amarra uma consulta do histórico a um cliente. Body
+// vazio (ou cliente_id null) desvincula.
+app.post('/api/consultas/:id/cliente', exigeAuth('crm'), async (req, res) => {
+  try {
+    const clienteId = req.body?.cliente_id || null;
+    if (!clienteId) {
+      await desvinculaConsulta(req.params.id);
+      return res.json({ ok: true, cliente_id: null });
+    }
+    const r = await vinculaConsulta(req.params.id, clienteId);
+    res.json({ ok: true, cliente_id: r.cliente_id });
+  } catch (e) { erroCliente(res, e); }
+});
+
+// ─── Estoque (o pátio da loja) ───────────────────────────────────
+// Escopo `busca`, e não `crm` como os clientes: a aba mora na tela que o app
+// desktop abre, é dela que o consultor cadastra o carro e é ali que ele mostra
+// a foto pro comprador. E, ao contrário de `/api/clientes`, aqui não há dado
+// pessoal de terceiro — o cadastro é do veículo da própria loja.
+//
+// 400 e não 503, mesmo critério dos clientes: quando dá errado aqui, quem errou
+// provavelmente foi o pedido (marca vazia, id que não existe), não o banco.
+const erroEstoque = (res, e) => res.status(400).json({ ok: false, reason: e.message });
+
+// A lista vem com o resumo junto: o cabeçalho precisa dizer o tamanho do
+// estoque inteiro, e não do que sobrou depois do filtro que está na tela.
+app.get('/api/estoque', async (req, res) => {
+  try {
+    const [veiculos, resumo] = await Promise.all([
+      listEstoque({ busca: req.query.busca, status: req.query.status }),
+      resumoEstoque(),
+    ]);
+    res.json({ ok: true, veiculos, resumo });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+app.get('/api/estoque/:id', async (req, res) => {
+  try { res.json({ ok: true, veiculo: await getVeiculo(req.params.id) }); }
+  catch (e) { erroEstoque(res, e); }
+});
+
+app.post('/api/estoque', async (req, res) => {
+  try { res.json({ ok: true, veiculo: await criaVeiculo(req.body || {}) }); }
+  catch (e) { erroEstoque(res, e); }
+});
+
+app.put('/api/estoque/:id', async (req, res) => {
+  try { res.json({ ok: true, veiculo: await atualizaVeiculo(req.params.id, req.body || {}) }); }
+  catch (e) { erroEstoque(res, e); }
+});
+
+// Baixa tira do pátio e mantém a linha (é o histórico da venda); reabrir desfaz.
+// Apagar de verdade é o DELETE, e serve pro cadastro errado — leva as fotos do
+// bucket junto.
+app.post('/api/estoque/:id/baixa', async (req, res) => {
+  try { res.json({ ok: true, veiculo: await daBaixa(req.params.id, req.body || {}) }); }
+  catch (e) { erroEstoque(res, e); }
+});
+
+app.post('/api/estoque/:id/reabrir', async (req, res) => {
+  try { res.json({ ok: true, veiculo: await reabreVeiculo(req.params.id) }); }
+  catch (e) { erroEstoque(res, e); }
+});
+
+app.delete('/api/estoque/:id', async (req, res) => {
+  try { await excluiVeiculo(req.params.id); res.json({ ok: true }); }
+  catch (e) { erroEstoque(res, e); }
+});
+
+// Subir foto NÃO está aqui: precisa de body de 40mb e por isso mora lá em cima,
+// antes do parser global (procure por `/api/estoque/:id/fotos`). Excluir e
+// escolher capa mandam só uma URL, então cabem no parser normal.
+app.post('/api/estoque/:id/fotos/excluir', async (req, res) => {
+  try { res.json({ ok: true, veiculo: await removeFoto(req.params.id, req.body?.url) }); }
+  catch (e) { erroEstoque(res, e); }
+});
+
+app.post('/api/estoque/:id/fotos/capa', async (req, res) => {
+  try { res.json({ ok: true, veiculo: await defineCapa(req.params.id, req.body?.url) }); }
+  catch (e) { erroEstoque(res, e); }
+});
 // ─── Feedback do consultor sobre a busca ─────────────────────────
 // Se veio "senti falta de X", diagnostica na hora POR QUE X não apareceu e
 // devolve junto: o consultor vê a causa no mesmo clique, e a causa fica

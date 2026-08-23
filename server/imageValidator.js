@@ -3,7 +3,7 @@
 // se o LLM duvida ou a chamada falha, descarta — melhor zero foto que foto errada.
 
 import OpenAI from 'openai';
-import { splitModelo } from './classify.js';
+import { classifyTipo, extractTrim } from './classify.js';
 import { registraLLM, registraRateLimit } from './usage.js';
 
 // Provedor de visão. Default: reaproveita a conta OpenAI do texto (LLM_API_KEY)
@@ -126,6 +126,84 @@ const VIEW_LABEL = {
   interior: 'interior (painel, console ou bancos)',
 };
 
+// Carroceria alvo, vinda do catálogo (classifyTipo) e não do LLM. Vira critério
+// de REPROVAÇÃO no prompt: sem ela um sedã passou como "lateral" de um Golf — o
+// prompt falava de marca, modelo e geração, mas nunca do formato do carro.
+const BODY_LABEL = {
+  hatch: { nome: 'hatch (hatchback)', desc: 'traseira curta, SEM porta-malas saliente; o vidro traseiro termina logo acima da tampa' },
+  sedan: { nome: 'sedã', desc: 'três volumes, porta-malas saliente e separado do vidro traseiro' },
+  suv: { nome: 'SUV / crossover', desc: 'carroceria alta, boa altura livre do solo, traseira reta' },
+  pickup: { nome: 'picape', desc: 'cabine + caçamba aberta atrás' },
+  // Sem contagem de portas de propósito: o catálogo marca como cupê tanto o
+  // 911 de 2 portas quanto o CLA "cupê de 4 portas", e "duas portas" reprovaria
+  // o CLA inteiro.
+  coupe: { nome: 'cupê / esportivo', desc: 'teto baixo e caído, silhueta esportiva — pode ter 2 ou 4 portas' },
+  minivan: { nome: 'minivan / monovolume', desc: 'teto alto e comprido, três fileiras, perfil de van' },
+};
+
+// Tolerância do portão de ano. O ano-modelo da FIPE costuma ser o ano de
+// produção + 1, e um facelift no meio da geração faz o LLM devolver a fase em
+// vez da geração inteira. Um ano de folga de cada lado absorve os dois casos
+// sem deixar passar a geração errada — essa erra por 5+ anos, não por 1.
+const ANO_TOLERANCIA = 1;
+
+// Lê o veredito POR FOTO e aplica em código o que não dá pra confiar ao LLM: o
+// portão de ano (a geração que ele declarou tem que conter o ano alvo) e a
+// diversidade de cor na seleção final. Antes as duas coisas eram pedidas no
+// prompt como "escolha as melhores N", e o modelo tratava a resposta como um
+// ranking a preencher em vez de um julgamento foto a foto — foi assim que um
+// sedã entrou na lateral de um hatch.
+function _selecionaAprovadas(text, images, cap, ano, view) {
+  let json;
+  try { json = JSON.parse(text); } catch { return []; }
+
+  // Formato antigo ({"aprovadas":[1,3]}) ainda aceito: se o modelo ignorar o
+  // schema novo, cair no comportamento de antes é melhor que zerar a galeria.
+  if (!Array.isArray(json.fotos) && Array.isArray(json.aprovadas)) {
+    return json.aprovadas
+      .map(n => Number(n) - 1)
+      .filter(i => Number.isInteger(i) && i >= 0 && i < images.length)
+      .slice(0, cap);
+  }
+
+  const vistos = new Set();
+  const ok = [];
+  for (const v of (Array.isArray(json.fotos) ? json.fotos : [])) {
+    const i = Number(v?.n) - 1;
+    if (!Number.isInteger(i) || i < 0 || i >= images.length) continue;
+    if (v.ok !== true || vistos.has(i)) continue;
+    // Portão de ano. Sem os anos (o modelo omitiu o campo) vale o veredito
+    // dele — não dá pra zerar a galeria por causa de um campo faltando.
+    const [ini, fim] = Array.isArray(v.anos) ? v.anos.map(Number) : [];
+    if (Number.isFinite(ini) && Number.isFinite(fim)
+        && (ano < ini - ANO_TOLERANCIA || ano > fim + ANO_TOLERANCIA)) {
+      console.log(`[validator] ${view} #${v.n}: geração ${ini}-${fim} não cobre ${ano} — reprovada`);
+      continue;
+    }
+    vistos.add(i);
+    ok.push({ i, nota: Number(v.nota) || 0, cor: String(v.cor || '').toLowerCase().trim() });
+  }
+
+  ok.sort((a, b) => b.nota - a.nota);
+
+  // Diversidade de cor: a primeira passada só aceita cor inédita, a segunda
+  // completa a cota. Com veredito por foto o LLM não escolhe mais nada, então a
+  // variedade que ele fazia ("prefira 2-3 cores distintas") sai daqui.
+  const out = [];
+  const cores = new Set();
+  for (const e of ok) {
+    if (out.length >= cap) break;
+    if (e.cor && cores.has(e.cor)) continue;
+    out.push(e);
+    if (e.cor) cores.add(e.cor);
+  }
+  for (const e of ok) {
+    if (out.length >= cap) break;
+    if (!out.includes(e)) out.push(e);
+  }
+  return out.map(e => e.i);
+}
+
 // Llama 4 Scout aceita no máx 5 imagens por chamada.
 const MAX_IMAGES_PER_CALL = 5;
 // Fotos aprovadas por view (galeria rica; interior mais variado).
@@ -139,23 +217,31 @@ async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3
   const client = getClient();
   const cap = Math.min(maxApproved, images.length);
 
-  // O nome FIPE mistura acabamento e motor ("Fit EXL 1.5 Flex 16V 5p Aut"), e o
-  // acabamento acaba soterrado na especificação. Destacado, ele serve de
-  // DESEMPATE entre fotos válidas.
+  // O nome FIPE mistura acabamento e motor ("Golf 2.0/ 2.0 Mi Flex Comfortline
+  // Aut."), e o acabamento fica soterrado no meio da especificação. Destacado,
+  // ele serve de DESEMPATE entre fotos válidas.
   //
-  // De propósito NÃO é critério de rejeição: EXL, LX e Personal diferem em roda,
-  // farol de neblina e sensor — detalhe que nenhum modelo de visão distingue de
-  // forma confiável, e "em dúvida, rejeite" transformaria isso em galeria vazia.
-  // Rejeição continua sendo marca/modelo/geração/mercado.
-  const { versao } = splitModelo(modelo);
-  const trimHint = versao && versao !== modelo
-    ? `\nACABAMENTO: ${versao}. Havendo mais de uma foto igualmente válida, PREFIRA a que corresponde a este acabamento (rodas, faróis de neblina, frisos). NÃO rejeite uma foto só por dúvida de acabamento.\n`
+  // De propósito NÃO é critério de reprovação: EXL, LX e Personal diferem em
+  // roda, farol de neblina e sensor — detalhe que nenhum modelo de visão
+  // distingue de forma confiável, e "em dúvida, reprove" transformaria isso em
+  // galeria vazia. Reprovação é marca/modelo/carroceria/geração/mercado.
+  //
+  // extractTrim (e não splitModelo) porque no formato mais comum da FIPE o trim
+  // vem DEPOIS do motor: splitModelo devolvia versao="Golf" e o prompt saía com
+  // "ACABAMENTO: Golf", que não diz nada.
+  const trim = extractTrim(modelo);
+  const trimHint = trim
+    ? `\nACABAMENTO: ${trim}. Havendo mais de uma foto igualmente válida, PREFIRA a que corresponde a este acabamento (rodas, faróis de neblina, frisos). NÃO reprove uma foto só por dúvida de acabamento.`
     : '';
 
   const isExternal = view !== 'interior';
-  const diversityHint = isExternal
-    ? 'Se entre as fotos houver cores EXTERNAS diferentes do carro (ex: preto, branco, vermelho), prefira escolher 2-3 com cores DISTINTAS — diversidade visual é desejável.'
-    : 'Se houver variações de revestimento interno (cores de banco, tipo de painel), prefira escolher exemplos visualmente diferentes.';
+
+  // Só nas vistas externas: do painel não dá pra dizer a carroceria, e com
+  // "em dúvida, reprove" a regra zeraria os interiores.
+  const body = isExternal ? BODY_LABEL[classifyTipo(`${marca} ${modelo}`)] : null;
+  const bodyHint = body
+    ? `\nCARROCERIA: ${body.nome} — ${body.desc}. Carroceria diferente REPROVA, mesmo que a marca e o nome do modelo batam.`
+    : '';
 
   const content = [
     {
@@ -163,30 +249,36 @@ async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3
       text:
 `Vou te mostrar ${images.length} fotos numeradas de 1 a ${images.length}.
 
-Pra cada foto, julgue se é REALMENTE um(a) ${marca} ${modelo} do ano ${ano}, vista de ${VIEW_LABEL[view]}.
-IMPORTANTE: queremos a versão vendida no MERCADO BRASILEIRO. Carros do Brasil têm volante à ESQUERDA.
-${trimHint}
+CARRO ALVO: ${marca} ${modelo}, ano ${ano}.
+VISTA PEDIDA: ${VIEW_LABEL[view]}.
+MERCADO: Brasil — carro brasileiro tem volante à ESQUERDA.${bodyHint}${trimHint}
 
-Rejeite a foto se qualquer um abaixo for verdade:
-- Marca, modelo ou geração visivelmente diferente
-- **VOLANTE À DIREITA (mão inglesa)**: se o volante aparecer e estiver do lado DIREITO, é unidade de outro mercado (Reino Unido/Japão/Austrália/Índia) — REJEITE. Vale pra interior e qualquer foto que mostre o painel/volante.
-- **PLACA ESTRANGEIRA** visível: placa europeia (faixa azul da UE à esquerda), alemã, americana, etc. indica carro de fora — REJEITE. Placa brasileira (Mercosul ou a cinza antiga) é ok.
-- Versão/acabamento claramente de outro mercado — faróis, para-choque, rodas ou detalhes que não correspondem ao vendido no Brasil. Em dúvida sobre o mercado, REJEITE.
-- View errada (ex: interior quando pedi frente)
-- Imagem 3D/render/CAD/desenho (queremos foto real)
-- Marca d'água ou logo GRANDE cobrindo parte significativa do carro (mais de ~10% da área)
-- Miniatura, brinquedo, peça solta
-- **ANÚNCIO DE CONCESSIONÁRIA / CLASSIFICADO**: foto com TARJA, FAIXA, MOLDURA, RODAPÉ ou BORDA contendo NÚMERO DE TELEFONE, nome de loja/revenda/seminovos, endereço, lista de cidades, "R$"/preço, KM, ou logo de revenda em destaque — REJEITE SEMPRE, mesmo que o carro em si esteja limpo. Queremos a foto MAIS LIMPA POSSÍVEL, sem qualquer texto de contato, telefone ou marca de loja. Em caso de qualquer telefone visível na imagem, REJEITE.
-- **THUMBNAIL DE VÍDEO / CHAMADA DE MATÉRIA**: capa de YouTube, headline sobreposta ("MELHOR HATCH 2024?", "TESTE COMPLETO"), preço ou número grande em destaque sobre o carro — REJEITE.
-- Colagem / montagem com várias fotos numa só (antes/depois, comparativo).
-- Uma marca d'água de SITE realmente PEQUENA e discreta num canto (ex: "autoesporte.com" sutil) é tolerável. Mas logo de concessionária, telefone, nome de revenda ou faixa promocional NÃO são — esses sempre reprovam.
-- Foto com várias imagens montadas (colagem, antes/depois, comparativo).
+Julgue CADA foto POR SI. Isto NÃO é uma escolha das melhores: cada foto passa ou reprova sozinha, e reprovar TODAS é um resultado normal e aceitável.
 
-${diversityHint}
+REPROVE a foto se QUALQUER item abaixo for verdade:
+- **CARROCERIA ERRADA**: o formato do carro não é o da carroceria alvo. Sedã tem porta-malas saliente (três volumes); hatch termina na tampa traseira; perua/SW estende o teto até a traseira; cupê tem teto caído e silhueta esportiva; SUV é alto; picape tem caçamba. Confira o perfil ANTES de aprovar — é o erro mais comum.
+- **GERAÇÃO ERRADA**: o carro tem que ser da geração vendida NO BRASIL em ${ano}. Farol, grade, para-choque e lanterna de outra geração REPROVAM, mesmo sendo a mesma marca e o mesmo modelo. Atenção: a geração europeia de ${ano} normalmente NÃO é a que se vendia aqui — o Brasil costuma receber a geração anterior por vários anos.
+- Marca ou modelo visivelmente diferentes.
+- **VOLANTE À DIREITA (mão inglesa)**: se o volante aparecer e estiver do lado DIREITO, é unidade de outro mercado (Reino Unido/Japão/Austrália/Índia) — REPROVE. Vale pro interior e pra qualquer foto que mostre o painel.
+- **PLACA ESTRANGEIRA** visível: placa europeia (faixa azul da UE à esquerda), alemã, americana etc. indica carro de fora — REPROVE. Placa brasileira (Mercosul ou a cinza antiga) é ok.
+- Versão de outro mercado: faróis, para-choque, rodas ou detalhes que não correspondem ao vendido no Brasil. Em dúvida sobre o mercado, REPROVE.
+- VISTA ERRADA (ex: interior quando pedi ${VIEW_LABEL[view]}).
+- Render 3D/CAD, desenho, ilustração, miniatura, brinquedo ou peça solta — queremos FOTO REAL.
+- **ANÚNCIO DE CONCESSIONÁRIA / CLASSIFICADO**: tarja, faixa, moldura, rodapé ou borda com TELEFONE, nome de loja/revenda/seminovos, endereço, lista de cidades, "R$"/preço, KM ou logo de revenda — REPROVE SEMPRE, mesmo com o carro limpo. Qualquer telefone visível REPROVA.
+- **THUMBNAIL DE VÍDEO / CHAMADA DE MATÉRIA**: capa de YouTube, headline sobreposta ("MELHOR HATCH 2024?", "TESTE COMPLETO"), preço ou número grande sobre o carro — REPROVE.
+- Colagem/montagem com várias fotos numa só (antes/depois, comparativo).
+- Marca d'água ou logo GRANDE cobrindo mais de ~10% do carro. Marca d'água de site pequena e discreta num canto é tolerável; logo de revenda, telefone ou faixa promocional NUNCA são.
 
-Em dúvida, REJEITE. Melhor zero foto aprovada que uma foto errada.
+Em dúvida, REPROVE. Melhor zero foto que uma foto errada.
 
-Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (índices das aprovadas), MÁXIMO ${cap} itens, em ordem do mais representativo pro menos.`,
+Retorne EXCLUSIVAMENTE este JSON, com UMA entrada por foto, na ordem de 1 a ${images.length}:
+{"fotos":[{"n":1,"ok":true,"anos":[2006,2013],"cor":"prata","nota":8},{"n":2,"ok":false,"motivo":"sedã"}]}
+
+- "ok": true SÓ se a foto passar em TODOS os critérios acima.
+- "anos": [primeiro, último] ano em que ESSA geração exata foi vendida NOVA NO BRASIL (não a produção mundial — a mesma geração chega ao Brasil anos depois, e é isso que separa o carro certo do errado). Obrigatório quando ok=true: é assim que conferimos o ano.
+- "cor": cor predominante ${isExternal ? 'da pintura' : 'do revestimento interno'}, uma palavra.
+- "nota": 0 a 10, o quanto a foto é limpa e representativa.
+- "motivo": 2 a 4 palavras, só quando ok=false.`,
     },
     ...images.map(img => ({
       type: 'image_url',
@@ -213,7 +305,7 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
     const rodada = await client.chat.completions.create({
       model: VISION_MODEL,
       temperature: 0.1,
-      max_tokens: 150,
+      max_tokens: 600,
       response_format: { type: 'json_object' },
       messages: [{ role: 'user', content }],
     }).withResponse();
@@ -226,6 +318,17 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
     // NUNCA numa mensagem de TPM (por minuto). Sem isso, um 429 de TPM casava por
     // acidente (ex.: o "7m" do org-id) e marcava TPD falso, matando a rodada.
     const isTPD = /per day|\(TPD\)|\(RPD\)/i.test(msg) && !/per min|\(TPM\)/i.test(msg);
+
+    // SALDO ZERADO não é rate limit, mas a OpenAI manda como 429 ("You have no
+    // credits remaining"). Sem esta cláusula ele caía no retry de TPM: 5 esperas
+    // com backoff por view, ~20s jogados fora e o log dizendo "TPM" pra um erro
+    // que nenhuma espera resolve. Aborta a visão de uma vez — o passe de
+    // background lê isVisionAborted() e para.
+    if (/no credits remaining|insufficient_quota|exceeded your current quota|check your plan and billing/i.test(msg)) {
+      _visionAborted = true;
+      console.error('[validator] ⛔ saldo da conta zerado — abortando a visão (adicione créditos)');
+      throw new Error('saldo da conta de visão zerado');
+    }
 
     // TPD esgotou → marca a sessão e desiste deste view.
     if (is429 && isTPD) {
@@ -283,16 +386,7 @@ Retorne EXCLUSIVAMENTE este JSON: {"aprovadas":[1,3]} — array de números (ín
   });
 
   const text = completion.choices?.[0]?.message?.content || '{}';
-  try {
-    const json = JSON.parse(text);
-    const arr = Array.isArray(json.aprovadas) ? json.aprovadas : [];
-    return arr
-      .map(n => Number(n) - 1)
-      .filter(i => Number.isInteger(i) && i >= 0 && i < images.length)
-      .slice(0, cap);
-  } catch {
-    return [];
-  }
+  return _selecionaAprovadas(text, images, cap, ano, view);
 }
 
 // Valida uma view: lote os candidatos em grupos de MAX_IMAGES_PER_CALL e mescla

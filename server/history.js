@@ -62,12 +62,26 @@ export async function saveConsulta({ id, client, result }) {
 }
 
 // Colunas leves pra listagem/agregação (sem os jsonb grandes).
-const LIST_COLS = 'id, created_at, client_name, client_segment, ok, orcamento_min, orcamento_max, tipos, total_resultados, mes_referencia, top_models';
+const LIST_COLS = ['id', 'created_at', 'client_name', 'client_segment', 'ok',
+  'orcamento_min', 'orcamento_max', 'tipos', 'total_resultados', 'mes_referencia',
+  'top_models', 'cliente_id'].map(c => 'c.' + c).join(', ');
 
 // Lista as consultas mais recentes (resumo, sem briefing/top completos).
+//
+// O join com `clientes` traz o nome do cadastro pra que a lista do CRM saiba
+// distinguir consulta vinculada de consulta solta — é `cliente_nome` que decide
+// se a linha mostra "vincular" ou o nome da ficha. É left join porque a imensa
+// maioria das consultas antigas nunca foi vinculada, e elas têm que continuar
+// aparecendo.
+//
+// Requer `clientes-schema.sql` aplicado: sem a tabela, o join derruba a
+// listagem inteira. Aplique o schema ANTES de subir esta versão.
 export async function listConsultas({ limit = 50 } = {}) {
   return q(
-    `select ${LIST_COLS} from consultas order by created_at desc limit $1`,
+    `select ${LIST_COLS}, cl.nome as cliente_nome
+       from consultas c
+       left join clientes cl on cl.id = c.cliente_id
+      order by c.created_at desc limit $1`,
     [limit]
   );
 }

@@ -283,6 +283,110 @@ cd /opt/technik/server && node scripts/aplicar-schema.mjs auth-schema.sql
 Idempotente (tudo é `if not exists`), então rodar de novo não faz mal. Use este
 em vez do `criar-usuario.mjs` quando não quiser mexer em senha de ninguém.
 
+### Cadastro de clientes — aplique ANTES de subir o código
+
+```bash
+cd /opt/technik/server && node scripts/aplicar-schema.mjs clientes-schema.sql
+```
+
+Este é o único schema do projeto cuja ORDEM importa. `listConsultas` passou a
+fazer `left join clientes`, então com o código novo no ar e a tabela faltando o
+**histórico inteiro do CRM devolve 503** — não é degradação parcial, a aba não
+abre. Rode o schema primeiro, depois `git pull` e `pm2 restart`.
+
+Ele também acrescenta `cliente_id` em `consultas` e `rascunhos`; ambas nuláveis,
+então nada do histórico existente precisa ser migrado — as consultas antigas
+seguem funcionando sem cliente até alguém vinculá-las à mão pelo CRM.
+
+### Backup do Postgres pro R2
+
+O banco tem telefone e e-mail dos compradores do cliente. Perder isso não é
+perder histórico — é perder dado pessoal de terceiros, que a gente se
+comprometeu a guardar.
+
+**Bucket separado, e privado.** O `car-images` é servido por um domínio público
+(`pub-*.r2.dev`): dump ali dentro é telefone de cliente atrás de uma URL. Crie
+`technik-backups` no painel do R2 com acesso público **desligado**, e de
+preferência um token de API escopado só nele:
+
+```bash
+# no .env da VPS
+R2_BACKUP_BUCKET=technik-backups
+R2_BACKUP_ACCESS_KEY_ID=...        # opcional; cai pras credenciais principais
+R2_BACKUP_SECRET_ACCESS_KEY=...
+BACKUP_MANTER=30                   # quantos manter (default 30)
+BACKUP_PASSPHRASE=...              # OPCIONAL: cifra o dump (AES-256-GCM)
+```
+
+Sobre a `BACKUP_PASSPHRASE`: se você definir, guarde-a **fora da VPS**. Perder a
+passphrase é perder todos os backups cifrados — para uma operação de uma pessoa,
+esse risco compete de verdade com o risco que a cifra evita. Bucket privado já é
+o grosso da proteção.
+
+Manual:
+
+```bash
+cd /opt/technik/server
+npm run backup              # dumpa, confere e sobe
+npm run backup:verificar    # baixa o mais recente e prova que abre
+node scripts/backup-db.mjs --listar
+```
+
+Diário, às 3h:
+
+```bash
+crontab -e
+0 3 * * * cd /opt/technik/server && /usr/bin/node scripts/backup-db.mjs >> /var/log/technik-backup.log 2>&1
+```
+
+O script **recusa** subir um dump que não abra no `pg_restore --list` ou que não
+contenha `clientes`, `consultas`, `usuarios` e `rascunhos` — é o que pega o caso
+de ter apontado pro banco errado, que é o modo de falha que passa meses sem
+ninguém notar. E só apaga backup antigo depois que o novo subiu e foi conferido.
+
+#### Restaurar
+
+```bash
+cd /opt/technik/server
+node scripts/backup-db.mjs --listar
+node scripts/backup-db.mjs --baixar postgres/technik-2026-08-23T03-00.dump
+# se estiver cifrado:
+node scripts/backup-db.mjs --decifrar technik-2026-08-23T03-00.dump.enc
+
+createdb technik_restaurado
+pg_restore --no-owner --no-privileges -d "postgresql://.../technik_restaurado" technik-….dump
+```
+
+Restaure num banco **novo** e confira antes de apontar a aplicação pra ele.
+
+**A versão do `pg_dump` tem que bater com a do servidor.** Cliente mais velho que
+o servidor recusa dumpar; cliente mais novo dumpa, mas mete `SET
+transaction_timeout` no arquivo e o restore num servidor 16 reclama. A VPS roda
+PG16, então use o cliente 16.
+
+#### Testar o backup
+
+`scripts/test-backup.mjs` faz o ciclo inteiro contra um Postgres e um S3
+descartáveis, incluindo restaurar num banco vazio e conferir que as linhas
+voltaram. Não roda sozinho — precisa dos dois serviços:
+
+```bash
+docker network create technik-bkp
+docker run -d --name tk-pg --network technik-bkp -e POSTGRES_PASSWORD=segredo -e POSTGRES_DB=technik postgres:16
+docker run -d --name tk-minio --network technik-bkp -e MINIO_ROOT_USER=chave -e MINIO_ROOT_PASSWORD=segredo123 minio/minio server /data
+docker exec tk-pg psql -U postgres -c 'create database technik_restore'
+
+docker run --rm --network technik-bkp -v "$PWD:/app" -w /app/server \
+  -e DATABASE_URL=postgresql://postgres:segredo@tk-pg:5432/technik \
+  -e RESTORE_URL=postgresql://postgres:segredo@tk-pg:5432/technik_restore \
+  -e R2_ENDPOINT=http://tk-minio:9000 -e R2_ACCOUNT_ID=fake \
+  -e R2_ACCESS_KEY_ID=chave -e R2_SECRET_ACCESS_KEY=segredo123 \
+  -e R2_BACKUP_BUCKET=technik-backups \
+  <imagem com node 22 + postgresql-client-16> node scripts/test-backup.mjs
+```
+
+É repetível: ele zera os dois bancos e o bucket antes de começar.
+
 ### Monitor de consumo das APIs
 
 O painel fica em **CRM → Consumo das APIs** e lê `GET /api/admin/usage`. Pra

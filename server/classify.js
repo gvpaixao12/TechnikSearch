@@ -322,6 +322,22 @@ function normTrimToken(t) {
 // "Panamera 4" e "Cayenne 4S" são tração integral, não motor.
 const ENGINE_BADGE = /^\d{2,3}[a-z]?$/i;
 
+// Tokens de ACABAMENTO em QUALQUER posicao do nome FIPE. `baseModelo` so olha
+// o que vem ANTES da especificacao, e no formato mais comum da FIPE o trim vem
+// DEPOIS ("Golf 2.0/ 2.0 Mi Flex Comfortline Aut." -> versao "Golf", com o trim
+// perdido no meio do motor). Aqui varremos a string inteira, que e o que o
+// portao de visao precisa pra saber que o alvo e o Comfortline, nao um Golf
+// qualquer.
+export function extractTrim(modelo) {
+  const tokens = String(modelo || '').split(/\s+/).filter(Boolean);
+  const hits = [];
+  for (let i = 1; i < tokens.length; i++) {
+    const t = normTrimToken(tokens[i]);
+    if (TRIM_TOKENS.has(t)) hits.push(tokens[i].replace(/[.,]+$/, ''));
+  }
+  return hits.join(' ');
+}
+
 export function baseModelo(modelo) {
   const { versao } = splitModelo(modelo);
   const tokens = versao.split(/\s+/).filter(Boolean);

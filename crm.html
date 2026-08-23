@@ -193,8 +193,129 @@
     user-select: all;
   }
 
+  /* Histórico: um cartão colapsável por cliente. O agrupamento é o ponto — a
+     pergunta que se faz aqui é "o que eu já mostrei pro fulano?", e não "o que
+     aconteceu na terça". */
+  .filtro-hist { margin-bottom: 15px; }
+  .filtro-hist input {
+    width: 100%; box-sizing: border-box; padding: 10px 14px;
+    font: inherit; font-size: 14px;
+    border: 1px solid var(--tk-bg-3); border-radius: 9px;
+    background: var(--tk-bg); color: var(--tk-ink);
+  }
+  .filtro-hist input:focus { outline: none; border-color: var(--tk-primary); }
+
+  .grupo {
+    background: var(--tk-bg); border: 1px solid var(--tk-bg-3);
+    border-radius: 12px; margin-bottom: 11px; overflow: hidden;
+  }
+  .grupo .cabeca {
+    display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    width: 100%; box-sizing: border-box; padding: 15px 19px;
+    font: inherit; text-align: left;
+    background: none; border: none; color: var(--tk-ink); cursor: pointer;
+  }
+  .grupo .cabeca:hover { background: var(--tk-bg-2); }
+  .grupo .nome { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+  .grupo .resumo { font-size: 12.5px; color: var(--tk-muted); margin-top: 3px; }
+  .grupo .seta { color: var(--tk-muted); transition: transform .15s; }
+  .grupo.aberto .seta { transform: rotate(90deg); }
+
+  .consulta {
+    display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    padding: 13px 19px; border-top: 1px solid var(--tk-bg-3);
+    color: inherit; text-decoration: none;
+  }
+  .consulta:hover { background: var(--tk-bg-2); }
+  .consulta .quando {
+    font-family: 'Cascadia Code', Consolas, monospace;
+    font-size: 12.5px; font-weight: 700; letter-spacing: -.01em;
+  }
+  .consulta .perfil { font-size: 12.5px; color: var(--tk-secondary); margin-left: 8px; }
+  .consulta .meta {
+    margin-top: 4px; font-family: 'Cascadia Code', Consolas, monospace;
+    font-size: 11px; color: var(--tk-muted);
+  }
+  .consulta .carros {
+    margin-top: 6px; font-size: 13px; font-weight: 500;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .consulta .abrir { font-size: 12.5px; color: var(--tk-muted); white-space: nowrap; }
+  .consulta:hover .abrir { color: var(--tk-primary); }
+  /* A linha do histórico virou duas colunas: o link (que leva pro /busca) e a
+     vinculação, que é um botão. Botão dentro de <a> é HTML inválido, daí o
+     wrapper. */
+  .linha-consulta { display: flex; align-items: stretch; border-top: 1px solid var(--tk-bg-3); }
+  .linha-consulta .consulta { flex: 1; min-width: 0; border-top: none; }
+  .vincular-wrap {
+    display: flex; align-items: center; padding: 0 14px 0 4px;
+    border-left: 1px solid var(--tk-bg-3);
+  }
+  button.vincular {
+    font: inherit; font-size: 12px; font-weight: 600;
+    padding: 5px 11px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+    background: none; color: var(--tk-muted);
+    border: 1px dashed var(--tk-bg-3);
+  }
+  button.vincular:hover { border-color: var(--tk-primary); color: var(--tk-primary); }
+  button.vincular.ligado {
+    border-style: solid; border-color: var(--tk-primary-3);
+    background: var(--tk-primary-3); color: var(--tk-primary);
+  }
+
+  /* Escolha de cliente no modal de vinculação, e também na lista de clientes. */
+  .opcoes-cliente { max-height: 260px; overflow-y: auto; margin: 0 0 14px; }
+  .opcao-cliente {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    width: 100%; box-sizing: border-box; padding: 10px 13px; margin-bottom: 6px;
+    font: inherit; text-align: left; cursor: pointer;
+    background: var(--tk-bg-2); border: 1px solid transparent;
+    border-radius: 9px; color: var(--tk-ink);
+  }
+  .opcao-cliente:hover { border-color: var(--tk-primary); }
+  .opcao-cliente.atual { border-color: var(--tk-primary); background: var(--tk-primary-3); }
+  .opcao-cliente .n { font-size: 14px; font-weight: 600; }
+  .opcao-cliente .c { font-size: 12px; color: var(--tk-muted); margin-top: 2px; }
+
+  /* Ficha do cliente: substitui a lista dentro do mesmo painel. Não é modal
+     porque o histórico dele não cabe num. */
+  .voltar {
+    font: inherit; font-size: 13px; padding: 0; margin-bottom: 16px;
+    background: none; border: none; color: var(--tk-muted); cursor: pointer;
+  }
+  .voltar:hover { color: var(--tk-primary); }
+  .ficha-topo {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+    padding: 22px; margin-bottom: 20px;
+    background: var(--tk-bg); border: 1px solid var(--tk-bg-3); border-radius: 12px;
+  }
+  .ficha-topo h2 { font-size: 21px; margin: 0 0 8px; letter-spacing: -.02em; }
+  .ficha-contato { font-size: 13.5px; color: var(--tk-muted); line-height: 1.7; }
+  .ficha-contato a { color: var(--tk-primary); }
+  .ficha-notas {
+    margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--tk-bg-3);
+    font-size: 13.5px; line-height: 1.6; white-space: pre-wrap;
+  }
+  .ficha-botoes { display: flex; gap: 8px; flex-shrink: 0; }
+  .ficha-secao {
+    font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--tk-muted); margin: 0 0 11px;
+  }
+  .aviso-exclusao {
+    padding: 12px 15px; margin: 0 0 16px; border-radius: 9px;
+    background: #FDECEA; border: 1px solid #F5C6C0; color: #8A2A1E;
+    font-size: 13px; line-height: 1.55;
+  }
+
+  .sem-res {
+    display: inline-block; margin-left: 8px; padding: 1px 6px;
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+    border: 1px solid #C0392B; color: #C0392B; border-radius: 4px;
+  }
+
   @media (prefers-color-scheme: dark) {
     .aviso-pedidos { background: #33290F; border-color: #5C4A1A; color: #E8D19A; }
+    .aviso-exclusao { background: #3A1E1A; border-color: #6B332B; color: #F0B5AC; }
     .marca-temp { background: #4A3A10; color: #E8C77A; }
   }
 </style>
@@ -216,14 +337,17 @@
 
   <nav class="abas" id="abas">
     <button class="aba ativa" data-aba="inicio">Início</button>
+    <button class="aba" data-aba="historico">Histórico</button>
+    <button class="aba" data-aba="clientes">Clientes</button>
     <button class="aba" data-aba="uso">Uso</button>
     <button class="aba" data-aba="usuarios" id="aba-btn-usuarios" hidden>Usuários</button>
   </nav>
 
   <section class="painel" id="painel-inicio">
   <p class="sub">
-    A autenticação está no ar. Os módulos abaixo ainda não foram construídos —
-    o plano de cada um está em <code>PLANO-DESKTOP-CRM.md</code>.
+    O primeiro corte do CRM está de pé: histórico e cadastro de cliente. O que
+    ficou de fora — follow-up de lead, status, próximo contato — está em
+    <code>PLANO-DESKTOP-CRM.md</code>.
   </p>
 
   <div class="grade">
@@ -232,20 +356,62 @@
       <h2>Busca</h2>
       <p>O recomendador de carros, que já existe. É o que o app desktop abre.</p>
     </a>
-    <div class="cartao">
-      <span class="tag">A construir</span>
+    <a class="cartao pronto" href="#historico">
+      <span class="tag">Pronto</span>
       <h2>Histórico</h2>
-      <p>Consultas por cliente, briefings e o que foi recomendado. Os dados já
-         estão na tabela <code>consultas</code> — falta a tela.</p>
-    </div>
-    <div class="cartao">
-      <span class="tag">A construir</span>
+      <p>Consultas por cliente, com o briefing e o que foi recomendado. Ficava
+         dentro da busca; mudou pra cá porque aquela tela o cliente final vê.</p>
+    </a>
+    <a class="cartao pronto" href="#clientes">
+      <span class="tag">Pronto</span>
       <h2>Clientes</h2>
-      <p>Ficha com contato e histórico. Precisa da tabela <code>clientes</code> e
-         da vinculação com as consultas antigas.</p>
-    </div>
+      <p>Ficha com contato, notas e o histórico da pessoa. As consultas antigas
+         se ligam à ficha uma a uma, pelo Histórico — sem adivinhar por nome.</p>
+    </a>
   </div>
 
+  </section>
+
+  <section class="painel" id="painel-historico" hidden>
+  <section id="historico">
+    <div class="titulo-secao">
+      <h2>Histórico de consultas</h2>
+      <button class="acao leve" id="atualizar-historico">Atualizar</button>
+    </div>
+    <p class="sub" id="resumo-historico" style="margin:0 0 16px"></p>
+    <div class="filtro-hist">
+      <input id="filtro-historico" placeholder="Filtrar por cliente ou perfil…"
+             autocomplete="off" spellcheck="false" />
+    </div>
+    <div id="lista-historico"><p class="vazio">Carregando…</p></div>
+  </section>
+  </section>
+
+  <section class="painel" id="painel-clientes" hidden>
+  <section id="clientes">
+    <div id="lista-clientes-wrap">
+      <div class="titulo-secao">
+        <h2>Clientes</h2>
+        <button class="acao" id="novo-cliente">Novo cliente</button>
+      </div>
+      <p class="sub" id="resumo-clientes" style="margin:0 0 16px"></p>
+      <div class="filtro-hist">
+        <input id="filtro-clientes" placeholder="Filtrar por nome, telefone ou e-mail…"
+               autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="tabela-wrap">
+        <table>
+          <thead>
+            <tr><th>Nome</th><th>Contato</th><th class="num">Consultas</th><th>Última</th></tr>
+          </thead>
+          <tbody id="linhas-clientes">
+            <tr><td colspan="4" class="vazio">Carregando…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div id="ficha-cliente" hidden></div>
+  </section>
   </section>
 
   <section class="painel" id="painel-uso" hidden>
@@ -314,7 +480,7 @@
   // ─── Abas ──────────────────────────────────────────────────────────────────
   // O hash da URL é a fonte da verdade da aba aberta: assim o F5 (e o voltar do
   // navegador) devolve a mesma tela, em vez de jogar de volta no Início.
-  var ABAS = ['inicio', 'uso', 'usuarios'];
+  var ABAS = ['inicio', 'historico', 'clientes', 'uso', 'usuarios'];
   var jaCarregou = {};
 
   function mostraAba(nome) {
@@ -336,6 +502,8 @@
     // API por tela que ninguém olhou. O consumo recarrega toda vez (o saldo do
     // Serper tem cache de 5 min no servidor); a lista de usuários, só na
     // primeira, porque ela se recarrega sozinha depois de cada ação.
+    if (nome === 'historico' && !jaCarregou.historico) { jaCarregou.historico = true; carregaHistorico(); }
+    if (nome === 'clientes' && !jaCarregou.clientes) { jaCarregou.clientes = true; carregaClientes(); }
     if (nome === 'uso') carregaConsumo(false);
     if (nome === 'usuarios' && !jaCarregou.usuarios) { jaCarregou.usuarios = true; carrega(); }
   }
@@ -761,6 +929,486 @@
   document.getElementById('atualizar-consumo').addEventListener('click', function () {
     carregaConsumo(true);
   });
+
+  // ─── Histórico de consultas ──────────────────────────────────
+  // Mora aqui, e não na busca, por privacidade: a tela da busca é a que o cliente
+  // final vê por cima do ombro, e esta lista tem nome, perfil e orçamento de
+  // todos os outros compradores. A busca ficou só com os rascunhos.
+  //
+  // Aqui a lista só lista: clicar entrega pro recomendador
+  // (/busca#consulta=<id>), que é quem sabe desenhar a ficha dos carros —
+  // duplicar aquela tela no CRM seria manter dois desenhos do mesmo resultado.
+  var listaHist = document.getElementById('lista-historico');
+  var resumoHist = document.getElementById('resumo-historico');
+  var filtroHist = document.getElementById('filtro-historico');
+  var consultas = [];
+  var abertos = {};   // overrides manuais de abrir/fechar, por cliente
+
+  var TIPO_ROTULO = {
+    suv: 'SUV', sedan: 'Sedan', hatch: 'Hatch',
+    pickup: 'Picape', coupe: 'Esportivo', minivan: 'Minivan',
+  };
+
+  var brl = function (n) { return 'R$ ' + Number(n || 0).toLocaleString('pt-BR'); };
+  var quando = function (iso) {
+    return new Date(iso).toLocaleString('pt-BR', {
+      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+  };
+
+  // `preserva` mantém quais grupos estão abertos. Recarregar depois de vincular
+  // uma consulta fecha tudo se não preservar — e vincular é justamente o que se
+  // faz várias vezes seguidas dentro do mesmo grupo, então perder o lugar a cada
+  // clique inviabiliza a tarefa. Já o botão "Atualizar" reseta, que é o que se
+  // espera de um recarregamento pedido à mão.
+  async function carregaHistorico(preserva) {
+    if (!preserva) listaHist.innerHTML = '<p class="vazio">Carregando…</p>';
+    try {
+      var r = await fetch('/api/consultas?limit=200');
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.reason || 'falhou');
+      consultas = d.consultas || [];
+      if (!preserva) abertos = {};
+      desenhaHistorico();
+    } catch (e) {
+      resumoHist.textContent = '';
+      listaHist.innerHTML = '<p class="vazio">Não consegui carregar o histórico: ' +
+        esc(e.message) + '</p>';
+    }
+  }
+
+  function desenhaHistorico() {
+    var q = filtroHist.value.trim().toLowerCase();
+    var filtradas = !q ? consultas : consultas.filter(function (c) {
+      return ((c.client_name || '') + ' ' + (c.client_segment || '')).toLowerCase().indexOf(q) !== -1;
+    });
+
+    resumoHist.textContent = consultas.length
+      ? consultas.length + ' consulta' + (consultas.length !== 1 ? 's' : '') + ' registrada' +
+        (consultas.length !== 1 ? 's' : '') + '. Clique numa linha pra reabrir a recomendação na busca.'
+      : '';
+
+    if (!consultas.length) {
+      listaHist.innerHTML = '<p class="vazio">Nenhuma consulta registrada ainda.</p>';
+      return;
+    }
+    if (!filtradas.length) {
+      listaHist.innerHTML = '<p class="vazio">Nenhum cliente casa com “' +
+        esc(filtroHist.value.trim()) + '”.</p>';
+      return;
+    }
+
+    // Agrupa por cliente. A API devolve ordenado por data desc, então a primeira
+    // consulta de cada grupo é a mais recente dele — e é por ela que os grupos se
+    // ordenam entre si, o que cai de graça na ordem de inserção das chaves.
+    var mapa = {};
+    var ordem = [];
+    filtradas.forEach(function (c) {
+      var nome = (c.client_name || '').trim() || 'Sem nome';
+      if (!mapa[nome]) { mapa[nome] = []; ordem.push(nome); }
+      mapa[nome].push(c);
+    });
+
+    // Filtrando, os grupos abrem por padrão (quem filtra quer ver o que achou);
+    // sem filtro, começam fechados pra lista caber na tela.
+    var padraoAberto = !!q;
+
+    listaHist.innerHTML = ordem.map(function (nome) {
+      var itens = mapa[nome];
+      var aberto = nome in abertos ? abertos[nome] : padraoAberto;
+      var carros = itens.reduce(function (n, c) { return n + (c.total_resultados || 0); }, 0);
+
+      return '<div class="grupo ' + (aberto ? 'aberto' : '') + '">' +
+        '<button class="cabeca" data-grupo="' + esc(nome) + '">' +
+          '<span>' +
+            '<span class="nome">' + esc(nome) + '</span>' +
+            '<span class="resumo">' + itens.length + ' consulta' + (itens.length !== 1 ? 's' : '') +
+              ' · ' + carros + ' carro' + (carros !== 1 ? 's' : '') +
+              ' recomendado' + (carros !== 1 ? 's' : '') +
+              ' · última em ' + esc(quando(itens[0].created_at)) +
+            '</span>' +
+          '</span>' +
+          '<span class="seta">›</span>' +
+        '</button>' +
+        (aberto ? itens.map(linhaConsulta).join('') : '') +
+      '</div>';
+    }).join('');
+  }
+
+  function linhaConsulta(c) {
+    var meta = [];
+    meta.push(c.total_resultados + ' resultado' + (c.total_resultados !== 1 ? 's' : ''));
+    if (c.orcamento_min != null && c.orcamento_max != null) {
+      meta.push(brl(c.orcamento_min) + '–' + brl(c.orcamento_max));
+    }
+    if (c.tipos && c.tipos.length) {
+      meta.push(c.tipos.map(function (t) { return TIPO_ROTULO[t] || t; }).join(', '));
+    }
+
+    var carros = '';
+    if (c.top_models && c.top_models.length) {
+      carros = '<div class="carros">' + esc(c.top_models.slice(0, 3).join('  ·  ')) +
+        (c.top_models.length > 3 ? '  +' + (c.top_models.length - 3) : '') + '</div>';
+    }
+
+    // O botão de vincular é o que transforma `client_name` (texto digitado) em
+    // identidade. Vinculado, mostra o nome da ficha; solto, convida.
+    var lig = c.cliente_id
+      ? '<button class="vincular ligado" data-consulta="' + esc(c.id) + '" title="Trocar ou desfazer a vinculação">' + esc(c.cliente_nome || 'vinculado') + '</button>'
+      : '<button class="vincular" data-consulta="' + esc(c.id) + '" title="Vincular esta consulta a um cliente">+ vincular</button>';
+
+    return '<div class="linha-consulta">' +
+      '<a class="consulta" href="/busca#consulta=' + encodeURIComponent(c.id) + '">' +
+        '<span style="min-width:0">' +
+          '<span class="quando">' + esc(quando(c.created_at)) + '</span>' +
+          (c.client_segment ? '<span class="perfil">' + esc(c.client_segment) + '</span>' : '') +
+          (c.ok === false ? '<span class="sem-res">sem resultado</span>' : '') +
+          '<div class="meta">' + esc(meta.join('  ·  ')) + '</div>' +
+          carros +
+        '</span>' +
+        '<span class="abrir">abrir ›</span>' +
+      '</a>' +
+      '<span class="vincular-wrap">' + lig + '</span>' +
+    '</div>';
+  }
+
+  listaHist.addEventListener('click', function (e) {
+    var v = e.target.closest ? e.target.closest('.vincular') : null;
+    if (v) {
+      var alvo = consultas.filter(function (c) { return c.id === v.dataset.consulta; })[0];
+      if (alvo) modalVincular(alvo);
+      return;
+    }
+    var b = e.target.closest ? e.target.closest('.cabeca') : null;
+    if (!b) return;
+    var nome = b.dataset.grupo;
+    var padraoAberto = !!filtroHist.value.trim();
+    abertos[nome] = !(nome in abertos ? abertos[nome] : padraoAberto);
+    desenhaHistorico();
+  });
+
+  // Mudar o filtro zera os overrides: o padrão de abrir/fechar mudou junto.
+  filtroHist.addEventListener('input', function () { abertos = {}; desenhaHistorico(); });
+  document.getElementById('atualizar-historico').addEventListener('click', function () { carregaHistorico(); });
+
+  // ─── Clientes ──────────────────────────────────────────────────────────
+  // A identidade que o `client_name` de texto nunca teve: "João", "joao silva" e
+  // "Sr. João" são três strings, mas uma pessoa só. A ficha é o que dá um lugar
+  // pra essa pessoa existir; a vinculação (abaixo) é o que amarra o histórico
+  // antigo nela, um clique de cada vez.
+  var listaClientes = document.getElementById('linhas-clientes');
+  var resumoClientes = document.getElementById('resumo-clientes');
+  var filtroClientes = document.getElementById('filtro-clientes');
+  var wrapClientes = document.getElementById('lista-clientes-wrap');
+  var fichaEl = document.getElementById('ficha-cliente');
+  var clientes = [];
+
+  var dataCurta = function (iso) {
+    if (!iso) return '—';
+    return new Date(iso).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
+  };
+
+  async function carregaClientes() {
+    mostraLista();
+    listaClientes.innerHTML = '<tr><td colspan="4" class="vazio">Carregando…</td></tr>';
+    try {
+      var r = await fetch('/api/clientes');
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.reason || 'falhou');
+      clientes = d.clientes || [];
+      desenhaClientes();
+    } catch (e) {
+      resumoClientes.textContent = '';
+      listaClientes.innerHTML = '<tr><td colspan="4" class="vazio">Não consegui carregar: ' +
+        esc(e.message) + '</td></tr>';
+    }
+  }
+
+  function desenhaClientes() {
+    var q = filtroClientes.value.trim().toLowerCase();
+    var vis = !q ? clientes : clientes.filter(function (c) {
+      return ((c.nome || '') + ' ' + (c.telefone || '') + ' ' + (c.email || '')).toLowerCase().indexOf(q) !== -1;
+    });
+
+    var vinculadas = clientes.reduce(function (n, c) { return n + (c.total_consultas || 0); }, 0);
+    resumoClientes.textContent = clientes.length
+      ? clientes.length + ' cliente' + (clientes.length !== 1 ? 's' : '') + ' no cadastro · ' +
+        vinculadas + ' consulta' + (vinculadas !== 1 ? 's' : '') + ' já vinculada' + (vinculadas !== 1 ? 's' : '')
+      : '';
+
+    if (!clientes.length) {
+      listaClientes.innerHTML = '<tr><td colspan="4" class="vazio">' +
+        'Nenhum cliente cadastrado. Crie um aqui, ou vincule uma consulta do Histórico.</td></tr>';
+      return;
+    }
+    if (!vis.length) {
+      listaClientes.innerHTML = '<tr><td colspan="4" class="vazio">Nada casa com “' +
+        esc(filtroClientes.value.trim()) + '”.</td></tr>';
+      return;
+    }
+
+    listaClientes.innerHTML = vis.map(function (c) {
+      var contato = [c.telefone, c.email].filter(Boolean).map(esc).join(' · ') || '—';
+      return '<tr data-cliente="' + esc(c.id) + '" style="cursor:pointer">' +
+        '<td><strong>' + esc(c.nome) + '</strong></td>' +
+        '<td>' + contato + '</td>' +
+        '<td class="num">' + (c.total_consultas || 0) + '</td>' +
+        '<td>' + esc(dataCurta(c.ultima_consulta)) + '</td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  function mostraLista() { wrapClientes.hidden = false; fichaEl.hidden = true; }
+
+  listaClientes.addEventListener('click', function (e) {
+    var tr = e.target.closest ? e.target.closest('tr[data-cliente]') : null;
+    if (tr) abreFicha(tr.dataset.cliente);
+  });
+  filtroClientes.addEventListener('input', desenhaClientes);
+  document.getElementById('novo-cliente').addEventListener('click', function () { formCliente(null); });
+
+  // ── Ficha ───────────────────────────────────────────────────────────────
+  async function abreFicha(id) {
+    wrapClientes.hidden = true;
+    fichaEl.hidden = false;
+    fichaEl.innerHTML = '<p class="vazio">Carregando…</p>';
+    try {
+      var r = await fetch('/api/clientes/' + encodeURIComponent(id));
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.reason || 'falhou');
+      desenhaFicha(d.cliente);
+    } catch (e) {
+      fichaEl.innerHTML = '<button class="voltar" id="voltar-lista">‹ Todos os clientes</button>' +
+        '<p class="vazio">Não consegui abrir a ficha: ' + esc(e.message) + '</p>';
+    }
+  }
+
+  function desenhaFicha(c) {
+    var contato = [];
+    if (c.telefone) contato.push('<a href="tel:' + esc(c.telefone) + '">' + esc(c.telefone) + '</a>');
+    if (c.email) contato.push('<a href="mailto:' + esc(c.email) + '">' + esc(c.email) + '</a>');
+    contato.push('no cadastro desde ' + esc(dataCurta(c.criado_em)));
+
+    var cs = c.consultas || [];
+    var rs = c.rascunhos || [];
+
+    var histo = cs.length
+      ? '<div class="tabela-wrap"><table><thead><tr>' +
+          '<th>Quando</th><th>Perfil</th><th class="num">Resultados</th><th>Recomendados</th><th></th>' +
+        '</tr></thead><tbody>' +
+        cs.map(function (x) {
+          return '<tr>' +
+            '<td>' + esc(quando(x.created_at)) + '</td>' +
+            '<td>' + esc(x.client_segment || '—') + '</td>' +
+            '<td class="num">' + (x.total_resultados || 0) + '</td>' +
+            '<td>' + esc((x.top_models || []).slice(0, 3).join(' · ') || '—') + '</td>' +
+            '<td class="acoes"><a class="abrir" href="/busca#consulta=' + encodeURIComponent(x.id) + '">abrir ›</a></td>' +
+          '</tr>';
+        }).join('') +
+        '</tbody></table></div>'
+      : '<p class="vazio" style="text-align:left;padding:0 0 6px">Nenhuma consulta vinculada ainda. ' +
+        'Vá no Histórico e use “+ vincular” nas consultas desta pessoa.</p>';
+
+    var rasc = rs.length
+      ? '<p class="ficha-secao" style="margin-top:24px">Rascunhos</p>' +
+        '<div class="tabela-wrap"><table><tbody>' +
+        rs.map(function (x) {
+          return '<tr><td>' + esc(x.client_name || 'Sem nome') + '</td>' +
+                 '<td>editado ' + esc(quando(x.updated_at || x.created_at)) + '</td></tr>';
+        }).join('') + '</tbody></table></div>'
+      : '';
+
+    fichaEl.innerHTML =
+      '<button class="voltar" id="voltar-lista">‹ Todos os clientes</button>' +
+      '<div class="ficha-topo">' +
+        '<div style="min-width:0">' +
+          '<h2>' + esc(c.nome) + '</h2>' +
+          '<div class="ficha-contato">' + contato.join('<br />') + '</div>' +
+          (c.notas ? '<div class="ficha-notas">' + esc(c.notas) + '</div>' : '') +
+        '</div>' +
+        '<div class="ficha-botoes">' +
+          '<button class="acao leve" id="editar-cliente">Editar</button>' +
+          '<button class="acao leve perigo" id="excluir-cliente">Excluir</button>' +
+        '</div>' +
+      '</div>' +
+      '<p class="ficha-secao">Histórico · ' + cs.length + ' consulta' + (cs.length !== 1 ? 's' : '') + '</p>' +
+      histo + rasc;
+
+    document.getElementById('editar-cliente').addEventListener('click', function () { formCliente(c); });
+    document.getElementById('excluir-cliente').addEventListener('click', function () { confirmaExclusao(c); });
+  }
+
+  fichaEl.addEventListener('click', function (e) {
+    if (e.target.id === 'voltar-lista') carregaClientes();
+  });
+
+  // ── Formulário (criar / editar) ─────────────────────────────────────────
+  function formCliente(c, nomeSugerido) {
+    var novo = !c;
+    abre('<h3>' + (novo ? 'Novo cliente' : 'Editar cliente') + '</h3>' +
+      '<p>Telefone e e-mail são dado pessoal de terceiros. Guarde o que você' +
+      ' realmente usa pra atender.</p>' +
+      '<p class="erro" id="erro-modal" style="display:none"></p>' +
+      '<label for="c-nome">Nome</label>' +
+      '<input id="c-nome" placeholder="ex: João Silva" value="' + esc(novo ? (nomeSugerido || '') : c.nome) + '" />' +
+      '<label for="c-tel">Telefone</label>' +
+      '<input id="c-tel" placeholder="ex: (11) 99999-0000" value="' + esc(novo ? '' : (c.telefone || '')) + '" />' +
+      '<label for="c-email">E-mail</label>' +
+      '<input id="c-email" placeholder="ex: joao@exemplo.com" value="' + esc(novo ? '' : (c.email || '')) + '" />' +
+      '<label for="c-notas">Notas</label>' +
+      '<input id="c-notas" placeholder="ex: quer trocar o carro da esposa também" value="' + esc(novo ? '' : (c.notas || '')) + '" />' +
+      '<div class="botoes">' +
+        '<button class="acao leve" id="cancelar-modal">Cancelar</button>' +
+        '<button class="acao" id="salvar-cliente">' + (novo ? 'Criar' : 'Salvar') + '</button>' +
+      '</div>');
+
+    document.getElementById('c-nome').focus();
+
+    document.getElementById('salvar-cliente').addEventListener('click', async function () {
+      var erroEl = document.getElementById('erro-modal');
+      erroEl.style.display = 'none';
+      var body = {
+        nome: document.getElementById('c-nome').value.trim(),
+        telefone: document.getElementById('c-tel').value.trim(),
+        email: document.getElementById('c-email').value.trim(),
+        notas: document.getElementById('c-notas').value.trim(),
+      };
+      if (!body.nome) {
+        erroEl.textContent = 'o nome é obrigatório';
+        erroEl.style.display = 'block';
+        return;
+      }
+      var r = await fetch('/api/clientes' + (novo ? '' : '/' + encodeURIComponent(c.id)), {
+        method: novo ? 'POST' : 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      var d = await r.json();
+      if (!d.ok) { erroEl.textContent = d.reason || 'não consegui salvar'; erroEl.style.display = 'block'; return; }
+      fecha();
+      if (novo) carregaClientes(); else abreFicha(c.id);
+    });
+  }
+
+  // ── Exclusão ────────────────────────────────────────────────────────────
+  // Excluir apaga a linha E o nome nas consultas ligadas (ver excluiCliente no
+  // servidor). Como não dá pra desfazer, o modal diz o número antes de perguntar.
+  function confirmaExclusao(c) {
+    var n = (c.consultas || []).length;
+    abre('<h3>Excluir ' + esc(c.nome) + '?</h3>' +
+      '<div class="aviso-exclusao">' +
+        'Some o cadastro (nome, telefone, e-mail, notas)' +
+        (n ? ' e o nome sai d' + (n === 1 ? 'a consulta vinculada' : 'as ' + n + ' consultas vinculadas') +
+             ', que continuam no histórico como “Sem nome”.' : '.') +
+        ' Não dá pra desfazer.' +
+      '</div>' +
+      '<p class="erro" id="erro-modal" style="display:none"></p>' +
+      '<div class="botoes">' +
+        '<button class="acao leve" id="cancelar-modal">Cancelar</button>' +
+        '<button class="acao" id="confirmar-exclusao">Excluir</button>' +
+      '</div>');
+
+    document.getElementById('confirmar-exclusao').addEventListener('click', async function () {
+      var erroEl = document.getElementById('erro-modal');
+      var r = await fetch('/api/clientes/' + encodeURIComponent(c.id), { method: 'DELETE' });
+      var d = await r.json();
+      if (!d.ok) { erroEl.textContent = d.reason || 'não consegui excluir'; erroEl.style.display = 'block'; return; }
+      fecha();
+      // O histórico mostra nome de cliente, então ficou velho.
+      jaCarregou.historico = false;
+      carregaClientes();
+    });
+  }
+
+  // ── Vinculação assistida ────────────────────────────────────────────────
+  // Chamada pelo botão na linha do histórico. Lista o cadastro pra escolher, e
+  // oferece criar a ficha já com o nome que foi digitado no atendimento — que é
+  // como a maioria das fichas vai nascer na prática.
+  async function modalVincular(consulta) {
+    var digitado = (consulta.client_name || '').trim();
+    abre('<h3>Vincular consulta</h3><p class="vazio">Carregando o cadastro…</p>');
+
+    var lista = [];
+    try {
+      var r = await fetch('/api/clientes');
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.reason || 'falhou');
+      lista = d.clientes || [];
+    } catch (e) {
+      abre('<h3>Vincular consulta</h3><p class="erro">Não consegui carregar o cadastro: ' +
+        esc(e.message) + '</p><div class="botoes"><button class="acao leve" id="cancelar-modal">Fechar</button></div>');
+      return;
+    }
+
+    // Quem tem o mesmo nome digitado sobe: é quase sempre a pessoa certa.
+    var alvo = digitado.toLowerCase();
+    lista.sort(function (a, b) {
+      var pa = (a.nome || '').toLowerCase() === alvo ? 0 : 1;
+      var pb = (b.nome || '').toLowerCase() === alvo ? 0 : 1;
+      return pa - pb || (a.nome || '').localeCompare(b.nome || '');
+    });
+
+    var opcoes = lista.length
+      ? lista.map(function (c) {
+          return '<button class="opcao-cliente' + (c.id === consulta.cliente_id ? ' atual' : '') + '" data-id="' + esc(c.id) + '">' +
+            '<span><span class="n">' + esc(c.nome) + '</span>' +
+            '<span class="c">' + esc([c.telefone, c.email].filter(Boolean).join(' · ') ||
+              (c.total_consultas || 0) + ' consulta' + ((c.total_consultas || 0) !== 1 ? 's' : '')) + '</span></span>' +
+            (c.id === consulta.cliente_id ? '<span class="c">vinculado</span>' : '') +
+          '</button>';
+        }).join('')
+      : '<p class="vazio" style="text-align:left;padding:6px 0">Cadastro vazio.</p>';
+
+    abre('<h3>Vincular consulta</h3>' +
+      '<p>' + (digitado
+        ? 'No atendimento foi digitado <strong>' + esc(digitado) + '</strong>. Escolha a ficha desta pessoa.'
+        : 'Esta consulta foi feita sem nome. Escolha a ficha da pessoa.') + '</p>' +
+      '<p class="erro" id="erro-modal" style="display:none"></p>' +
+      '<div class="opcoes-cliente" id="opcoes-cliente">' + opcoes + '</div>' +
+      '<div class="botoes">' +
+        '<button class="acao leve" id="cancelar-modal">Cancelar</button>' +
+        (consulta.cliente_id ? '<button class="acao leve perigo" id="desvincular">Desvincular</button>' : '') +
+        (digitado ? '<button class="acao" id="criar-desse-nome">Criar “' + esc(digitado) + '”</button>' : '') +
+      '</div>');
+
+    async function aplica(clienteId) {
+      var erroEl = document.getElementById('erro-modal');
+      var r = await fetch('/api/consultas/' + encodeURIComponent(consulta.id) + '/cliente', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cliente_id: clienteId }),
+      });
+      var d = await r.json();
+      if (!d.ok) {
+        if (erroEl) { erroEl.textContent = d.reason || 'não consegui vincular'; erroEl.style.display = 'block'; }
+        return;
+      }
+      fecha();
+      jaCarregou.clientes = false;   // a contagem por cliente mudou
+      carregaHistorico(true);
+    }
+
+    document.getElementById('opcoes-cliente').addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('.opcao-cliente') : null;
+      if (b) aplica(b.dataset.id);
+    });
+
+    var desv = document.getElementById('desvincular');
+    if (desv) desv.addEventListener('click', function () { aplica(null); });
+
+    var criar = document.getElementById('criar-desse-nome');
+    if (criar) criar.addEventListener('click', async function () {
+      var erroEl = document.getElementById('erro-modal');
+      var r = await fetch('/api/clientes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nome: digitado }),
+      });
+      var d = await r.json();
+      if (!d.ok) { erroEl.textContent = d.reason || 'não consegui criar'; erroEl.style.display = 'block'; return; }
+      aplica(d.cliente.id);
+    });
+  }
 </script>
 </body>
 </html>
