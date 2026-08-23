@@ -114,7 +114,12 @@ server {
     listen 80;
     server_name SEU_IP;          # ou SEU_DOMINIO.com
 
-    client_max_body_size 2m;
+    # 42m, e não os 2m que bastavam antes: o upload manual de fotos (catálogo e
+    # estoque) manda as imagens em base64 num JSON só, e o Express aceita 40mb
+    # nessas duas rotas. Com o teto baixo o nginx devolve 413 ANTES de a
+    # requisição chegar no app — some foto de celular e ninguém vê erro no log
+    # do pm2, porque o pedido nunca chegou lá.
+    client_max_body_size 42m;
 
     location / {
         proxy_pass http://127.0.0.1:3001;
