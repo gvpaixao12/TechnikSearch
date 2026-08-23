@@ -64,7 +64,7 @@ const TYPE_RULES = [
     // Audi E-TRON SUV (sem Sportback no nome) e E-TRON Sportback (que é variante SUV)
     /\be-tron\s+(performa|s\s+sportback|sportb|sportback)/i,
     // Land Rover
-    /\bevoque\b/i, /\bvelar\b/i, /\bdiscovery\b/i, /\bdefender\b/i, /\bsport\s*lr/i, /\brange\s*rover\b/i,
+    /\bevoque\b/i, /\bvelar\b/i, /\bdiscovery\d?\b/i, /\bdefender\b/i, /\bsport\s*lr/i, /\brange\s*rover\b/i,
     // Porsche
     /\bmacan\b/i, /\bcayenne\b/i,
     // Exóticos / premium SUV
@@ -173,6 +173,9 @@ const TYPE_RULES = [
 
   // ─── HATCH ─────────────────────────────────────────────────────────────
   { type: 'hatch', patterns: [
+    /\bv40\b/i,   // Volvo V40 — hatch. V60/V90 sao PERUAS e ficam de fora:
+    // o catalogo nao tem categoria de perua, e classificar como hatch ou
+    // sedan seria inventar. Melhor unknown que errado.
     /\bct\s?200h?\b/i,   // Lexus CT200h — hatch compacto
     /\bhatch\b/i,
     /\bonix\b(?!\s*plus|\s*sed)/i, /\bcobalt\s*hatch\b/i, /\bmeriva\b/i,
