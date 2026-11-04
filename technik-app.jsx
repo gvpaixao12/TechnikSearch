@@ -21,6 +21,26 @@ function fmtBRL(n) {
   return 'R$ ' + n.toLocaleString('pt-BR');
 }
 
+// Faixa de referência FIPE dos carros na tela ("jun–ago/2026"). O catálogo
+// mistura meses (cada leva de build grava o mês em que rodou) e o selo mostrava
+// só o do PRIMEIRO carro — dizia "agosto" com metade dos preços de junho.
+const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho',
+  'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+function faixaFipe(cars) {
+  const refs = [...new Set(cars.map(c => c.mesReferencia).filter(Boolean))]
+    .map(s => {
+      const m = String(s).trim().toLowerCase().match(/^(\S+)\s+de\s+(\d{4})$/);
+      const i = m ? MESES.indexOf(m[1]) : -1;
+      return i < 0 ? null : { ord: Number(m[2]) * 12 + i, mes: MESES[i].slice(0, 3), ano: m[2] };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.ord - b.ord);
+  if (!refs.length) return cars[0]?.mesReferencia || '';
+  const [a, b] = [refs[0], refs[refs.length - 1]];
+  if (a.ord === b.ord) return `${a.mes}/${a.ano}`;
+  return a.ano === b.ano ? `${a.mes}–${b.mes}/${b.ano}` : `${a.mes}/${a.ano}–${b.mes}/${b.ano}`;
+}
+
 // Faixa de orçamento (em MILHARES de R$). O campo de digitação aceita qualquer
 // valor até BUDGET_MAX (R$ 5 mi) — só no talo a faixa vira "sem teto" e o backend
 // ignora o limite superior. A barra usa um teto BASE (600) que cresce sozinho
@@ -29,6 +49,11 @@ function fmtBRL(n) {
 const BUDGET_MIN = 50;
 const BUDGET_MAX = 5000;        // teto do campo (R$ 5 mi); no talo = "sem teto"
 const BUDGET_SLIDER_BASE = 600; // teto padrão da barra (cresce se digitar mais)
+
+// Teto do slider de ano. Era 2025 fixo e o catálogo já tem 2026/2027: com
+// "ano máximo" ligado, os modelos novos ficavam inalcançáveis. A FIPE lista o
+// ano-modelo seguinte a partir do meio do ano, daí o +1.
+const ANO_TETO = new Date().getFullYear() + 1;
 
 // Reverte o briefing NORMALIZADO (rótulos em pt-BR de server/briefing.js) de volta
 // pro formato de formulário (códigos). Usado ao reabrir uma consulta do histórico
@@ -62,7 +87,7 @@ function briefingToForm(b = {}, client) {
     seats: b.lugaresMin ?? 5, seatsAny: b.lugaresMin == null,
     trunk: b.portaMalasMinL ?? 420, trunkAny: b.portaMalasMinL == null,
     yearMin: b.anoMin ?? 2005,
-    yearMax: b.anoMax ?? 2025, yearMaxAny: b.anoMax == null,
+    yearMax: b.anoMax ?? ANO_TETO, yearMaxAny: b.anoMax == null,
     types: rev(b.tiposDesejados, LABEL_TO_TYPE),
     fuels: rev(b.combustiveisAceitos, LABEL_TO_FUEL),
     lifestyle: rev(b.estiloDeVida, LABEL_TO_LIFESTYLE),
@@ -97,7 +122,7 @@ function App() {
   const [trunk, setTrunk]     = useState(420); // litros
   const [trunkAny, setTrunkAny] = useState(true);
   const [yearMin, setYearMin] = useState(2005);
-  const [yearMax, setYearMax] = useState(2025);
+  const [yearMax, setYearMax] = useState(ANO_TETO);
   const [yearMaxAny, setYearMaxAny] = useState(true); // default: sem teto de ano
   const [types, setTypes]     = useState([]);
   const [fuels, setFuels]     = useState([]);
@@ -133,7 +158,7 @@ function App() {
     setSeats(f.seats ?? 5); setSeatsAny(f.seatsAny ?? true);
     setTrunk(f.trunk ?? 420); setTrunkAny(f.trunkAny ?? true);
     setYearMin(f.yearMin ?? 2005);
-    setYearMax(f.yearMax ?? 2025); setYearMaxAny(f.yearMaxAny ?? true);
+    setYearMax(f.yearMax ?? ANO_TETO); setYearMaxAny(f.yearMaxAny ?? true);
     setTypes(f.types || []); setFuels(f.fuels || []);
     setLifestyle(f.lifestyle || []); setPriorities(f.priorities || []);
     setNotes(f.notes || ''); setNotesAny(f.notesAny ?? true);
@@ -185,7 +210,7 @@ function App() {
     setSeats(5); setSeatsAny(true);
     setTrunk(420); setTrunkAny(true);
     setYearMin(2005);
-    setYearMax(2025); setYearMaxAny(true);
+    setYearMax(ANO_TETO); setYearMaxAny(true);
     setTypes([]); setFuels([]); setLifestyle([]); setPriorities([]);
     setNotes(''); setNotesAny(true);
     setDraftId(null); setDraftState('idle');
@@ -1500,7 +1525,7 @@ function FormView(props) {
                 <span>Ano mínimo</span>
                 <span className="tk-mono">≥ {yearMin}</span>
               </label>
-              <input type="range" min={2005} max={2025} step={1} value={yearMin}
+              <input type="range" min={2005} max={ANO_TETO} step={1} value={yearMin}
                 className="tk-range"
                 onChange={e => {
                   const v = +e.target.value;
@@ -1519,7 +1544,7 @@ function FormView(props) {
               {yearMaxAny ? (
                 <div style={{ padding: '10px 0', color: 'var(--tk-muted)', fontStyle: 'italic', fontSize: 13 }}>Sem teto de ano</div>
               ) : (
-                <input type="range" min={yearMin} max={2025} step={1} value={Math.max(yearMax, yearMin)}
+                <input type="range" min={yearMin} max={ANO_TETO} step={1} value={Math.max(yearMax, yearMin)}
                   className="tk-range"
                   onChange={e => setYearMax(Math.max(+e.target.value, yearMin))} />
               )}
@@ -2876,10 +2901,10 @@ function ResultsView({ client, consultaId, cardStyle, showCompareBar, cars = [],
         <div>
           <span className="tk-eyebrow">Opções para o briefing</span>
           <h1>{cars.length} carros encontrados para {client.name.split(' ')[0]}.</h1>
-          <p>Preços validados na Tabela FIPE — referência {top.mesReferencia}. Use a barra inferior para comparar lado a lado.</p>
+          <p>Preços da Tabela FIPE — referência {faixaFipe(cars)}. Use a barra inferior para comparar lado a lado.</p>
           <div className="tk-results__pills">
             <span className="tk-results__pill">{cars.length} opções · {new Set(cars.map(c => c.brand)).size} marcas</span>
-            <span className="tk-results__pill">FIPE {top.mesReferencia}</span>
+            <span className="tk-results__pill">FIPE {faixaFipe(cars)}</span>
             {diagnostico?.catalogTotal && (
               <span className="tk-results__pill" title={`Pool de ${diagnostico.catalogPool ?? '-'} candidatos do briefing · vendedor escolheu ${diagnostico.vendedorRetornou ?? cars.length}`}>
                 Catálogo: {diagnostico.catalogTotal} carros

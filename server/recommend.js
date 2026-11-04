@@ -85,6 +85,7 @@ function filtroContext(briefing) {
     orc: briefing.orcamentoReais || {},
     anoMin: briefing.anoMin ? Number(briefing.anoMin) : null,
     anoMax: briefing.anoMax ? Number(briefing.anoMax) : null,
+    lugaresMin: briefing.lugaresMin ? Number(briefing.lugaresMin) : null,
     // Rótulos originais em pt-BR — só pra texto de diagnóstico, não filtram.
     tiposLabel: briefing.tiposDesejados || [],
     combsLabel: briefing.combustiveisAceitos || [],
@@ -99,8 +100,51 @@ function motivoDescarte(e, ctx, margem = MARGEM_NORMAL) {
   if (ctx.anoMax && e.ano > ctx.anoMax) return 'ano';
   if (ctx.tiposPedidos.length && !ctx.tiposPedidos.includes(e.tipo)) return 'tipo';
   if (ctx.combsPedidas.length && !combMatch(ctx.combsPedidas, e.combustivel)) return 'comb';
+  if (!cabeLugares(e, ctx.lugaresMin)) return 'lugares';
   if (e.preco < ctx.orc.min * margem.lo) return 'orcamento';
   if (ctx.orc.max != null && e.preco > ctx.orc.max * margem.hi) return 'orcamento';
+  return null;
+}
+
+// ─── Lugares e porta-malas ───────────────────────────────────────────────
+// O catálogo FIPE não sabe quantos lugares um carro tem, e antes disto o
+// pedido só chegava ao LLM como texto. Medido: SUV 7 lugares, 120–200k → 8 de 9
+// entregues tinham 5 lugares, e a PRÓPRIA ficha do vendedor dizia "5".
+//
+// Duas camadas. Antes do LLM, quem pede 6+ lugares só vê modelos que EXISTEM
+// em versão de 7 (lista abaixo) — senão o vendedor recebe 30 carros de 5 e não
+// tem o que escolher. Depois do vendedor, a ficha decide caso a caso: a lista
+// inclui modelos que têm versão de 5 e de 7 (Discovery Sport, Outlander, Spin).
+
+// Modelos vendidos no Brasil com versão de 7+ lugares (2005+). Na dúvida,
+// entra: a lista só abre a porta; quem barra é a ficha, depois.
+const SETE_LUGARES = /\bsw4\b|\bcommander\b|\bgrand\s*cherokee\s*l\b|\btrailblazer\b|\bcaptiva\b|\bspin\b|\bzafira\b|\btahoe\b|\bsuburban\b|\bpajero\b(?!\s*(tr4|io))|\boutlander\b|\bsanta\s*fe\b|\bvera\s*cruz\b|\bpalisade\b|\bsorento\b|\bcarnival\b|\bsedona\b|\bcarens\b|\bmohave\b|\btiggo\s*8\b|\ballspace\b|\btouran\b|\bpathfinder\b|\bgrand\s*livina\b|\bodyssey\b|\bpilot\b|\bexplorer\b|\bjourney\b|\bdurango\b|\bfreemont\b|\bdobl[oò]\b|\bgrand\s*picasso\b|\bc4\s*picasso\b|\b5008\b|\bgrand\s*sc[eé]nic\b|\bdiscovery\b|\bdefender\b|\bxc\s*90\b|\bq7\b|\bx5\b|\bx7\b|\bglb\b|\bgls\b|\bgle\b|\bclasse?\s*r\b|\bland\s*cruiser\b|\bprado\b|\blx[ -]?\d{3}|\bgx[ -]?\d{3}|\btan\b|\bsienna\b|\bsharan\b|\bvito\b|\bsprinter\b|\bminibus\b|\bjumpy\b|\bexpert\b|\bkombi\b/i;
+
+// Subconjunto que SÓ existe com 7+ lugares no Brasil. Aqui a lista vence a
+// ficha do LLM: medido, o vendedor escreveu "5 lugares" pro Discovery 2017
+// (que tem 7) e o pós-filtro jogou fora um carro que atendia.
+const SEMPRE_SETE = /\bsw4\b|\bcommander\b|\btiggo\s*8\b|\bdiscovery\b(?!\s*sp)|\bxc\s*90\b|\bq7\b|\bx7\b|\bgls\b|\bcarnival\b|\bsedona\b|\bodyssey\b|\bsienna\b|\bpalisade\b|\b5008\b|\bgrand\s*picasso\b|\bfreemont\b|\bjourney\b|\bminibus\b/i;
+
+function cabeLugares(e, lugaresMin) {
+  if (!lugaresMin || lugaresMin <= 5) return true;
+  return SETE_LUGARES.test(`${e.marca} ${e.modelo}`);
+}
+
+// "420 L", "1.050 litros", "420/1.200 L" → 420 (o primeiro número é a
+// configuração normal; o segundo costuma ser com banco rebatido).
+function litrosDaFicha(s) {
+  const m = String(s || '').replace(/(\d)\.(\d{3})/g, '$1$2').match(/\d{2,4}/);
+  return m ? Number(m[0]) : null;
+}
+
+// Por que a ficha do vendedor desmente o briefing? null = não desmente.
+// Ficha em branco (o vendedor não sabia) não desmente nada — não dá pra
+// provar que não atende, e descartar no escuro esvaziaria a lista.
+function fichaContradiz(ficha, briefing) {
+  const lug = Number(ficha?.lugares) || 0;
+  if (briefing.lugaresMin && lug > 0 && lug < briefing.lugaresMin) return 'lugares';
+  const litros = litrosDaFicha(ficha?.porta_malas);
+  if (briefing.portaMalasMinL && litros && litros < briefing.portaMalasMinL) return 'portaMalas';
   return null;
 }
 
@@ -110,11 +154,24 @@ function motivoDescarte(e, ctx, margem = MARGEM_NORMAL) {
 // blocos na ordem do catálogo e devolvia 8 Argos nos 10 primeiros; A 250, 125i,
 // 130i e A3 estavam no pool e não passavam do corte. O vendedor, que só monta
 // ficha, repetia a ordem. Peso por quantidade de versões na FIPE não é
-// relevância — então cada modelo chega ao LLM com no máximo N representantes,
-// intercalados, e sai dele com no máximo M.
+// relevância — então cada modelo chega ao LLM com uma entrada por acabamento
+// (até N), intercalados, e sai dele com no máximo M versões.
 
-const VERSOES_POR_MODELO_CURADOR = 3;
+// 12 é só trava de segurança: Polo e Fox têm 12 acabamentos cada no pool de
+// hatch até 110k, e com 8 o corte por preço derrubava justamente o Polo GTS.
+const VERSOES_POR_MODELO_CURADOR = 12;
 const VERSOES_POR_MODELO_VENDEDOR = 2;
+// Os tetos são preferência, não regra: se a busca só tem 6 versões de 911,
+// mostrar 2 por "variedade" seria esconder carro que atende.
+const MIN_CANDIDATOS = 10;
+
+// `lista` mais itens de `reserva` (na ordem dela) até ter `n`.
+function completaAte(lista, reserva, n) {
+  if (lista.length >= n) return lista;
+  const tem = new Set(lista);
+  const extra = reserva.filter(e => !tem.has(e)).slice(0, n - lista.length);
+  return [...lista, ...extra];
+}
 
 // "Argo HGT 1.8" e "Argo Drive 1.0" → fiat|argo. "Classe A 250" → mercedes|classe a.
 // BMW nomeia por motor (118i, 120iA, 130i): sem agrupar pelo 1º dígito, a
@@ -138,14 +195,31 @@ function agrupaPorFamilia(lista) {
   return grupos;
 }
 
-// Até `max` versões por modelo, espalhadas pela faixa de preço do próprio
-// modelo (a mais cara, a do meio, a mais barata) em vez das N primeiras do
-// catálogo — que costumam ser o mesmo trim em anos vizinhos. Saída intercalada
-// (um de cada modelo por rodada) pra não entregar ao LLM um bloco de 15 Argos.
+// "Polo GTS 1.4 TSI" → vw|polo gts. Acabamento, sem motor nem ano.
+function chaveVersao(e) {
+  const t = normText(e.modelo).split(' ').filter(Boolean);
+  return `${normText(e.marca).split(' ')[0]}|${t.slice(0, t[0] === 'classe' ? 3 : 2).join(' ')}`;
+}
+
+// Uma entrada por VERSÃO (a mais nova que coube no orçamento), até `max` por
+// modelo, intercaladas (um de cada modelo por rodada) pra não entregar ao LLM
+// um bloco de 15 Argos.
+//
+// Por versão e não por faixa de preço: a primeira tentativa pegava a mais cara,
+// a do meio e a mais barata de cada modelo — com 100 Polos no pool, o Polo GTS
+// (justamente o que o hatch esportivo pede) caía fora da amostra. Anos
+// vizinhos do mesmo acabamento não são escolhas diferentes; acabamentos são.
 function amostraPorModelo(pool, max) {
-  const grupos = [...agrupaPorFamilia(pool).values()].map(g => {
+  const porVersao = new Map();
+  for (const e of pool) {
+    const k = chaveVersao(e);
+    const atual = porVersao.get(k);
+    if (!atual || e.ano > atual.ano || (e.ano === atual.ano && e.preco > atual.preco)) porVersao.set(k, e);
+  }
+  const grupos = [...agrupaPorFamilia([...porVersao.values()]).values()].map(g => {
     const ord = [...g].sort((a, b) => b.preco - a.preco);
     if (ord.length <= max) return ord;
+    // Modelo com acabamento demais (Fox tem 12): aí sim espalha por preço.
     const idx = new Set();
     for (let i = 0; i < max; i++) idx.add(Math.round(i * (ord.length - 1) / (max - 1)));
     return [...idx].map(i => ord[i]);
@@ -237,7 +311,7 @@ async function recommendFromCatalog(briefing, log) {
   const ctx = filtroContext(briefing);
   const { orc, anoMin, anoMax } = ctx;
 
-  const reasonsCount = { ano: 0, tipo: 0, comb: 0, orcamento: 0, semPreco: 0 };
+  const reasonsCount = { ano: 0, tipo: 0, comb: 0, lugares: 0, orcamento: 0, semPreco: 0 };
 
   // Modo normal: 95% a 105% do orçamento (margem pequena)
   let pool = catalog.entries.filter(e => {
@@ -265,7 +339,7 @@ async function recommendFromCatalog(briefing, log) {
   if (pool.length === 0) {
     return {
       ok: false,
-      reason: `Não encontrei opções no catálogo que respeitem o briefing (ano>=${anoMin}${anoMax ? ` e <=${anoMax}` : ''}, tipo(s) ${briefing.tiposDesejados.join(', ')}, combustível(is) ${briefing.combustiveisAceitos.join(', ')}, R$ ${orc.min.toLocaleString('pt-BR')}-${orc.max == null ? 'sem teto' : orc.max.toLocaleString('pt-BR')}). Tente refinar critérios.`,
+      reason: `Não encontrei opções no catálogo que respeitem o briefing (ano>=${anoMin}${anoMax ? ` e <=${anoMax}` : ''}, tipo(s) ${briefing.tiposDesejados.join(', ')}, combustível(is) ${briefing.combustiveisAceitos.join(', ')}${ctx.lugaresMin > 5 ? `, ${ctx.lugaresMin}+ lugares` : ''}, R$${orc.min.toLocaleString('pt-BR')}-${orc.max == null ? 'sem teto' : orc.max.toLocaleString('pt-BR')}). Tente refinar critérios.`,
       diagnostico: { catalogTotal: catalog.entries.length, descartesPorEtapa: reasonsCount },
     };
   }
@@ -277,27 +351,28 @@ async function recommendFromCatalog(briefing, log) {
   const sinalizados = marcaSinalizados(pool, hints);
   if (sinalizados.size) log('hints-no-pool', { count: sinalizados.size });
 
-  // Curador leve LLM: se sobrou muito, prioriza top ~30 mais relevantes
-  let candidates = pool;
-  if (pool.length > 30) {
-    const amostra = amostraPorModelo(pool, VERSOES_POR_MODELO_CURADOR);
-    log('amostra-por-modelo', { pool: pool.length, amostra: amostra.length });
-    candidates = amostra;
-    if (amostra.length > 30) {
-      try {
-        const ids = await runCuradorLeve(briefing, amostra);
-        const byKey = new Map(amostra.map(e => [`${e.marcaId}|${e.modeloId}|${e.anoId}`, e]));
-        const picked = ids.map(id => byKey.get(id)).filter(Boolean);
-        candidates = picked.length >= 5 ? picked : amostra;
-        log('curador-leve-done', { count: picked.length });
-      } catch (e) {
-        console.warn('[curador-leve] falhou, usando amostra intercalada:', e.message);
-      }
+  // Amostra por versão — sempre, não só com pool grande: com 22 SUVs de 7
+  // lugares, cortar "2 por modelo" sem amostra antes pegava os 2 primeiros do
+  // catálogo, arbitrário.
+  const amostra = completaAte(amostraPorModelo(pool, VERSOES_POR_MODELO_CURADOR), pool, MIN_CANDIDATOS);
+  log('amostra-por-modelo', { pool: pool.length, amostra: amostra.length });
+  let candidates = amostra;
+
+  // Curador leve LLM: se sobrou muito, prioriza os ~30 mais relevantes
+  if (amostra.length > 30) {
+    try {
+      const ids = await runCuradorLeve(briefing, amostra);
+      const byKey = new Map(amostra.map(e => [`${e.marcaId}|${e.modeloId}|${e.anoId}`, e]));
+      const picked = ids.map(id => byKey.get(id)).filter(Boolean);
+      candidates = picked.length >= 5 ? picked : amostra;
+      log('curador-leve-done', { count: picked.length });
+    } catch (e) {
+      console.warn('[curador-leve] falhou, usando amostra intercalada:', e.message);
     }
   }
   // O vendedor monta ficha na ordem que recebe e devolve os 10 primeiros: o
   // teto por modelo tem que valer AQUI, não só na entrada do curador.
-  candidates = limitaPorModelo(candidates, VERSOES_POR_MODELO_VENDEDOR).slice(0, 30);
+  candidates = completaAte(limitaPorModelo(candidates, VERSOES_POR_MODELO_VENDEDOR), candidates, MIN_CANDIDATOS).slice(0, 30);
 
   // Repescagem: carro sinalizado não pode morrer no corte do curador leve —
   // esse corte é um dos dois lugares onde ele sumia (o outro é o vendedor).
@@ -392,8 +467,33 @@ async function recommendFromCatalog(briefing, log) {
     .filter(Boolean)
     .sort((a, b) => a.rank - b.rank);
 
-  const topUnico = umaVersaoPorModelo(topEnriched);
-  log('dedupe-modelo', { antes: topEnriched.length, depois: topUnico.length });
+  // A ficha que o vendedor acabou de escrever é a mesma que o cliente vai ler:
+  // entregar um carro cuja ficha diz "5 lugares" pra quem pediu 7 é o sistema
+  // se contradizendo na tela.
+  const descartadosPorFicha = [];
+  for (const t of topEnriched) {
+    // Ficha que contradiz a lista curada: o número está errado. Apagar (0 =
+    // "não sei") em vez de mostrar errado ou "corrigir" com palpite.
+    const lug = Number(t.fichaTecnica?.lugares) || 0;
+    if (lug > 0 && lug < 7 && SEMPRE_SETE.test(`${t.brand} ${t.model}`)) t.fichaTecnica.lugares = 0;
+  }
+  const topCoerente = topEnriched.filter(t => {
+    const motivo = fichaContradiz(t.fichaTecnica, briefing);
+    if (motivo) descartadosPorFicha.push({ carro: `${t.brand} ${t.model} ${t.year}`, motivo });
+    return !motivo;
+  });
+  if (descartadosPorFicha.length) log('ficha-contradiz', { count: descartadosPorFicha.length });
+
+  const topUnico = umaVersaoPorModelo(topCoerente);
+  log('dedupe-modelo', { antes: topCoerente.length, depois: topUnico.length });
+
+  if (!topUnico.length && descartadosPorFicha.length) {
+    return {
+      ok: false,
+      reason: `Encontrei candidatos no orçamento, mas nenhum atende ${briefing.lugaresMin ? `${briefing.lugaresMin} lugares` : ''}${briefing.lugaresMin && briefing.portaMalasMinL ? ' e ' : ''}${briefing.portaMalasMinL ? `porta-malas de ${briefing.portaMalasMinL} L` : ''} segundo a ficha técnica. Tente afrouxar esse critério ou o orçamento.`,
+      diagnostico: { catalogTotal: catalog.entries.length, catalogPool: pool.length, descartesPorEtapa: reasonsCount, descartadosPorFicha },
+    };
+  }
 
   return {
     ok: true,
@@ -405,6 +505,7 @@ async function recommendFromCatalog(briefing, log) {
       curadorLeveSelecionou: candidates.length,
       lembretes: lembretes.map(l => l.label),
       vendedorRetornou: topEnriched.length,
+      descartadosPorFicha,
       descartesPorEtapa: reasonsCount,
       builtAt: catalog.builtAt,
     },
@@ -529,7 +630,7 @@ function normText(s) {
 
 const FILTRO_LABEL = {
   ano: 'ano', tipo: 'tipo de carroceria', comb: 'combustível',
-  orcamento: 'orçamento', semPreco: 'sem preço na FIPE',
+  orcamento: 'orçamento', semPreco: 'sem preço na FIPE', lugares: 'lugares',
 };
 
 const plural = (n, sing, pl) => `${n} ${n === 1 ? sing : pl}`;
@@ -562,6 +663,8 @@ function explicaDescarte(motivo, entries, ctx) {
     }
     case 'semPreco':
       return 'as versões encontradas estão sem preço na FIPE.';
+    case 'lugares':
+      return `não consta como modelo com versão de ${ctx.lugaresMin}+ lugares; o briefing pediu ${ctx.lugaresMin}. Se ele tem, falta na lista SETE_LUGARES (recommend.js).`;
     default:
       return '';
   }
