@@ -251,8 +251,9 @@ Regras:
 - Devolver até 30 IDs, em ordem de relevância (1º = mais relevante).
 - Não excluir por preço ou ano — esses já foram filtrados.
 - Se a lista tiver <= 30 itens, devolva todos ordenados.
-- Diversifique marcas e versões — não retorne só uma marca dominando.
-- Considere: cliente família ↔ espaço/segurança; cliente urbano ↔ compactos; cliente trabalho/offroad ↔ picape/SUV robusto; cliente esportivo ↔ versões topo.
+- Diversifique: no máximo 2 versões do mesmo modelo (dois Argo, dois Golf) entre os 30. A ordem da lista de entrada NÃO indica relevância.
+- Considere: cliente família ↔ espaço/segurança; cliente urbano ↔ compactos; cliente trabalho/offroad ↔ picape/SUV robusto.
+- Uso esportivo = DESEMPENHO, não acabamento. Priorize motor turbo ou de maior potência (TB, TSI, TFSI, Turbo, 2.0, cv alto), versões esportivas de fábrica (GTI, HGT, AMG, M Sport, R-Design, Sport) e hatches premium de tração forte (Mercedes Classe A 250, BMW 125i/130i, Audi A3, Golf TSI, Volvo V40 T4/T5). Um 1.0/1.3 aspirado com pacote visual topo de linha NÃO é esportivo — vai pro fim da lista. Ano mais antigo não é demérito quando o briefing aceita esse ano.
 
 Retorne EXCLUSIVAMENTE este JSON:
 { "ids": ["string", "string", ...] }

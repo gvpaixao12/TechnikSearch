@@ -104,6 +104,69 @@ function motivoDescarte(e, ctx, margem = MARGEM_NORMAL) {
   return null;
 }
 
+// ─── Variedade antes do LLM ──────────────────────────────────────────────
+// Medido (hatch esportivo até 110k): o pool tinha 117 entradas em 29 modelos,
+// mas 15 eram Argo, 16 Fox e 17 Fit. O curador (gpt-4o-mini) recebia isso em
+// blocos na ordem do catálogo e devolvia 8 Argos nos 10 primeiros; A 250, 125i,
+// 130i e A3 estavam no pool e não passavam do corte. O vendedor, que só monta
+// ficha, repetia a ordem. Peso por quantidade de versões na FIPE não é
+// relevância — então cada modelo chega ao LLM com no máximo N representantes,
+// intercalados, e sai dele com no máximo M.
+
+const VERSOES_POR_MODELO_CURADOR = 3;
+const VERSOES_POR_MODELO_VENDEDOR = 2;
+
+// "Argo HGT 1.8" e "Argo Drive 1.0" → fiat|argo. "Classe A 250" → mercedes|classe a.
+// BMW nomeia por motor (118i, 120iA, 130i): sem agrupar pelo 1º dígito, a
+// Série 1 vira 8 "modelos" e fura o teto — medido, 5 BMWs num top de 10.
+function familiaModelo(e) {
+  const marca = normText(e.marca).split(' ')[0];
+  const toks = normText(baseModelo(e.modelo)).split(' ').filter(Boolean);
+  const bmw = marca === 'bmw' && (toks[0] || '').match(/^(\d)\d\d[a-z]*$/);
+  if (bmw) return `bmw|serie ${bmw[1]}`;
+  const n = ['classe', 'serie'].includes(toks[0]) ? 2 : 1;
+  return `${marca}|${toks.slice(0, n).join(' ')}`;
+}
+
+function agrupaPorFamilia(lista) {
+  const grupos = new Map();
+  for (const e of lista) {
+    const k = familiaModelo(e);
+    if (!grupos.has(k)) grupos.set(k, []);
+    grupos.get(k).push(e);
+  }
+  return grupos;
+}
+
+// Até `max` versões por modelo, espalhadas pela faixa de preço do próprio
+// modelo (a mais cara, a do meio, a mais barata) em vez das N primeiras do
+// catálogo — que costumam ser o mesmo trim em anos vizinhos. Saída intercalada
+// (um de cada modelo por rodada) pra não entregar ao LLM um bloco de 15 Argos.
+function amostraPorModelo(pool, max) {
+  const grupos = [...agrupaPorFamilia(pool).values()].map(g => {
+    const ord = [...g].sort((a, b) => b.preco - a.preco);
+    if (ord.length <= max) return ord;
+    const idx = new Set();
+    for (let i = 0; i < max; i++) idx.add(Math.round(i * (ord.length - 1) / (max - 1)));
+    return [...idx].map(i => ord[i]);
+  });
+  const out = [];
+  for (let r = 0; r < max; r++) for (const g of grupos) if (g[r]) out.push(g[r]);
+  return out;
+}
+
+// Mantém a ordem de quem já ranqueou, cortando o excesso de um mesmo modelo.
+function limitaPorModelo(ordenados, max) {
+  const conta = new Map();
+  return ordenados.filter(e => {
+    const k = familiaModelo(e);
+    const n = conta.get(k) || 0;
+    if (n >= max) return false;
+    conta.set(k, n + 1);
+    return true;
+  });
+}
+
 // ─── Lembretes de ranking: o feedback voltando pro pipeline ───────────────
 // Quando o consultor diz "senti falta do Golf" e o diagnóstico conclui
 // `vendedor-nao-escolheu`, o carro estava no pool e mesmo assim não chegou ao
@@ -217,17 +280,24 @@ async function recommendFromCatalog(briefing, log) {
   // Curador leve LLM: se sobrou muito, prioriza top ~30 mais relevantes
   let candidates = pool;
   if (pool.length > 30) {
-    try {
-      const ids = await runCuradorLeve(briefing, pool);
-      const byKey = new Map(pool.map(e => [`${e.marcaId}|${e.modeloId}|${e.anoId}`, e]));
-      const picked = ids.map(id => byKey.get(id)).filter(Boolean);
-      if (picked.length >= 5) candidates = picked.slice(0, 30);
-      log('curador-leve-done', { count: candidates.length });
-    } catch (e) {
-      console.warn('[curador-leve] falhou, usando pool inteiro:', e.message);
-      candidates = pool.slice(0, 30);
+    const amostra = amostraPorModelo(pool, VERSOES_POR_MODELO_CURADOR);
+    log('amostra-por-modelo', { pool: pool.length, amostra: amostra.length });
+    candidates = amostra;
+    if (amostra.length > 30) {
+      try {
+        const ids = await runCuradorLeve(briefing, amostra);
+        const byKey = new Map(amostra.map(e => [`${e.marcaId}|${e.modeloId}|${e.anoId}`, e]));
+        const picked = ids.map(id => byKey.get(id)).filter(Boolean);
+        candidates = picked.length >= 5 ? picked : amostra;
+        log('curador-leve-done', { count: picked.length });
+      } catch (e) {
+        console.warn('[curador-leve] falhou, usando amostra intercalada:', e.message);
+      }
     }
   }
+  // O vendedor monta ficha na ordem que recebe e devolve os 10 primeiros: o
+  // teto por modelo tem que valer AQUI, não só na entrada do curador.
+  candidates = limitaPorModelo(candidates, VERSOES_POR_MODELO_VENDEDOR).slice(0, 30);
 
   // Repescagem: carro sinalizado não pode morrer no corte do curador leve —
   // esse corte é um dos dois lugares onde ele sumia (o outro é o vendedor).
