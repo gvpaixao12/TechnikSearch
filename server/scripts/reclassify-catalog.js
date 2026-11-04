@@ -15,7 +15,7 @@ import 'dotenv/config';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { classifyTipo, classifyFuel } from '../classify.js';
+import { classifyTipo, isPlugin } from '../classify.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FILE = path.join(__dirname, '..', 'data', 'catalog.json');
@@ -27,7 +27,16 @@ const entries = data.entries || [];
 const mudancas = {};
 let n = 0;
 for (const e of entries) {
-  const tipo = classifyTipo(`${e.marca} ${e.modelo}`);
+  const nome = `${e.marca} ${e.modelo}`;
+  // Combustível: o valor original da FIPE não fica salvo na entrada, então
+  // aqui só dá pra REFINAR híbrido → plug-in, não reclassificar do zero.
+  if (e.combustivel === 'hibrido' && isPlugin(nome)) {
+    const k = `comb hibrido → hibrido plug-in`;
+    mudancas[k] = (mudancas[k] || 0) + 1;
+    n++;
+    if (APPLY) e.combustivel = 'hibrido plug-in';
+  }
+  const tipo = classifyTipo(nome);
   if (tipo === e.tipo) continue;
   const k = `${e.tipo} → ${tipo}`;
   mudancas[k] = (mudancas[k] || 0) + 1;

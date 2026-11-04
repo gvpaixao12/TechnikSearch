@@ -7,6 +7,13 @@
 
 // Ordem importa — primeiro match vence.
 const TYPE_RULES = [
+  // ─── PERUA → unknown de propósito ──────────────────────────────────────
+  // Mesmo critério do Volvo V60 (ver bloco HATCH): o catálogo não tem
+  // categoria de perua, e "Golf Variant" casaria com /golf/ e viraria hatch.
+  // "Touring" só é perua na Mercedes Classe C — na Honda (Civic/City Touring)
+  // é acabamento, por isso a regra amarra no C-<número>.
+  { type: 'unknown', patterns: [/\bvariant\b/i, /\bc-?\d{2,3}\s+touring\b/i] },
+
   // ─── PICKUP ────────────────────────────────────────────────────────────
   { type: 'pickup', patterns: [
     /\bhilux\b/i, /\branger\b/i, /\bs10\b/i, /\bl[ -]?200\b/i, /\bamarok\b/i,
@@ -66,7 +73,7 @@ const TYPE_RULES = [
     // Land Rover
     /\bevoque\b/i, /\bvelar\b/i, /\bdiscovery\d?\b/i, /\bdefender\b/i, /\bsport\s*lr/i, /\brange\s*rover\b/i,
     // Porsche
-    /\bmacan\b/i, /\bcayenne\b/i,
+    /\bmacan\b/i, /\bcayenn?e\b/i,   // a FIPE grafa "Cayene" numa versão
     // Exóticos / premium SUV
     /\burus\b/i, /\bdbx\b/i, /\bbentayga\b/i, /\bcullinan\b/i, /\blevante\b/i, /\bgrecale\b/i, /\bpurosangue\b/i, /\beletre\b/i,
     // Ford (Mustang Mach-E é SUV elétrico, não confundir com Mustang coupé)
@@ -82,16 +89,17 @@ const TYPE_RULES = [
     // Lexus
     /\blexus\s*nx\b/i, /\blexus\s*rx\b/i, /\blexus\s*lx\b/i, /\blexus\s*ux\b/i,
     /\bnx[ -]?[23]\d{2}/i, /\brx[ -]?[345]\d{2}/i,
-    // Genéricos
-    /4motion/i, /\bsuv\b/i,
+    // Genéricos. 4Motion é tração da VW, não carroceria: Golf R, Passat,
+    // Jetta e Arteon também têm — sem a exceção o Golf R virava SUV.
+    /^(?!.*\b(golf|passat|jetta|arteon)\b).*4motion/i, /\bsuv\b/i,
   ]},
 
   // ─── COUPÉ / ESPORTIVO ─────────────────────────────────────────────────
   { type: 'coupe', patterns: [
-    // coup[eé] sem \b final: o \b depois de "é" (não-ASCII) falha e deixava
+    // coup[eéê] sem \b final: o \b depois de "é" (não-ASCII) falha e deixava
     // "135iA Coupé"/"428i Gran Coupé" caírem em unknown.
-    /\bcoup[eé]/i, /\bcabriolet\b/i, /\bcabrio\b/i, /\bspyder\b/i, /\bconvertible\b/i,
-    /\bgran\s*coup[eé]/i, /\bgrancoup[eé]/i,
+    /\bcoup[eéê]/i, /\bcabriolet\b/i, /\bcabrio\b/i, /\bspyder\b/i, /\bconvertible\b/i,
+    /\bgran\s*coup[eéê]/i, /\bgrancoup[eéê]/i,
     // BMW 4/6/8-series (coupé/Gran Coupé/cabrio), número cru tipo "650iA"
     /\b[468][2-9]\di/i,
     /\broadster\b/i, /\b z\d\b/i, /\bz4\b/i, /\bz3\b/i,
@@ -99,9 +107,11 @@ const TYPE_RULES = [
     /\bmustang\b(?!\s*mach)/i, /\bcamaro\b/i, /\bchallenger\b/i, /\bcorvette\b/i,
     /\bsupra\b/i, /\bgr\s*86\b/i, /\bgr86\b/i, /\bbrz\b/i, /\bgr\s*yaris\b/i, /\byaris\s*gr\b/i,
     /\b370z\b/i, /\b350z\b/i,
-    // BMW M
-    /\bm2\b|\bm3\b|\bm4\b|\bm5\b|\bm6\b|\bm8\b/i,
-    /\bm235i\b/i, /\bm240i\b/i, /\bm340i\b/i, /\bm550i\b/i, /\bm850i\b/i,
+    // BMW M. M3/M5/M340i/M550i são SEDÃS e ficam pro bloco de sedã — estavam
+    // aqui e até "M3 Sedan" saía cupê. Exceção: M3 3.2 (E46, 2005-06) era cupê;
+    // M3 Coupê/Cabrio já casam pelas regras genéricas acima.
+    /\bm2\b|\bm4\b|\bm6\b|\bm8\b/i, /\bm3\s+3[.,]2\b/i,
+    /\bm235i\b/i, /\bm240i\b/i, /\bm850i\b/i,
     // Porsche
     /\b911\b/i, /\bcayman\b/i, /\bboxster\b/i, /\b718\b/i,
     // Audi TT, A5/RS5 Coupé
@@ -115,7 +125,12 @@ const TYPE_RULES = [
     // Kia Stinger
     /\bstinger\b/i,
     // Exóticos GT/coupé explícitos (com sedans/SUVs já capturados nas regras acima)
-    /\bgranturismo\b/i, /\bgrancabrio\b/i, /\bmc20\b/i,
+    /\bgranturismo\b/i, /\bgran\s+turismo\b/i, /\bgransport\b/i, /\bgrancabrio\b/i, /\bmc20\b/i,
+    // Conversíveis em pt-BR ("XK-8 Conversível") e abreviados ("EOS Cab.")
+    /convers[ií]vel/i, /\beos\b/i,
+    // Mercedes CL/CLK/CLC são cupês; "C-350 Sportcoupé" não tem \b antes de coupé
+    /\bcl-\d/i, /\bclk\b/i, /\bclc\b/i, /sportcoup/i,
+    /\bbmw\s+i8\b/i,
     /\bcontinental\s*gt\b/i, /\bwraith\b/i, /\bdawn\b/i, /\bspectre\b/i,
   ]},
 
@@ -123,9 +138,16 @@ const TYPE_RULES = [
   { type: 'sedan', patterns: [
     // Jaguar — XE/XF/XJ e os antigos X-Type/S-Type sao todos sedas. Os
     // crossovers da marca terminam em -Pace e ja foram capturados no bloco SUV.
-    /\bxe\b/i, /\bxf\b/i, /\bxj\b/i, /\bx-?type\b/i, /\bs-?type\b/i,
+    /\bxe\b/i, /\bxf\b/i, /\bxj\b/i, /\bxfr\b/i, /\bxjr\b/i, /\bx-?type\b/i, /\bs-?type\b/i,
     // Lexus — ES/LS/IS/GS sao os sedas (SUVs sao NX/RX/UX/LX/GX, acima).
-    /\b(?:es|ls|is|gs)-?\d{3}/i,
+    // A FIPE grafa com hífen ("IS-250") e com espaço ("LS 460").
+    /\b(?:es|ls|is|gs)[ -]?\d{3}/i,
+    // Mercedes Classe C pelo número com hífen ("C-250", "C-63 AMG"). Amarrado
+    // à marca porque "C-" sozinho é genérico demais.
+    /mercedes.*\bc-\d{2,3}\b/i,
+    // BMW elétricos de 4 portas e o M760Li (o "M" colado mata o \b da regra
+    // numérica de série 7)
+    /\bbmw\s+i[457]\b/i, /\bm760/i,
     /\bsedan\b/i, /\bsed\.\b|\bsed\b/i,
     // Brasileiros populares
     /\bonix\s*plus\b/i, /\bonix\s*sed/i, /\bcorsa\s*sedan\b/i,
@@ -133,7 +155,7 @@ const TYPE_RULES = [
     /\bhb20s\b/i, /\bhb20\s*sed/i,
     /\bcivic\b/i, /\bcorolla\b(?!\s*cross)/i, /\bcity\b(?!\s*hatch)/i,
     /\blogan\b/i, /\bversa\b/i, /\bsentra\b/i, /\baltima\b/i, /\bmaxima\b/i,
-    /\bvirtus\b/i, /\bjetta\b/i, /\bvento\b/i, /\bgol\s*sed/i,
+    /\bvirtus\b/i, /\bjetta\b/i, /\bpolo\s*classic\b/i,   // Polo Classic = sedã argentino /\bvento\b/i, /\bgol\s*sed/i,
     /\bcobalt\b/i, /\bprisma\b/i, /\bcruze\b/i,
     /\bfluence\b/i, /\bsymbol\b/i,
     /\bsandero\s*sed/i,
@@ -152,7 +174,7 @@ const TYPE_RULES = [
     // híbridos terminados em "e" ("330e", "530e"). 2º dígito [1-9] exclui o
     // Fiat "500e" (2º dígito 0). Coupé já foi capturado pela regra de coupé.
     /\b[357][1-9]\d[ie]/i,
-    /\bbmw\s*3[2-3]0i\b/i, /\bm340/i, /\bm550/i,
+    /\bbmw\s*3[2-3]0i\b/i, /\bm340/i, /\bm550/i, /\bbmw\s+m[35]\b/i,
     /\bbmw\s*série\s*3\b/i, /\bbmw\s*serie\s*3\b/i,
     // Mercedes Classe C
     /\bc[ -]?1[8-9]0\b|\bc[ -]?2[0-3]0\b|\bc[ -]?3[0-3]0\b|\bc[ -]?4[03]\b/i,
@@ -177,7 +199,8 @@ const TYPE_RULES = [
     // o catalogo nao tem categoria de perua, e classificar como hatch ou
     // sedan seria inventar. Melhor unknown que errado.
     /\bct\s?200h?\b/i,   // Lexus CT200h — hatch compacto
-    /\bhatch\b/i,
+    /\bhatch(back)?\b/i,   // "CITY Hatchback" não casava com \bhatch\b
+    /\bcrossfox\b/i, /\bfusca\b/i, /\bbmw\s+i3\b/i,
     /\bonix\b(?!\s*plus|\s*sed)/i, /\bcobalt\s*hatch\b/i, /\bmeriva\b/i,
     /\bgol\b(?!\s*sed)/i, /\bup\b/i, /\bfox\b/i, /\bpolo\b/i, /\bgolf\b/i, /\bscirocco\b/i,
     /\bka\b(?!\s*sed)/i, /\bfiesta\b/i, /\bfocus\b(?!\s*sed)/i,
@@ -194,13 +217,13 @@ const TYPE_RULES = [
     /\bcooper\b/i, /\bclubman\b/i,
     // BMW Série 1 hatch — número cru tipo "118iA", "120iA", "130iA" (o \b...i\b
     // antigo falhava no sufixo "A"). 135i Coupé já vai pra coupé antes.
-    /\b1[1-4]\di/i,
+    /\b1[1-4]\di/i, /\bm1[34]\di/i,
     /\bbmw\s*1\b/i, /\bseries?\s*1\b/i, /\b1\s*series\b/i,
     // Audi A1 / A3 hatch (Sportback é hatch 5p)
     /\baudi\s*a1\b/i, /\ba1\s*sportb/i,
     /\baudi\s*a3\b/i, /\ba3\s*sportb/i,
     // Mercedes Classe A hatch
-    /\bclass[ -]?a\b/i, /\ba\s*200\b|\ba\s*250\b|\ba\s*35\b|\ba\s*45\b/i,
+    /\bclasse?[ -]?a\b/i, /\ba\s*200\b|\ba\s*250\b|\ba[ -]?35\b|\ba[ -]?45\b/i,
   ]},
 
   // ─── MINIVAN / VAN ─────────────────────────────────────────────────────
@@ -211,7 +234,9 @@ const TYPE_RULES = [
     /\bjumpy\b/i, /\bexpert\b/i, /\bducato\b/i, /\bscudo\b/i,
     /\bmpv\b/i, /\bvan\b/i, /\bminibus\b/i,
     // BMW 2-series Active/Gran Tourer (MPV compacto)
-    /active\s*tourer|gran\s*tourer/i,
+    /active\s*tourer|gran\s*tourer|tourer\s*active/i,
+    // Mercedes Classe B (monovolume compacto) e Classe R (crossover de 6-7 lugares)
+    /\bclasse?\s*[br]\b/i,
   ]},
 
   // ─── FALLBACK: marcas esportivas puras → coupé ─────────────────────────
@@ -361,7 +386,25 @@ const FUEL_HINTS_ELECTRIC = /\beletric|\(elétrico\)|\bev\b|\b e[ -]?(tech|drive
 const FUEL_HINTS_HYBRID = /híbrid|hibrid|hybrid|\bphev\b|\bhev\b|plug-?in|t8\s*recharge/i;
 const FUEL_HINTS_DIESEL = /\bdiesel\b|\btdi\b|\bcrdi\b|\bbluetec\b|\bd[24]d\b/i;
 
+// Plug-in (PHEV) pelo nome. A FIPE grava tudo como "(Híbrido)", e sem isso o
+// chip "Híbrido plug-in" devolvia ZERO — nenhuma entrada tinha esse valor.
+// Só marca o que o nome entrega sem dúvida: TFSIe (Audi), 330e/530e/745Le
+// (BMW), P400e (Land Rover/Jaguar), GTE (VW), T8 (Volvo), 450h+ (Lexus),
+// "E Performance" (AMG), Cayenne/Panamera híbridos (E-Hybrid desde 2015), e os
+// exóticos plug-in. Ambíguo fica 'hibrido': busca por plug-in erra pra menos,
+// nunca entrega híbrido comum como plug-in.
+const FUEL_HINTS_PLUGIN = /tfsie\b|\bbmw\s+[3-7]\d{2}l?e\b|\bp\d{3}e\b|\bgte\b|\bt-?8\b|\d{3}h\+|recharge|e-?hybrid|plug-?in|\bphev\b|\bdm-?i\b|\bsong\s+plus\b|\bs\s+e\s+perf|f-?pace.*404cv|porsche\s+(cayenn?e|panamera).*h[ií]b|\b296\s+gt|\bsf\s*90\b|revuelto|urus\s+se\b/i;
+
+export function isPlugin(marcaModelo) {
+  return FUEL_HINTS_PLUGIN.test(marcaModelo);
+}
+
 export function classifyFuel(marcaModelo, fipeFuel) {
+  const fuel = classifyFuelBase(marcaModelo, fipeFuel);
+  return fuel === 'hibrido' && isPlugin(marcaModelo) ? 'hibrido plug-in' : fuel;
+}
+
+function classifyFuelBase(marcaModelo, fipeFuel) {
   if (FUEL_HINTS_ELECTRIC.test(marcaModelo)) return 'eletrico';
   if (FUEL_HINTS_HYBRID.test(marcaModelo)) return 'hibrido';
   if (FUEL_HINTS_DIESEL.test(marcaModelo)) return 'diesel';
