@@ -16,7 +16,8 @@ const TYPE_RULES = [
 
   // ─── PICKUP ────────────────────────────────────────────────────────────
   { type: 'pickup', patterns: [
-    /\bhilux\b/i, /\branger\b/i, /\bs10\b/i, /\bl[ -]?200\b/i, /\bamarok\b/i,
+    // "Hilux SW4" é o SUV de 7 lugares derivado da Hilux — não é picape.
+    /\bhilux\b(?!\s*sw4)/i, /\branger\b/i, /\bs10\b/i, /\bl[ -]?200\b/i, /\bamarok\b/i,
     /\bfrontier\b/i, /\bmaverick\b/i, /\bgladiator\b/i,
     /\bram\s*\d/i, /\bram\s+\w/i, /\b1500\s+(laramie|limited|big|rebel|sport|laramie longhorn)/i, /\b3500\s+(laramie|limited)/i, /\b2500\s+(laramie|limited)/i,
     /\btitan\b/i, /\bsilverado\b/i, /\bf-?150\b/i, /\bf-?250\b/i, /\bf-?1000\b/i,
