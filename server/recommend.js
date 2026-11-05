@@ -118,12 +118,14 @@ function motivoDescarte(e, ctx, margem = MARGEM_NORMAL) {
 
 // Modelos vendidos no Brasil com versão de 7+ lugares (2005+). Na dúvida,
 // entra: a lista só abre a porta; quem barra é a ficha, depois.
-const SETE_LUGARES = /\bsw4\b|\bcommander\b|\bgrand\s*cherokee\s*l\b|\btrailblazer\b|\bcaptiva\b|\bspin\b|\bzafira\b|\btahoe\b|\bsuburban\b|\bpajero\b(?!\s*(tr4|io))|\boutlander\b|\bsanta\s*fe\b|\bvera\s*cruz\b|\bpalisade\b|\bsorento\b|\bcarnival\b|\bsedona\b|\bcarens\b|\bmohave\b|\btiggo\s*8\b|\ballspace\b|\btouran\b|\bpathfinder\b|\bgrand\s*livina\b|\bodyssey\b|\bpilot\b|\bexplorer\b|\bjourney\b|\bdurango\b|\bfreemont\b|\bdobl[oò]\b|\bgrand\s*picasso\b|\bc4\s*picasso\b|\b5008\b|\bgrand\s*sc[eé]nic\b|\bdiscovery\b|\bdefender\b|\bxc\s*90\b|\bq7\b|\bx5\b|\bx7\b|\bglb\b|\bgls\b|\bgle\b|\bclasse?\s*r\b|\bland\s*cruiser\b|\bprado\b|\blx[ -]?\d{3}|\bgx[ -]?\d{3}|\btan\b|\bsienna\b|\bsharan\b|\bvito\b|\bsprinter\b|\bminibus\b|\bjumpy\b|\bexpert\b|\bkombi\b/i;
+// GLS/GLE amarrados à Mercedes: na Hyundai "GLS" é acabamento (Tucson GLS,
+// Elantra GLS) e passava o Tucson de 5 lugares como 7.
+const SETE_LUGARES = /\bsw4\b|\bcommander\b|\bgrand\s*cherokee\s*l\b|\btrailblazer\b|\bcaptiva\b|\bspin\b|\bzafira\b|\btahoe\b|\bsuburban\b|\bpajero\b(?!\s*(tr4|io))|\boutlander\b|\bsanta\s*f[eé]|\bvera\s*cruz\b|\bpalisade\b|\bsorento\b|\bcarnival\b|\bsedona\b|\bcarens\b|\bmohave\b|\btiggo\s*8\b|\ballspace\b|\btouran\b|\bpathfinder\b|\bgrand\s*livina\b|\bodyssey\b|\bpilot\b|\bexplorer\b|\bjourney\b|\bdurango\b|\bfreemont\b|\bdobl[oò]\b|\bgrand\s*picasso\b|\bc4\s*picasso\b|\b5008\b|\bgrand\s*sc[eé]nic\b|\bdiscovery\b|\bdefender\b|\bxc\s*90\b|\bq7\b|\bx5\b|\bx7\b|\bglb\b|mercedes.*\bgl[se]\b|\bclasse?\s*r\b|\bland\s*cruiser\b|\bprado\b|\blx[ -]?\d{3}|\bgx[ -]?\d{3}|\btan\b|\bsienna\b|\bsharan\b|\bvito\b|\bsprinter\b|\bminibus\b|\bjumpy\b|\bexpert\b|\bkombi\b/i;
 
 // Subconjunto que SÓ existe com 7+ lugares no Brasil. Aqui a lista vence a
 // ficha do LLM: medido, o vendedor escreveu "5 lugares" pro Discovery 2017
 // (que tem 7) e o pós-filtro jogou fora um carro que atendia.
-const SEMPRE_SETE = /\bsw4\b|\bcommander\b|\btiggo\s*8\b|\bdiscovery\b(?!\s*sp)|\bxc\s*90\b|\bq7\b|\bx7\b|\bgls\b|\bcarnival\b|\bsedona\b|\bodyssey\b|\bsienna\b|\bpalisade\b|\b5008\b|\bgrand\s*picasso\b|\bfreemont\b|\bjourney\b|\bminibus\b/i;
+const SEMPRE_SETE = /\bsw4\b|\bcommander\b|\btiggo\s*8\b|\bdiscovery\b(?!\s*sp)|\bxc\s*90\b|\bq7\b|\bx7\b|mercedes.*\bgls\b|\bcarnival\b|\bsedona\b|\bodyssey\b|\bsienna\b|\bpalisade\b|\b5008\b|\bgrand\s*picasso\b|\bfreemont\b|\bjourney\b|\bminibus\b/i;
 
 function cabeLugares(e, lugaresMin) {
   if (!lugaresMin || lugaresMin <= 5) return true;

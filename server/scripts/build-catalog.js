@@ -31,7 +31,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = path.join(__dirname, '..', 'data');
 const OUT_FILE = path.join(OUT_DIR, 'catalog.json');
 
-const ANO_MIN = 2005;
+// --ano-min=2010 sobe o piso só nesta rodada (ex.: marcas populares, onde 2005-09
+// são dezenas de versões de Corsa/Celta que ninguém busca). Entradas antigas já
+// no catálogo ficam — o build é merge, nunca remove.
+const ANO_MIN_PADRAO = 2005;
+const ANO_MIN = parseInt((process.argv.find(a => a.startsWith('--ano-min=')) || '').slice(10), 10) || ANO_MIN_PADRAO;
 const ALL_BRANDS = process.argv.includes('--all-brands');
 const AUDIT = process.argv.includes('--audit');
 
@@ -212,7 +216,7 @@ async function main() {
     await fs.writeFile(OUT_FILE, JSON.stringify({
       version: 1,
       builtAt: new Date().toISOString(),
-      anoMin: ANO_MIN,
+      anoMin: ANO_MIN_PADRAO,
       stats: { marcas: marcasFeitas, modelos: modelosTotal, anos: anosTotal, entries: catalog.length, erros: errosTotal, tipos: tipoStats },
       entries: catalog,
     }, null, 0), 'utf8');
