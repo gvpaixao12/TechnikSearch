@@ -18,7 +18,13 @@ import 'dotenv/config';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getMarcas, getModelos, getAnos, getPreco } from '../fipe.js';
+// Fonte padrão: o site OFICIAL da FIPE (../fipe-oficial.js). A Parallelum
+// limita o IP anônimo a ~500 req/DIA; a oficial só barra rajada (libera em
+// ~1 min), então um build grande vira questão de horas, não de semanas.
+// FIPE_FONTE=parallelum volta pra API antiga.
+const FONTE = (process.env.FIPE_FONTE || 'oficial').toLowerCase();
+const { getMarcas, getModelos, getAnos, getPreco } =
+  await import(FONTE === 'parallelum' ? '../fipe.js' : '../fipe-oficial.js');
 import { classifyTipo, classifyFuel, isComercial } from '../classify.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -96,7 +102,8 @@ function parseAnoFromCode(code) {
 
 // Rate limiter global. Padrão 1500ms; afrouxa em builds grandes via FIPE_RATE_MS
 // (ex.: FIPE_RATE_MS=4000) pra reduzir o risco de ban por volume acumulado.
-const RATE_INTERVAL_MS = parseInt(process.env.FIPE_RATE_MS || '', 10) || 1500;
+// Na oficial, 3000ms é o ritmo medido sem bloqueio (1000ms bloqueia em ~140 req).
+const RATE_INTERVAL_MS = parseInt(process.env.FIPE_RATE_MS || '', 10) || (FONTE === 'parallelum' ? 1500 : 3000);
 let lastRequestAt = 0;
 async function rateLimit() {
   const now = Date.now();
@@ -125,8 +132,11 @@ async function withRetry(fn, label, attempts = RETRY_ATTEMPTS) {
     catch (e) {
       lastErr = e;
       const is429 = e.message?.includes('429');
-      const wait = Math.min((is429 ? 3000 : 1000) * 2 ** i, RETRY_MAX_WAIT_MS)
-        + Math.floor(Math.random() * 1000);
+      // Na oficial o 429 é o Cloudflare segurando rajada por ~1 min: esperar
+      // 90 s de cara resolve; o backoff curto só queimaria as tentativas.
+      const wait = (is429 && FONTE !== 'parallelum')
+        ? 90000
+        : Math.min((is429 ? 3000 : 1000) * 2 ** i, RETRY_MAX_WAIT_MS) + Math.floor(Math.random() * 1000);
       console.warn(`  [${ts()}] [retry ${i + 1}/${attempts}] ${label}: ${e.message}`);
       if (i < attempts - 1) await new Promise(r => setTimeout(r, wait));
     }
@@ -136,7 +146,7 @@ async function withRetry(fn, label, attempts = RETRY_ATTEMPTS) {
 
 async function main() {
   if (AUDIT) return auditar();
-  console.log(`Build de catálogo FIPE — ano >= ${ANO_MIN}, ${ALL_BRANDS ? 'TODAS' : 'top BR'} marcas`);
+  console.log(`Build de catálogo FIPE (fonte: ${FONTE}, ${RATE_INTERVAL_MS} ms/req) — ano >= ${ANO_MIN}, ${ALL_BRANDS ? 'TODAS' : 'top BR'} marcas`);
   await fs.mkdir(OUT_DIR, { recursive: true });
 
   const marcas = await getMarcas();
