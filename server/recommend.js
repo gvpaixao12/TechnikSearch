@@ -149,7 +149,7 @@ function fichaContradiz(ficha, briefing, nomeFipe = '') {
   if (briefing.lugaresMin && lug > 0 && lug < briefing.lugaresMin) return 'lugares';
   const litros = litrosDaFicha(ficha?.porta_malas);
   if (briefing.portaMalasMinL && litros && litros < briefing.portaMalasMinL) return 'portaMalas';
-  if (pedeEsportivo(briefing) && naoEsportivo(ficha, nomeFipe)) return 'esportivo';
+  if (pedeEsportivo(briefing) && nivelEsportivo(ficha, nomeFipe) === 'nao') return 'esportivo';
   return null;
 }
 
@@ -158,15 +158,19 @@ function fichaContradiz(ficha, briefing, nomeFipe = '') {
 // e mesmo assim, medido, o Fit 1.5 de 116 cv entrou num "hatch esportivo".
 // Pedido de prompt é preferência; isto é a trava.
 //
-// Critério é POTÊNCIA da ficha, não o nome: "Sport"/"Turbo" no nome inclui
-// Onix 1.0 Turbo de 116 cv e exclui nada. Selo de versão esportiva de fábrica
-// salva carro com ficha tímida (GTI, HGT, RS…). Ficha sem potência não
-// desmente nada — mesma regra de lugares: descartar no escuro esvazia a lista.
+// Três níveis, calibrados pelo consultor:
+//   'sim'   → 130+ cv ou versão esportiva de fábrica (GTI, HGT, RS3…)
+//   'quase' → turbo ou pacote esportivo sobre motor comum (Onix RS, Polo 200
+//             TSI, N Line): "um pouco esportivo" — entra, mas no fim da lista
+//   'nao'   → aspirado, sem pacote, abaixo de 130 cv (Fit 1.5): sai
+//   null    → ficha sem potência e nada no nome: não dá pra julgar, fica onde
+//             o vendedor pôs (descartar no escuro esvazia a lista)
 const CV_MIN_ESPORTIVO = 130;
-// Fora de propósito: Onix RS, HB20 N Line, R-Line — pacote visual sobre motor
-// comum, exatamente o que o prompt manda não chamar de esportivo. RS só com
-// número (RS3, RS6), que aí é Audi de verdade.
-const SELO_ESPORTIVO = /\b(gti|gts|hgt|gt|rs\s?\d(?![.,\d])|amg|abarth|type\s?r|jcw|john\s+cooper|cooper\s+s|m\d{3}i|srt|cupra)\b/i;
+// RS só com número (RS3, RS6): "RS 1.0" é o Onix, que é pacote (nível 'quase').
+// "GT Line" (Sandero, 208) é pacote, não o GT.
+const SELO_ESPORTIVO = /\b(gti|gts|hgt|gt(?![\s-]*line)|rs\s?\d(?![.,\d])|amg|abarth|type\s?r|jcw|john\s+cooper|cooper\s+s|m\d{3}i|srt|cupra)\b/i;
+const TURBO = /\b(turbo|tb|tsi|tfsi|thp|t-?gdi|ecoboost|t200|t270|\d\.\dt)\b/i;
+const PACOTE_ESPORTIVO = /\b(rs|r\.s\.|n[\s-]?line|r[\s-]?line|gt[\s-]?line|s[\s-]?line|m\s?sport)\b/i;
 
 function pedeEsportivo(briefing) {
   return (briefing.estiloDeVida || []).includes('uso esportivo');
@@ -177,11 +181,19 @@ function cvDaFicha(s) {
   return m ? Number(m[0]) : null;
 }
 
-function naoEsportivo(ficha, nomeFipe) {
+function nivelEsportivo(ficha, nomeFipe) {
   const cv = cvDaFicha(ficha?.potencia);
-  if (!cv) return false;
-  if (cv >= CV_MIN_ESPORTIVO) return false;
-  return !SELO_ESPORTIVO.test(nomeFipe);
+  if (SELO_ESPORTIVO.test(nomeFipe) || (cv && cv >= CV_MIN_ESPORTIVO)) return 'sim';
+  if (TURBO.test(nomeFipe) || PACOTE_ESPORTIVO.test(nomeFipe)) return 'quase';
+  if (cv) return 'nao';
+  return null;
+}
+
+// Fim da lista pros 'quase', mantendo a ordem do vendedor dentro de cada grupo.
+function quaseEsportivosPorUltimo(top, briefing) {
+  if (!pedeEsportivo(briefing)) return top;
+  const quase = t => nivelEsportivo(t.fichaTecnica, t.model) === 'quase';
+  return [...top.filter(t => !quase(t)), ...top.filter(quase)];
 }
 
 // ─── Variedade antes do LLM ──────────────────────────────────────────────
@@ -590,7 +602,7 @@ async function recommendFromCatalog(briefing, log) {
   });
   if (descartadosPorFicha.length) log('ficha-contradiz', { count: descartadosPorFicha.length });
 
-  const topUnico = umaVersaoPorModelo(topCoerente);
+  const topUnico = quaseEsportivosPorUltimo(umaVersaoPorModelo(topCoerente), briefing);
   log('dedupe-modelo', { antes: topCoerente.length, depois: topUnico.length });
 
   if (!topUnico.length && descartadosPorFicha.length) {
@@ -599,7 +611,7 @@ async function recommendFromCatalog(briefing, log) {
       reason: `Encontrei candidatos no orçamento, mas nenhum atende ${[
         briefing.lugaresMin ? `${briefing.lugaresMin} lugares` : null,
         briefing.portaMalasMinL ? `porta-malas de ${briefing.portaMalasMinL} L` : null,
-        pedeEsportivo(briefing) ? `uso esportivo (${CV_MIN_ESPORTIVO} cv ou versão esportiva de fábrica)` : null,
+        pedeEsportivo(briefing) ? `uso esportivo (${CV_MIN_ESPORTIVO} cv, motor turbo ou versão esportiva)` : null,
       ].filter(Boolean).join(' e ')} segundo a ficha técnica. Tente afrouxar esse critério ou o orçamento.`,
       diagnostico: { catalogTotal: catalog.entries.length, catalogPool: pool.length, descartesPorEtapa: reasonsCount, descartadosPorFicha },
     };
