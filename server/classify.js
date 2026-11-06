@@ -13,9 +13,11 @@ const TYPE_RULES = [
   // "Touring" só é perua na Mercedes Classe C — na Honda (Civic/City Touring)
   // é acabamento, por isso a regra amarra no C-<número>.
   { type: 'unknown', patterns: [
-    /\bvariant\b/i, /\bc-?\d{2,3}\s+touring\b/i,
+    // "C-180 CGI Touring Sport": o acabamento pode vir entre o número e "Touring"
+    /\bvariant\b/i, /\bc-?\d{2,3}\b.*\btouring\b/i,
     /\bg(?:rand|\.)\s*tour\b/i,   // Megane Grand Tour / "G. Tour"
     /\bi30\s*cw\b/i,              // i30 CW (cross wagon)
+    /\bc5\s*tourer\b/i,           // SpaceFox/SpaceCross/Parati já não casam com nada
   ]},
 
   // ─── PICKUP ────────────────────────────────────────────────────────────
@@ -23,6 +25,7 @@ const TYPE_RULES = [
     // "Hilux SW4" é o SUV de 7 lugares derivado da Hilux — não é picape.
     /\bhilux\b(?!\s*sw4)/i, /\branger\b/i, /\bs10\b/i, /\bl[ -]?200\b/i, /\bamarok\b/i,
     /\bfrontier\b/i, /\bmaverick\b/i, /\bgladiator\b/i, /\btitano\b/i,
+    /\btriton\b/i, /\btasman\b/i, /\bpoer\b/i, /\bbyd\b.*\bshark\b/i, /\bjac\b.*\bhunter\b/i,
     /\bram\s*\d/i, /\bram\s+\w/i, /\b1500\s+(laramie|limited|big|rebel|sport|laramie longhorn)/i, /\b3500\s+(laramie|limited)/i, /\b2500\s+(laramie|limited)/i,
     /\btitan\b/i, /\bsilverado\b/i, /\bf-?150\b/i, /\bf-?250\b/i, /\bf-?1000\b/i,
     /\boroch\b/i, /\bsaveiro\b/i, /\bstrada\b/i, /\bmontana\b/i, /\btoro\b/i,
@@ -51,6 +54,17 @@ const TYPE_RULES = [
     /\bkicks\b/i, /\bkait\b/i, /\bxterra\b/i, /\bmurano\b/i, /\bpathfinder\b/i,
     // Toyota / Fiat / Renault
     /\byaris\s*cross\b/i, /\bbz4x\b/i, /\bfreemont\b/i, /\bboreal\b/i, /\bmegane\s*e-?tech\b/i,
+    // Suzuki / VW / Jeep / Citroën / Kia / MINI
+    /\bjimny\b/i, /\bvitara\b/i, /\bs-?cross\b/i, /\bsx4\b/i,
+    /\btouareg\b/i, /\btera\b/i, /\bcherokee\b/i, /\bavenger\b/i, /\bbasalt\b/i,
+    /\bniro\b/i, /\bev5\b/i, /\baceman\b/i,
+    // Chineses. JAC "T<número>" são os SUVs da marca (amarrado à marca: T40
+    // sozinho é genérico demais).
+    /\bjac\b.*\bt\s*\d{1,3}\b/i, /\be-?js4\b/i,
+    /\btank\s*\d{3}\b/i, /\bwey\b/i, /\bora\s*05\b/i,
+    /\bgac\b.*\bgs\d\b/i, /\bhyptec\b/i, /\baion\s*[vy]\b/i,
+    /\bbyd\b.*\b(tan|atto|sealion)\b/i,
+    /\bneta\b.*\b(x|aya)\b/i, /\bomoda\b/i, /\bzeekr\b.*\b(7x|x)\b/i, /\bleapmotor\b/i,
     // Honda
     /\bhr-?v\b/i, /\bwr-?v\b/i, /\bzr-?v\b/i, /\bcr-?v\b/i,
     // Fiat
@@ -95,7 +109,7 @@ const TYPE_RULES = [
     // Kia
     /\bsorento\b/i, /\bsportage\b/i, /\bmohave\b/i, /\bstonic\b/i, /\bseltos\b/i, /\bev9\b/i,
     // Citroen / Peugeot
-    /\baircross\b/i, /\bc4\s*cactus\b/i,
+    /\baircross\d?\b/i, /\bc4\s*cactus\b/i,   // "AIRCROSS7": \b depois do 7
     /\b2008\b/i, /\b3008\b/i, /\b5008\b/i, /\b4008\b/i,
     // Lexus
     /\blexus\s*nx\b/i, /\blexus\s*rx\b/i, /\blexus\s*lx\b/i, /\blexus\s*ux\b/i,
@@ -117,7 +131,7 @@ const TYPE_RULES = [
     // Esportivos clássicos (Mustang só o coupé tradicional — Mach-E é SUV elétrico, vai pra SUV)
     /\bmustang\b(?!\s*mach[ -]?e)/i, /\bgt-?r\b/i, /\bcamaro\b/i, /\bchallenger\b/i, /\bcorvette\b/i,
     /\bsupra\b/i, /\bgr\s*86\b/i, /\bgr86\b/i, /\bbrz\b/i, /\bgr\s*yaris\b/i, /\byaris\s*gr\b/i,
-    /\b370z\b/i, /\b350z\b/i,
+    /\b370z\b/i, /\b350z\b/i, /\brcz\b/i, /\beclipse\s*gt\b/i,
     // BMW M. M3/M5/M340i/M550i são SEDÃS e ficam pro bloco de sedã — estavam
     // aqui e até "M3 Sedan" saía cupê. Exceção: M3 3.2 (E46, 2005-06) era cupê;
     // M3 Coupê/Cabrio já casam pelas regras genéricas acima.
@@ -171,6 +185,9 @@ const TYPE_RULES = [
     // Vectra GT/GT-X é o hatch; o resto da linha é sedã
     /\bvectra\b(?!\s*gt)/i, /\bchevrolet\s+classic\b/i, /\bjoy\s*plus\b/i,
     /\bmalibu\b/i, /\bomega\b/i, /\blinea\b/i, /\belantra\b/i, /\bazera\b/i, /\bequus\b/i,
+    /\blancer\b/i, /\bc4\s*lounge\b/i, /\bc4\s*pal/i, /\bc5\b/i, /\b508\b/i, /\barrizo\b/i,
+    /\bcadenza\b/i, /\bmagentis\b/i, /\bquoris\b/i,
+    /\bbyd\b.*\b(han|seal|king)\b/i, /\baion\s*es\b/i, /\be-?j7\b/i,
     /\bfluence\b/i, /\bsymbol\b/i,
     /\bsandero\s*sed/i,
     /\bcerato\b/i, /\boptima\b/i, /\bk5\b/i, /\bg70\b/i, /\bg80\b/i,
@@ -219,6 +236,13 @@ const TYPE_RULES = [
     /\bcelta\b/i, /\bagile\b/i, /\bcorsa\b/i, /\bastra\b/i, /\bvectra\s*gt/i, /\bsonic\b/i,
     /\bjoy\b/i, /\bbolt\b/i, /\bstilo\b/i, /\btiida\b/i, /\bleaf\b/i,
     /\bhb20x\b/i, /\bi20\b/i, /\bioniq\b/i, /\bprius\b/i, /\bstepway\b/i,
+    // Citroën C4 hatch: Lounge/Pallas (sedã) e Cactus (SUV) já saíram acima;
+    // Picasso e Grand C4 são minivan, embaixo.
+    /(?<!grand\s)\bc4\b(?!\s*(picasso|lounge|pal|cactus))/i, /\bds[345]\b/i, /\b307\b/i,
+    /\bbeetle\b/i, /\bswift\b/i, /\bmini\b.*\bone\b/i,
+    /\bqq\b/i, /\bchery\b.*\bface\b/i, /\bcielo\b/i, /\bs-?18\b/i, /\bicar\b/i,
+    /\bora\s*03\b/i, /\bdolphin\b/i, /\bjac\b.*\bj[23]\b/i, /\be-?js1\b/i, /\biev\s*[24]0\b/i,
+    /\baion\s*ut\b/i, /\bzeekr\s*001\b/i,
     /\bonix\b(?!\s*plus|\s*sed)/i, /\bcobalt\s*hatch\b/i, /\bmeriva\b/i,
     /\bgol\b(?!\s*sed)/i, /\bup\b/i, /\bfox\b/i, /\bpolo\b/i, /\bgolf\b/i, /\bscirocco\b/i,
     /\bka\b(?!\s*sed)/i, /\bfiesta\b/i, /\bfocus\b(?!\s*sed)/i,
@@ -229,7 +253,7 @@ const TYPE_RULES = [
     /\bclio\b/i, /\bsandero\b(?!\s*sed)/i, /\bkwid\b/i, /\bzoe\b/i,
     /\bmarch\b/i, /\bversa\s*hatch\b/i,
     /\b208\b/i, /\b207\b/i, /\b206\b/i, /\b308\b/i,
-    /\bc3\b(?!\s*aircross)/i, /\bc4\s*hatch\b/i, /\bc4\s*pallas\b/i,
+    /\bc3\b(?!\s*aircross)/i, /\bc4\s*hatch\b/i,   // C4 Pallas é sedã (bloco de sedã)
     /\byaris\b(?!\s*cross|\s*gr)/i, /\betios\b/i, /\bagya\b/i,
     /\brio\b(?!\s*sed)/i, /\bsoul\b/i, /\bpicanto\b/i,
     /\bcooper\b/i, /\bclubman\b/i,
@@ -250,6 +274,7 @@ const TYPE_RULES = [
     /\bzafira\b/i, /\borlando\b/i, /\bsharan\b/i, /\bcaravan\b/i, /\bsedona\b/i, /\bcarens\b/i,
     /\btouran\b/i, /\bodyssey\b/i, /\bsienna\b/i, /\balphard\b/i,
     /\blivina\b/i, /\bsc[eé]nic\b/i,
+    /picasso/i, /\bgrand\s*c4\b/i, /\bcarnival\b/i, /\bjac\b.*\bj6\b/i, /\bbyd\b.*\bd1\b/i,
     /\bjumpy\b/i, /\bexpert\b/i, /\bducato\b/i, /\bscudo\b/i,
     /\bmpv\b/i, /\bvan\b/i, /\bminibus\b/i,
     // BMW 2-series Active/Gran Tourer (MPV compacto)

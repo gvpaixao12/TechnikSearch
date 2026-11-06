@@ -120,7 +120,7 @@ function motivoDescarte(e, ctx, margem = MARGEM_NORMAL) {
 // entra: a lista só abre a porta; quem barra é a ficha, depois.
 // GLS/GLE amarrados à Mercedes: na Hyundai "GLS" é acabamento (Tucson GLS,
 // Elantra GLS) e passava o Tucson de 5 lugares como 7.
-const SETE_LUGARES = /\bsw4\b|\bcommander\b|\bgrand\s*cherokee\s*l\b|\btrailblazer\b|\bcaptiva\b|\bspin\b|\bzafira\b|\btahoe\b|\bsuburban\b|\bpajero\b(?!\s*(tr4|io))|\boutlander\b|\bsanta\s*f[eé]|\bvera\s*cruz\b|\bpalisade\b|\bsorento\b|\bcarnival\b|\bsedona\b|\bcarens\b|\bmohave\b|\btiggo\s*8\b|\ballspace\b|\btouran\b|\bpathfinder\b|\bgrand\s*livina\b|\bodyssey\b|\bpilot\b|\bexplorer\b|\bjourney\b|\bdurango\b|\bfreemont\b|\bdobl[oò]\b|\bgrand\s*picasso\b|\bc4\s*picasso\b|\b5008\b|\bgrand\s*sc[eé]nic\b|\bdiscovery\b|\bdefender\b|\bxc\s*90\b|\bq7\b|\bx5\b|\bx7\b|\bglb\b|mercedes.*\bgl[se]\b|\bclasse?\s*r\b|\bland\s*cruiser\b|\bprado\b|\blx[ -]?\d{3}|\bgx[ -]?\d{3}|\btan\b|\bsienna\b|\bsharan\b|\bvito\b|\bsprinter\b|\bminibus\b|\bjumpy\b|\bexpert\b|\bkombi\b/i;
+const SETE_LUGARES = /\bsw4\b|\bcommander\b|\bgrand\s*cherokee\s*l\b|\btrailblazer\b|\bcaptiva\b|\bspin\b|\bzafira\b|\btahoe\b|\bsuburban\b|\bpajero\b(?!\s*(tr4|io))|\boutlander\b(?!\s*sport)|\bsanta\s*f[eé]|\bvera\s*cruz\b|\bpalisade\b|\bsorento\b|\bcarnival\b|\bsedona\b|\bcarens\b|\bmohave\b|\btiggo\s*8\b|\baircross\s*7|\bjac\b.*\bj6\b|\ballspace\b|\btouran\b|\bpathfinder\b|\bgrand\s*livina\b|\bodyssey\b|\bpilot\b|\bexplorer\b|\bjourney\b|\bdurango\b|\bfreemont\b|\bdobl[oò]\b|\bgrand\s*picasso\b|\bc4\s*picasso\b|\b5008\b|\bgrand\s*sc[eé]nic\b|\bdiscovery\b|\bdefender\b|\bxc\s*90\b|\bq7\b|\bx5\b|\bx7\b|\bglb\b|mercedes.*\bgl[se]\b|\bclasse?\s*r\b|\bland\s*cruiser\b|\bprado\b|\blx[ -]?\d{3}|\bgx[ -]?\d{3}|\btan\b|\bsienna\b|\bsharan\b|\bvito\b|\bsprinter\b|\bminibus\b|\bjumpy\b|\bexpert\b|\bkombi\b/i;
 
 // Subconjunto que SÓ existe com 7+ lugares no Brasil. Aqui a lista vence a
 // ficha do LLM: medido, o vendedor escreveu "5 lugares" pro Discovery 2017
@@ -170,9 +170,13 @@ const MIN_CANDIDATOS = 10;
 // `lista` mais itens de `reserva` (na ordem dela) até ter `n`.
 function completaAte(lista, reserva, n) {
   if (lista.length >= n) return lista;
+  const out = [...lista];
   const tem = new Set(lista);
-  const extra = reserva.filter(e => !tem.has(e)).slice(0, n - lista.length);
-  return [...lista, ...extra];
+  for (const e of reserva) {   // reserva pode repetir item: dedupe aqui
+    if (out.length >= n) break;
+    if (!tem.has(e)) { tem.add(e); out.push(e); }
+  }
+  return out;
 }
 
 // "Argo HGT 1.8" e "Argo Drive 1.0" → fiat|argo. "Classe A 250" → mercedes|classe a.
@@ -231,11 +235,19 @@ function amostraPorModelo(pool, max) {
   return out;
 }
 
-// Mantém a ordem de quem já ranqueou, cortando o excesso de um mesmo modelo.
-function limitaPorModelo(ordenados, max) {
+// Teto por MARCA na lista do vendedor (30). Medido com o catálogo completo:
+// hatch até 60k tinha Onix, HB20, Sandero, Fit e Etios no pool, e o curador
+// mandou quase só VW — 7 dos 10 do top. Mesmo espírito do teto por modelo:
+// preferência, desliga sozinho (completaAte) quando a busca só tem uma marca.
+const CARROS_POR_MARCA_VENDEDOR = 6;
+const marcaDe = e => normText(e.marca).split(' ')[0];
+
+// Mantém a ordem de quem já ranqueou, cortando o excesso de um mesmo modelo
+// (ou do que `chave` agrupar).
+function limitaPorModelo(ordenados, max, chave = familiaModelo) {
   const conta = new Map();
   return ordenados.filter(e => {
-    const k = familiaModelo(e);
+    const k = chave(e);
     const n = conta.get(k) || 0;
     if (n >= max) return false;
     conta.set(k, n + 1);
@@ -374,7 +386,13 @@ async function recommendFromCatalog(briefing, log) {
   }
   // O vendedor monta ficha na ordem que recebe e devolve os 10 primeiros: o
   // teto por modelo tem que valer AQUI, não só na entrada do curador.
-  candidates = completaAte(limitaPorModelo(candidates, VERSOES_POR_MODELO_VENDEDOR), candidates, MIN_CANDIDATOS).slice(0, 30);
+  // Completar com a AMOSTRA (intercalada, outros modelos) antes de devolver
+  // versões cortadas: quando o curador escolheu estreito (medido: hatch até 60k
+  // com quase só VW), completar com as sobras dele trazia 4 Fox no top.
+  const variado = lista => limitaPorModelo(
+    limitaPorModelo(lista, VERSOES_POR_MODELO_VENDEDOR), CARROS_POR_MARCA_VENDEDOR, marcaDe);
+  const reserva = [...variado(amostra), ...limitaPorModelo(amostra, VERSOES_POR_MODELO_VENDEDOR), ...candidates];
+  candidates = completaAte(variado(candidates), reserva, Math.max(MIN_CANDIDATOS, Math.min(candidates.length, 30))).slice(0, 30);
 
   // Repescagem: carro sinalizado não pode morrer no corte do curador leve —
   // esse corte é um dos dois lugares onde ele sumia (o outro é o vendedor).
