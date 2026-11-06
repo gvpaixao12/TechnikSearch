@@ -1,5 +1,5 @@
 import { normalizeBriefing } from './briefing.js';
-import { runCurator, runVendor, runCuradorLeve } from './agents.js';
+import { runCurator, runVendor, runCuradorLeve, TOP_N, CURADOR_N } from './agents.js';
 import { resolveCandidates } from './match.js';
 import { loadCatalog } from './catalog.js';
 import { splitModelo, baseModelo } from './classify.js';
@@ -12,6 +12,7 @@ const TIPO_TO_SLUG = {
   'Picape': 'pickup',
   'Coupé': 'coupe', 'Coupe': 'coupe', 'Esportivo': 'coupe',
   'Minivan': 'minivan',
+  'Perua': 'perua',
 };
 
 function tipoSlug(tipo) {
@@ -165,7 +166,7 @@ const VERSOES_POR_MODELO_CURADOR = 12;
 const VERSOES_POR_MODELO_VENDEDOR = 2;
 // Os tetos são preferência, não regra: se a busca só tem 6 versões de 911,
 // mostrar 2 por "variedade" seria esconder carro que atende.
-const MIN_CANDIDATOS = 10;
+const MIN_CANDIDATOS = TOP_N;
 
 // `lista` mais itens de `reserva` (na ordem dela) até ter `n`.
 function completaAte(lista, reserva, n) {
@@ -239,7 +240,8 @@ function amostraPorModelo(pool, max) {
 // hatch até 60k tinha Onix, HB20, Sandero, Fit e Etios no pool, e o curador
 // mandou quase só VW — 7 dos 10 do top. Mesmo espírito do teto por modelo:
 // preferência, desliga sozinho (completaAte) quando a busca só tem uma marca.
-const CARROS_POR_MARCA_VENDEDOR = 6;
+// 1/4 da lista do vendedor (era 6 de 30; agora 12 de 50).
+const CARROS_POR_MARCA_VENDEDOR = Math.round(CURADOR_N / 4);
 const marcaDe = e => normText(e.marca).split(' ')[0];
 
 // Mantém a ordem de quem já ranqueou, cortando o excesso de um mesmo modelo
@@ -373,7 +375,7 @@ async function recommendFromCatalog(briefing, log) {
   let candidates = amostra;
 
   // Curador leve LLM: se sobrou muito, prioriza os ~30 mais relevantes
-  if (amostra.length > 30) {
+  if (amostra.length > CURADOR_N) {
     try {
       const ids = await runCuradorLeve(briefing, amostra);
       const byKey = new Map(amostra.map(e => [`${e.marcaId}|${e.modeloId}|${e.anoId}`, e]));
@@ -392,7 +394,7 @@ async function recommendFromCatalog(briefing, log) {
   const variado = lista => limitaPorModelo(
     limitaPorModelo(lista, VERSOES_POR_MODELO_VENDEDOR), CARROS_POR_MARCA_VENDEDOR, marcaDe);
   const reserva = [...variado(amostra), ...limitaPorModelo(amostra, VERSOES_POR_MODELO_VENDEDOR), ...candidates];
-  candidates = completaAte(variado(candidates), reserva, Math.max(MIN_CANDIDATOS, Math.min(candidates.length, 30))).slice(0, 30);
+  candidates = completaAte(variado(candidates), reserva, Math.max(MIN_CANDIDATOS, Math.min(candidates.length, CURADOR_N))).slice(0, CURADOR_N);
 
   // Repescagem: carro sinalizado não pode morrer no corte do curador leve —
   // esse corte é um dos dois lugares onde ele sumia (o outro é o vendedor).

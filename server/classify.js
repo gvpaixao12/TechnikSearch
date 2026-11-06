@@ -7,17 +7,25 @@
 
 // Ordem importa — primeiro match vence.
 const TYPE_RULES = [
-  // ─── PERUA → unknown de propósito ──────────────────────────────────────
-  // Mesmo critério do Volvo V60 (ver bloco HATCH): o catálogo não tem
-  // categoria de perua, e "Golf Variant" casaria com /golf/ e viraria hatch.
-  // "Touring" só é perua na Mercedes Classe C — na Honda (Civic/City Touring)
-  // é acabamento, por isso a regra amarra no C-<número>.
-  { type: 'unknown', patterns: [
+  // ─── PERUA ─────────────────────────────────────────────────────────────
+  // Primeira regra de propósito: "Golf Variant" casaria com /golf/ e viraria
+  // hatch, "Palio Weekend" com /palio/, "A4 Avant" com /audi a4/ (sedã).
+  // "Touring" só é perua na Mercedes Classe C e na BMW — na Honda (Civic/City
+  // Touring) é acabamento, por isso a regra amarra no C-<número> ou na marca.
+  // Tipo próprio desde 2026-11 (antes ficava 'unknown' e sumia de toda busca).
+  { type: 'perua', patterns: [
     // "C-180 CGI Touring Sport": o acabamento pode vir entre o número e "Touring"
-    /\bvariant\b/i, /\bc-?\d{2,3}\b.*\btouring\b/i,
+    /\bvariant\b/i, /\bc-?\d{2,3}\b.*\btouring\b/i, /\bbmw\b.*\btouring\b/i,
     /\bg(?:rand|\.)\s*tour\b/i,   // Megane Grand Tour / "G. Tour"
     /\bi30\s*cw\b/i,              // i30 CW (cross wagon)
-    /\bc5\s*tourer\b/i,           // SpaceFox/SpaceCross/Parati já não casam com nada
+    /\bc5\s*tourer\b/i,
+    /\bspace\s*fox\b/i, /\bspacecross\b/i, /\bparati\b/i, /\bquantum\b/i,
+    /\bweek(?:end|\.)/i,          // Palio/Marea Weekend ("Palio Week. Adv.")
+    /\bwagon\b/i, /\bestate\b/i, /\ballroad\b/i,
+    /\b(?:20[67]|30[78])\s*sw\b/i,  // Peugeot 207/307/308 SW
+    // "Avant" é a perua da Audi; "Avant." com ponto é Avantgarde da Mercedes
+    /\bavant\b(?!\.)/i,
+    /\bvolvo\b.*\bv[679]0\b/i,    // V60/V70/V90 (V40 é hatch)
   ]},
 
   // ─── PICKUP ────────────────────────────────────────────────────────────
@@ -197,8 +205,8 @@ const TYPE_RULES = [
     /\baudi\s*s[3-8]\b/i,
     /\baudi\s*a4\b/i, /\baudi\s*a5\b/i, /\baudi\s*a6\b/i, /\baudi\s*a7\b/i, /\baudi\s*a8\b/i,
     /\ba5\s*(sportb|ambient|attraction|ambit)/i,
-    // Audi RS4 Avant (perua/wagon — classifica como sedan)
-    /\brs4\s+\d/i, /\brs4\s+avant/i,
+    // RS4 sem "Avant" no nome (RS4 Avant já saiu como perua, na 1ª regra)
+    /\brs4\s+\d/i,
     // Audi E-TRON GT (sedan elétrico 4p, 4 portas)
     /\be-tron\s+gt\b/i,
     // BMW 3/5/7-series sedan — número cru tipo "320iA", "530i", "740iA", e os
@@ -226,9 +234,7 @@ const TYPE_RULES = [
 
   // ─── HATCH ─────────────────────────────────────────────────────────────
   { type: 'hatch', patterns: [
-    /\bv40\b/i,   // Volvo V40 — hatch. V60/V90 sao PERUAS e ficam de fora:
-    // o catalogo nao tem categoria de perua, e classificar como hatch ou
-    // sedan seria inventar. Melhor unknown que errado.
+    /\bv40\b/i,   // Volvo V40 — hatch. V60/V70/V90 são peruas (1ª regra).
     /\bct\s?200h?\b/i,   // Lexus CT200h — hatch compacto
     /\bhatch(back)?\b/i,   // "CITY Hatchback" não casava com \bhatch\b
     /\bcrossfox\b/i, /\bfusca\b/i, /\bbmw\s+i3\b/i,

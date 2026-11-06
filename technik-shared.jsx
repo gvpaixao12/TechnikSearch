@@ -103,6 +103,9 @@ const CarSilhouette = ({ type = 'suv', stroke = 'currentColor', fill = 'none', s
       return (<svg viewBox="0 0 120 50" {...props}><path d="M8 36 L14 24 Q24 14 44 12 Q70 11 92 22 L112 30 Q114 32 114 36 L114 38 L8 38 Z"/><path d="M30 24 L54 14 L84 18 L98 24"/><circle cx="34" cy="38" r="6"/><circle cx="92" cy="38" r="6"/></svg>);
     case 'electric':
       return (<svg viewBox="0 0 120 50" {...props}><path d="M10 36 L14 22 Q22 14 36 13 L78 13 Q92 13 102 22 L114 28 Q116 30 116 34 L116 38 L10 38 Z"/><path d="M26 22 L48 15 L78 15 L96 22"/><circle cx="32" cy="38" r="6"/><circle cx="92" cy="38" r="6"/><path d="M58 22 L54 28 L60 28 L56 34" strokeWidth="1.6"/></svg>);
+    case 'perua':
+      // Frente de sedã, teto reto até a traseira e tampa quase vertical.
+      return (<svg viewBox="0 0 120 50" {...props}><path d="M8 36 L14 22 Q24 14 38 13 L102 13 Q109 13 111 19 L114 28 L114 38 L8 38 Z"/><path d="M28 22 L48 16 L102 16 L107 22M72 16 L72 22"/><circle cx="32" cy="38" r="6"/><circle cx="94" cy="38" r="6"/></svg>);
     case 'minivan':
       return (<svg viewBox="0 0 120 50" {...props}><path d="M8 36 L10 18 Q14 12 26 11 L94 11 Q108 12 112 22 L114 28 L114 38 L8 38 Z"/><path d="M22 18 L40 14 L94 14 L106 22M62 14 L62 22"/><circle cx="30" cy="38" r="6"/><circle cx="96" cy="38" r="6"/></svg>);
     default: return null;
@@ -372,6 +375,7 @@ const TYPE_OPTIONS = [
   { id: 'suv',      label: 'SUV' },
   { id: 'pickup',   label: 'Picape' },
   { id: 'coupe',    label: 'Coupé' },
+  { id: 'perua',    label: 'Perua' },
 ];
 const FUEL_OPTIONS = [
   { id: 'flex',     label: 'Flex' },

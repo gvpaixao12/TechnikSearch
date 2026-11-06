@@ -14,6 +14,14 @@ const MODEL = USE_CUSTOM_LLM
   ? (process.env.LLM_MODEL || 'gpt-4o-mini')
   : 'llama-3.3-70b-versatile';
 
+// Tamanho do resultado. Era 10; com o catálogo cobrindo o mercado (12,6 mil
+// carros), 10 vagas obrigavam a IA a escolher entre Onix, HB20 e Gol — e ela
+// escolhia uma marca. 25 é o teto prático: cada item custa ~250 tokens de ficha
+// e o gpt-4o-mini sai no máximo com 16k, então 50 não caberia numa chamada.
+export const TOP_N = 25;
+// O curador manda o dobro pro vendedor, pra ele ter de onde escolher.
+export const CURADOR_N = TOP_N * 2;
+
 // Quem está pagando esta conta — só pra etiquetar o consumo no painel de uso.
 const BASE_URL = USE_CUSTOM_LLM ? (process.env.LLM_BASE_URL || 'https://api.openai.com/v1') : 'groq';
 const PROVIDER = /groq/i.test(BASE_URL) ? 'groq'
@@ -173,10 +181,10 @@ Você vai receber: (1) o briefing do cliente, (2) uma lista de candidatos JÁ va
 Sua tarefa é, para CADA candidato recebido, montar uma FICHA TÉCNICA factual da versão indicada (atenção ao ano-modelo).
 
 REGRA DE QUANTIDADE — INVIOLÁVEL:
-- Se recebeu N candidatos onde N >= 10: retorne EXATAMENTE 10 itens em "top".
-- Se recebeu N candidatos onde 1 <= N <= 9: retorne EXATAMENTE N itens em "top". TODOS. Sem exceção. Nem 1 a menos.
+- Se recebeu N candidatos onde N >= ${TOP_N}: retorne EXATAMENTE ${TOP_N} itens em "top".
+- Se recebeu N candidatos onde 1 <= N <= ${TOP_N - 1}: retorne EXATAMENTE N itens em "top". TODOS. Sem exceção. Nem 1 a menos.
 - O servidor já pré-filtrou por ano, tipo, combustível e orçamento. Você NÃO descarta candidato por esses motivos — eles já passaram. Sua função é só montar a ficha técnica.
-- Conte: o número de itens em "top" precisa bater com min(N, 10). Se você for retornar 3 quando recebeu 7, REFAÇA — está errado.
+- Conte: o número de itens em "top" precisa bater com min(N, ${TOP_N}). Se você for retornar 3 quando recebeu 7, REFAÇA — está errado.
 
 Ordenação:
 - Ordene por aderência ao briefing — apenas para ter uma ordem estável. NÃO dê notas, nem destaque "o melhor". O front exibe lado a lado, sem ranking visível ao usuário.
@@ -245,14 +253,14 @@ export async function runCurator(briefing) {
 // Tarefa: priorizar até 30 candidatos mais relevantes pro briefing, devolver IDs.
 // Não decide se cabe no briefing (filtros já garantiram). Só ordena por relevância
 // (estilo de vida, prioridades, prestígio da marca, etc).
-const CURADOR_LEVE_SYSTEM = `Você é um especialista em carros do Brasil. Recebe um briefing e uma lista de candidatos JÁ pré-filtrados (ano, tipo, combustível, orçamento OK). Sua tarefa: PRIORIZAR os 30 mais relevantes pra esse cliente específico, considerando estilo de vida, prioridades e perfil.
+const CURADOR_LEVE_SYSTEM = `Você é um especialista em carros do Brasil. Recebe um briefing e uma lista de candidatos JÁ pré-filtrados (ano, tipo, combustível, orçamento OK). Sua tarefa: PRIORIZAR os ${CURADOR_N} mais relevantes pra esse cliente específico, considerando estilo de vida, prioridades e perfil.
 
 Regras:
-- Devolver até 30 IDs, em ordem de relevância (1º = mais relevante).
+- Devolver até ${CURADOR_N} IDs, em ordem de relevância (1º = mais relevante).
 - Não excluir por preço ou ano — esses já foram filtrados.
-- Se a lista tiver <= 30 itens, devolva todos ordenados.
+- Se a lista tiver <= ${CURADOR_N} itens, devolva todos ordenados.
 - Lugares mínimos e porta-malas mínimo do briefing NÃO foram filtrados com certeza: priorize quem atende e mande pro fim quem você sabe que não atende (ex: pediu 7 lugares, a versão tem 5).
-- Diversifique: no máximo 2 versões do mesmo modelo (dois Argo, dois Golf) entre os 30. A ordem da lista de entrada NÃO indica relevância.
+- Diversifique: no máximo 2 versões do mesmo modelo (dois Argo, dois Golf) entre os ${CURADOR_N}. A ordem da lista de entrada NÃO indica relevância.
 - Considere: cliente família ↔ espaço/segurança; cliente urbano ↔ compactos; cliente trabalho/offroad ↔ picape/SUV robusto.
 - Uso esportivo = DESEMPENHO, não acabamento. Priorize motor turbo ou de maior potência (TB, TSI, TFSI, Turbo, 2.0, cv alto), versões esportivas de fábrica (GTI, HGT, AMG, M Sport, R-Design, Sport) e hatches premium de tração forte (Mercedes Classe A 250, BMW 125i/130i, Audi A3, Golf TSI, Volvo V40 T4/T5). Um 1.0/1.3 aspirado com pacote visual topo de linha NÃO é esportivo — vai pro fim da lista. Ano mais antigo não é demérito quando o briefing aceita esse ano.
 
@@ -261,14 +269,14 @@ Retorne EXCLUSIVAMENTE este JSON:
 Cada ID é EXATAMENTE como aparece no formato "marcaId|modeloId|anoId" da lista de entrada.`;
 
 export async function runCuradorLeve(briefing, pool) {
-  if (pool.length <= 30) return pool.map(e => `${e.marcaId}|${e.modeloId}|${e.anoId}`);
+  if (pool.length <= CURADOR_N) return pool.map(e => `${e.marcaId}|${e.modeloId}|${e.anoId}`);
   const briefText = briefingToText(briefing);
   // Lista compacta — só ID + marca/modelo/ano/preço
   const itensTexto = pool.map(e =>
     `${e.marcaId}|${e.modeloId}|${e.anoId} :: ${e.marca} ${e.modelo} ${e.ano} (${e.tipo}, ${e.combustivel}) ${e.precoTexto}`
   ).join('\n');
-  const prompt = `Briefing:\n${briefText}\n\nLista (${pool.length} itens):\n${itensTexto}\n\nDevolva os 30 IDs mais relevantes em ordem de relevância.`;
-  const json = await runChat({ system: CURADOR_LEVE_SYSTEM, user: prompt, maxTokens: 2000 });
+  const prompt = `Briefing:\n${briefText}\n\nLista (${pool.length} itens):\n${itensTexto}\n\nDevolva os ${CURADOR_N} IDs mais relevantes em ordem de relevância.`;
+  const json = await runChat({ system: CURADOR_LEVE_SYSTEM, user: prompt, maxTokens: CURADOR_N * 40 });
   return Array.isArray(json?.ids) ? json.ids : [];
 }
 
@@ -296,10 +304,11 @@ export async function runVendor(briefing, resolvedCandidates, { lembretes = [] }
   const blocoLembretes = lembretes.length
     ? `---\n\nATENÇÃO — sinalizado por consultor humano:\n`
       + lembretes.map(l => `[${l.id}] ${l.label}`).join('\n')
-      + `\n\nUm consultor experiente já reclamou de não ver estes carros em buscas parecidas com esta, e eles passaram em todos os filtros do briefing. Inclua-os no top 10, a não ser que exista razão técnica CONCRETA contra (ex: o briefing pede 7 lugares e o carro tem 5). "Outro candidato é mais popular" ou "é mais óbvio" NÃO é razão.\n\n`
+      + `\n\nUm consultor experiente já reclamou de não ver estes carros em buscas parecidas com esta, e eles passaram em todos os filtros do briefing. Inclua-os no top ${TOP_N}, a não ser que exista razão técnica CONCRETA contra (ex: o briefing pede 7 lugares e o carro tem 5). "Outro candidato é mais popular" ou "é mais óbvio" NÃO é razão.\n\n`
     : '';
 
-  const prompt = `Briefing do cliente:\n\n${briefText}\n\n---\n\n${blocoLembretes}Candidatos validados na FIPE (use o ID exato como "candidatoId" na resposta):\n\n${candidatosTexto}\n\nMonte o top 10 final.`;
-  const json = await runChat({ system: VENDOR_SYSTEM, user: prompt });
+  const prompt = `Briefing do cliente:\n\n${briefText}\n\n---\n\n${blocoLembretes}Candidatos validados na FIPE (use o ID exato como "candidatoId" na resposta):\n\n${candidatosTexto}\n\nMonte o top ${TOP_N} final.`;
+  // ~250 tokens de ficha por item; o default (3500) truncava acima de ~12.
+  const json = await runChat({ system: VENDOR_SYSTEM, user: prompt, maxTokens: TOP_N * 350 });
   return json.top;
 }

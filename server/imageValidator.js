@@ -139,6 +139,7 @@ const BODY_LABEL = {
   // o CLA inteiro.
   coupe: { nome: 'cupê / esportivo', desc: 'teto baixo e caído, silhueta esportiva — pode ter 2 ou 4 portas' },
   minivan: { nome: 'minivan / monovolume', desc: 'teto alto e comprido, três fileiras, perfil de van' },
+  perua: { nome: 'perua / station wagon', desc: 'frente de hatch ou sedã com o teto reto prolongado até a traseira, tampa traseira quase vertical' },
 };
 
 // Tolerância do portão de ano. O ano-modelo da FIPE costuma ser o ano de

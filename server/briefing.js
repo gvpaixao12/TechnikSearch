@@ -1,6 +1,6 @@
 const TYPE_LABELS = {
   hatch: 'Hatch', sedan: 'Sedã', suv: 'SUV',
-  pickup: 'Picape', coupe: 'Coupé', minivan: 'Minivan',
+  pickup: 'Picape', coupe: 'Coupé', minivan: 'Minivan', perua: 'Perua',
 };
 
 const FUEL_LABELS = {

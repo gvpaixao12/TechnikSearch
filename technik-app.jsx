@@ -61,7 +61,7 @@ const ANO_TETO = new Date().getFullYear() + 1;
 // não o form cru. Mantenha em sincronia com os *_LABELS de server/briefing.js.
 const LABEL_TO_TYPE = {
   'Hatch': 'hatch', 'Sedã': 'sedan', 'SUV': 'suv',
-  'Picape': 'pickup', 'Coupé': 'coupe', 'Minivan': 'minivan',
+  'Picape': 'pickup', 'Coupé': 'coupe', 'Minivan': 'minivan', 'Perua': 'perua',
 };
 const LABEL_TO_FUEL = {
   'Flex': 'flex', 'Gasolina': 'gas', 'Diesel': 'diesel',
@@ -388,7 +388,7 @@ function App() {
               {activeNav === 'settings' && 'Ajustes'}
               {activeNav === 'new' && stage === 'form' && 'Briefing do perfil'}
               {activeNav === 'new' && stage === 'loading' && 'Cruzando catálogo'}
-              {activeNav === 'new' && stage === 'results' && `Top 10 para ${client.name.split(' ')[0]}`}
+              {activeNav === 'new' && stage === 'results' && `Opções para ${client.name.split(' ')[0]}`}
             </h1>
           </div>
           </div>
@@ -1423,7 +1423,7 @@ function FormView(props) {
             <span className="tk-help">Dura 2-3 minutos · você pode salvar a qualquer momento</span>
           </div>
           <h2>Tudo que precisa saber sobre <strong>{client.name.split(' ')[0]}</strong>, em uma tela.</h2>
-          <p>Preencha os campos visuais à esquerda e o painel à direita atualiza o perfil em tempo real. Quando clicar em <em>Buscar</em>, cruzamos com 1.200 opções do estoque parceiro e devolvemos um Top 10 com justificativa.</p>
+          <p>Preencha os campos visuais à esquerda e o painel à direita atualiza o perfil em tempo real. Quando clicar em <em>Buscar</em>, cruzamos com mais de 12 mil versões da Tabela FIPE e devolvemos até 25 opções lado a lado, com ficha técnica.</p>
         </div>
 
         {/* Cliente */}
@@ -1791,7 +1791,7 @@ function LoadingView({ step, error, onRetry, onCancel }) {
     'Curador IA montando shortlist de 15-18 candidatos',
     'Consultando preços reais na Tabela FIPE',
     'Filtrando por orçamento e deduplicando',
-    'Vendedor IA ranqueando o Top 10',
+    'Vendedor IA montando as fichas técnicas',
   ];
 
   if (error) {
@@ -2845,7 +2845,7 @@ function ResultsView({ client, consultaId, cardStyle, showCompareBar, cars = [],
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
 
-  const TYPE_LABEL = { suv: 'SUV', sedan: 'Sedan', hatch: 'Hatch', pickup: 'Picape', coupe: 'Esportivo', minivan: 'Minivan' };
+  const TYPE_LABEL = { suv: 'SUV', sedan: 'Sedan', hatch: 'Hatch', pickup: 'Picape', coupe: 'Esportivo', minivan: 'Minivan', perua: 'Perua' };
   const counts = useMemo(() => {
     const c = {};
     cars.forEach(car => { c[car.type] = (c[car.type] || 0) + 1; });
@@ -3031,7 +3031,7 @@ function ResultsView({ client, consultaId, cardStyle, showCompareBar, cars = [],
 // Recebe os 2 carros já selecionados e mostra foto, identificação e a ficha
 // técnica alinhada linha a linha. Onde os dois diferem, marca com um ponto.
 function CompareModal({ cars = [], onClose }) {
-  const TYPE_LABEL = { suv: 'SUV', sedan: 'Sedan', hatch: 'Hatch', pickup: 'Picape', coupe: 'Esportivo', minivan: 'Minivan' };
+  const TYPE_LABEL = { suv: 'SUV', sedan: 'Sedan', hatch: 'Hatch', pickup: 'Picape', coupe: 'Esportivo', minivan: 'Minivan', perua: 'Perua' };
 
   useEffect(() => {
     const prevOverflow = document.body.style.overflow;
