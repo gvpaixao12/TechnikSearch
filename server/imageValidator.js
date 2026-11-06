@@ -268,6 +268,7 @@ REPROVE a foto se QUALQUER item abaixo for verdade:
 - **ANÚNCIO DE CONCESSIONÁRIA / CLASSIFICADO**: tarja, faixa, moldura, rodapé ou borda com TELEFONE, nome de loja/revenda/seminovos, endereço, lista de cidades, "R$"/preço, KM ou logo de revenda — REPROVE SEMPRE, mesmo com o carro limpo. Qualquer telefone visível REPROVA.
 - **THUMBNAIL DE VÍDEO / CHAMADA DE MATÉRIA**: capa de YouTube, headline sobreposta ("MELHOR HATCH 2024?", "TESTE COMPLETO"), preço ou número grande sobre o carro — REPROVE.
 - Colagem/montagem com várias fotos numa só (antes/depois, comparativo).
+- **FOTO EDITADA / DE LOJA DE ACESSÓRIOS**: círculo ou quadro com detalhe ampliado sobreposto ao carro (peça, aerofólio, ponteira), seta, linha, setinha ou marcação desenhada, texto sobreposto, ou placa trocada por plaqueta com nome de loja/marca ("ACESSÓRIOS", "@perfil", site). É anúncio de peça, não foto do carro — REPROVE, mesmo que o carro em si esteja certo e limpo.
 - Marca d'água ou logo GRANDE cobrindo mais de ~10% do carro. Marca d'água de site pequena e discreta num canto é tolerável; logo de revenda, telefone ou faixa promocional NUNCA são.
 
 Em dúvida, REPROVE. Melhor zero foto que uma foto errada.

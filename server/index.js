@@ -10,7 +10,8 @@ import { getMarcas, getModelos, getAnos, getPreco } from './fipe.js';
 import { resolveCandidate, resolveCandidates } from './match.js';
 import { runCurator } from './agents.js';
 import { normalizeBriefing } from './briefing.js';
-import { recommend, diagnoseMiss, suggestModels, invalidateRankingHints } from './recommend.js';
+import { recommend, diagnoseMiss, suggestModels, invalidateRankingHints, invalidateExclusoes, familiaDe } from './recommend.js';
+import { saveCarroFeedback, listExclusoesPerfil, deleteCarroFeedback } from './carro-feedback.js';
 import { loadCatalog, clearCatalogCache } from './catalog.js';
 import { iniciarAgendadorPrecos } from './agendador-precos.js';
 import { getOrBuildImages, listCachedCars, addManualImages, rebuildCarImages, getCarPhotos, deleteCarPhoto, setPhotoFavorite } from './imageCache.js';
@@ -35,6 +36,10 @@ import {
   registraPedidoSenha, listaPedidosSenha, marcaPedidoAtendido,
   exigeAdmin, defineAdmin,
 } from './auth.js';
+import {
+  loginBloqueado, registraFalhaLogin, registraSucessoLogin, msgLoginBloqueado,
+  pedidoSenhaBloqueado,
+} from './limite.js';
 
 const app = express();
 
@@ -92,8 +97,17 @@ app.use('/assets', express.static(path.join(FRONTEND_DIR, 'assets')));
 app.post('/api/login', async (req, res) => {
   try {
     const { login, senha } = req.body || {};
+    const espera = loginBloqueado(req, login);
+    if (espera) {
+      res.set('Retry-After', String(espera));
+      return res.status(429).json({ ok: false, reason: msgLoginBloqueado(espera) });
+    }
     const u = await autentica({ login, senha });
-    if (!u) return res.status(401).json({ ok: false, reason: 'usuário ou senha incorretos' });
+    if (!u) {
+      registraFalhaLogin(req, login);
+      return res.status(401).json({ ok: false, reason: 'usuário ou senha incorretos' });
+    }
+    registraSucessoLogin(req, login);
     const token = await criaSessao({ usuarioId: u.id, userAgent: req.headers['user-agent'] });
     setCookieSessao(req, res, token);
     // `trocarSenha` avisa o frontend que a sessão só alcança /trocar-senha —
@@ -115,6 +129,9 @@ app.post('/api/login', async (req, res) => {
 // Responde igual exista ou não o login: resposta diferente pra login
 // inexistente entregaria quais existem a quem ficasse testando.
 app.post('/api/pedido-senha', async (req, res) => {
+  // Estourou o limite: responde igual ao normal, só não grava. Um 429 aqui não
+  // ajudaria ninguém legítimo (5 pedidos por hora sobra) e avisaria o script.
+  if (pedidoSenhaBloqueado(req)) return res.json({ ok: true });
   try { await registraPedidoSenha(req.body?.login); }
   catch (e) { console.warn('[pedido-senha] falhou:', e.message); }
   res.json({ ok: true });
@@ -247,15 +264,20 @@ app.get('/crm', exigeAuth('crm'), (_req, res) => {
   res.sendFile(path.join(FRONTEND_DIR, 'crm.html'));
 });
 
-// FRONTEND_DIR é a raiz do projeto, e ela contém `server/`. Sem este guarda o
-// código do backend sai pela web — o `.env` não, porque o express ignora
-// dotfiles por padrão, mas `server/auth.js` e o resto sim.
-app.use((req, res, next) => {
-  if (/^\/(server|node_modules|desktop)(\/|$)/i.test(req.path)) return res.status(404).end();
-  next();
-});
-
-app.use(express.static(FRONTEND_DIR));
+// FRONTEND_DIR é a raiz do projeto, e ela contém `server/`, `desktop/`, os
+// planos .md… Por isso NÃO se serve a raiz com express.static: só esta lista
+// fechada. Um bloqueio por regex (o que existia antes) olhava o caminho ainda
+// codificado e o static decodificava depois — `/%73erver/auth.js` passava.
+// Arquivo novo no frontend precisa entrar aqui.
+const ARQUIVOS_FRONTEND = [
+  'technik-app.jsx',
+  'technik-shared.jsx',
+  'tweaks-panel.jsx',
+  'porsche-911-mask.png',   // referenciado pelo brand-styles.css
+];
+for (const nome of ARQUIVOS_FRONTEND) {
+  app.get('/' + nome, (_req, res) => res.sendFile(path.join(FRONTEND_DIR, nome)));
+}
 
 app.get('/api/health', async (_req, res) => {
   let catalogTotal = null;
@@ -553,6 +575,56 @@ app.post('/api/feedback', async (req, res) => {
     }
   } catch (e) {
     res.status(500).json({ ok: false, reason: e.message });
+  }
+});
+
+// ─── "Não curti este carro" (botão por card) ─────────────────────
+// 'perfil' → grava a exclusão (a gravação É a ação: falhou, devolve erro).
+// 'foto'   → apaga a foto da capa já; o registro é só rastro, e falhar nele
+//            não desfaz nem esconde a remoção.
+app.post('/api/carro-feedback', async (req, res) => {
+  const { consultaId, motivo, marca, modelo, ano, fotoUrl, client, briefing } = req.body || {};
+  if (!marca || !modelo) return res.status(400).json({ ok: false, reason: 'marca e modelo são obrigatórios' });
+  const base = {
+    consultaId, motivo, marca, modelo, ano,
+    familia: familiaDe(marca, modelo),
+    usos: Array.isArray(briefing?.estiloDeVida) ? briefing.estiloDeVida : [],
+    fotoUrl, clientName: client?.name, briefing,
+  };
+  try {
+    if (motivo === 'foto') {
+      if (!ano || !fotoUrl) return res.status(400).json({ ok: false, reason: 'ano e fotoUrl são obrigatórios' });
+      const r = await deleteCarPhoto({ marca, modelo, ano: Number(ano), url: fotoUrl });
+      saveCarroFeedback(base).catch(e => console.warn('[carro-feedback] foto removida, registro falhou:', e.message));
+      return res.json({ ok: true, photoCount: r.photoCount });
+    }
+    if (motivo === 'perfil') {
+      const id = await saveCarroFeedback(base);
+      invalidateExclusoes();
+      return res.json({ ok: true, id, familia: base.familia, usos: base.usos });
+    }
+    res.status(400).json({ ok: false, reason: 'motivo precisa ser "perfil" ou "foto"' });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+// Lista/desfaz as exclusões por perfil (não há tela ainda — curl/CRM).
+app.get('/api/carro-feedback', exigeAuth('crm'), async (_req, res) => {
+  try {
+    res.json({ ok: true, exclusoes: await listExclusoesPerfil() });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+app.delete('/api/carro-feedback/:id', exigeAuth('crm'), async (req, res) => {
+  try {
+    const n = await deleteCarroFeedback(req.params.id);
+    invalidateExclusoes();
+    res.json({ ok: true, removidos: n });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
   }
 });
 

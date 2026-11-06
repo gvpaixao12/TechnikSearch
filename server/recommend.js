@@ -4,6 +4,7 @@ import { resolveCandidates } from './match.js';
 import { loadCatalog } from './catalog.js';
 import { splitModelo, baseModelo } from './classify.js';
 import { listRankingMisses } from './feedback.js';
+import { listExclusoesPerfil } from './carro-feedback.js';
 
 const TIPO_TO_SLUG = {
   'Hatch': 'hatch',
@@ -143,12 +144,44 @@ function litrosDaFicha(s) {
 // Por que a ficha do vendedor desmente o briefing? null = não desmente.
 // Ficha em branco (o vendedor não sabia) não desmente nada — não dá pra
 // provar que não atende, e descartar no escuro esvaziaria a lista.
-function fichaContradiz(ficha, briefing) {
+function fichaContradiz(ficha, briefing, nomeFipe = '') {
   const lug = Number(ficha?.lugares) || 0;
   if (briefing.lugaresMin && lug > 0 && lug < briefing.lugaresMin) return 'lugares';
   const litros = litrosDaFicha(ficha?.porta_malas);
   if (briefing.portaMalasMinL && litros && litros < briefing.portaMalasMinL) return 'portaMalas';
+  if (pedeEsportivo(briefing) && naoEsportivo(ficha, nomeFipe)) return 'esportivo';
   return null;
+}
+
+// ─── Uso esportivo ───────────────────────────────────────────────────────
+// O prompt do vendedor já diz "aspirado com pacote visual NÃO é esportivo",
+// e mesmo assim, medido, o Fit 1.5 de 116 cv entrou num "hatch esportivo".
+// Pedido de prompt é preferência; isto é a trava.
+//
+// Critério é POTÊNCIA da ficha, não o nome: "Sport"/"Turbo" no nome inclui
+// Onix 1.0 Turbo de 116 cv e exclui nada. Selo de versão esportiva de fábrica
+// salva carro com ficha tímida (GTI, HGT, RS…). Ficha sem potência não
+// desmente nada — mesma regra de lugares: descartar no escuro esvazia a lista.
+const CV_MIN_ESPORTIVO = 130;
+// Fora de propósito: Onix RS, HB20 N Line, R-Line — pacote visual sobre motor
+// comum, exatamente o que o prompt manda não chamar de esportivo. RS só com
+// número (RS3, RS6), que aí é Audi de verdade.
+const SELO_ESPORTIVO = /\b(gti|gts|hgt|gt|rs\s?\d(?![.,\d])|amg|abarth|type\s?r|jcw|john\s+cooper|cooper\s+s|m\d{3}i|srt|cupra)\b/i;
+
+function pedeEsportivo(briefing) {
+  return (briefing.estiloDeVida || []).includes('uso esportivo');
+}
+
+function cvDaFicha(s) {
+  const m = String(s || '').match(/\d{2,4}/);
+  return m ? Number(m[0]) : null;
+}
+
+function naoEsportivo(ficha, nomeFipe) {
+  const cv = cvDaFicha(ficha?.potencia);
+  if (!cv) return false;
+  if (cv >= CV_MIN_ESPORTIVO) return false;
+  return !SELO_ESPORTIVO.test(nomeFipe);
 }
 
 // ─── Variedade antes do LLM ──────────────────────────────────────────────
@@ -319,6 +352,46 @@ export function marcaSinalizados(pool, hints) {
   return marcadas;
 }
 
+// ─── Exclusões do consultor: "não combina com esse perfil" ───────────────
+// Botão por card (carro-feedback.js). Escopo é o ESTILO DE VIDA da busca em
+// que ele clicou: "Fit não é esportivo" não pode tirar o Fit de uma busca de
+// hatch pra família. Vale quando a busca nova tem todos aqueles usos (busca
+// "esportivo + cidade" herda a reclamação feita em "esportivo"). Reclamação
+// feita numa busca SEM estilo de vida só vale pra buscas sem estilo de vida —
+// senão um clique viraria banimento global.
+let _exclCache = { at: 0, rows: [] };
+
+export function invalidateExclusoes() { _exclCache = { at: 0, rows: [] }; }
+
+async function loadExclusoes() {
+  if (_exclCache.at && Date.now() - _exclCache.at < HINTS_TTL_MS) return _exclCache.rows;
+  let rows = [];
+  try {
+    rows = await listExclusoesPerfil();
+  } catch (e) {
+    // Mesma regra dos lembretes: banco fora não derruba a recomendação.
+    console.warn('[exclusoes] não consegui ler (ignorado):', e.message);
+  }
+  _exclCache = { at: Date.now(), rows };
+  return rows;
+}
+
+function familiasExcluidas(rows, briefing) {
+  const usos = new Set(briefing.estiloDeVida || []);
+  const out = new Set();
+  for (const r of rows) {
+    const rUsos = r.usos || [];
+    const vale = rUsos.length ? rUsos.every(u => usos.has(u)) : usos.size === 0;
+    if (vale) out.add(r.familia);
+  }
+  return out;
+}
+
+/** Chave de família pra gravar a exclusão — a MESMA que o filtro do pool usa. */
+export function familiaDe(marca, modelo) {
+  return familiaModelo({ marca, modelo });
+}
+
 // ─── Pipeline NOVO usando catálogo pré-computado ──────────────────────────
 async function recommendFromCatalog(briefing, log) {
   const catalog = await loadCatalog();
@@ -351,6 +424,17 @@ async function recommendFromCatalog(briefing, log) {
     seenFipe.add(e.codigoFipe);
     return true;
   });
+
+  // "Não combina com esse perfil" dito pelo consultor num card: a família sai
+  // do pool aqui, antes de qualquer LLM — ele não tem como reintroduzir.
+  const exclusoes = await loadExclusoes();
+  const familiasFora = familiasExcluidas(exclusoes, briefing);
+  if (familiasFora.size) {
+    const antes = pool.length;
+    pool = pool.filter(e => !familiasFora.has(familiaModelo(e)));
+    reasonsCount.consultor = antes - pool.length;
+    log('exclusoes-consultor', { count: antes - pool.length });
+  }
 
   if (pool.length === 0) {
     return {
@@ -500,7 +584,7 @@ async function recommendFromCatalog(briefing, log) {
     if (lug > 0 && lug < 7 && SEMPRE_SETE.test(`${t.brand} ${t.model}`)) t.fichaTecnica.lugares = 0;
   }
   const topCoerente = topEnriched.filter(t => {
-    const motivo = fichaContradiz(t.fichaTecnica, briefing);
+    const motivo = fichaContradiz(t.fichaTecnica, briefing, t.model);
     if (motivo) descartadosPorFicha.push({ carro: `${t.brand} ${t.model} ${t.year}`, motivo });
     return !motivo;
   });
@@ -512,7 +596,11 @@ async function recommendFromCatalog(briefing, log) {
   if (!topUnico.length && descartadosPorFicha.length) {
     return {
       ok: false,
-      reason: `Encontrei candidatos no orçamento, mas nenhum atende ${briefing.lugaresMin ? `${briefing.lugaresMin} lugares` : ''}${briefing.lugaresMin && briefing.portaMalasMinL ? ' e ' : ''}${briefing.portaMalasMinL ? `porta-malas de ${briefing.portaMalasMinL} L` : ''} segundo a ficha técnica. Tente afrouxar esse critério ou o orçamento.`,
+      reason: `Encontrei candidatos no orçamento, mas nenhum atende ${[
+        briefing.lugaresMin ? `${briefing.lugaresMin} lugares` : null,
+        briefing.portaMalasMinL ? `porta-malas de ${briefing.portaMalasMinL} L` : null,
+        pedeEsportivo(briefing) ? `uso esportivo (${CV_MIN_ESPORTIVO} cv ou versão esportiva de fábrica)` : null,
+      ].filter(Boolean).join(' e ')} segundo a ficha técnica. Tente afrouxar esse critério ou o orçamento.`,
       diagnostico: { catalogTotal: catalog.entries.length, catalogPool: pool.length, descartesPorEtapa: reasonsCount, descartadosPorFicha },
     };
   }

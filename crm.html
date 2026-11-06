@@ -309,10 +309,13 @@
 
   /* Consultas de teste: escondidas por padrão; com "mostrar testes" ligado
      aparecem apagadas, com a etiqueta. */
+  .acoes-hist { display: inline-flex; align-items: center; gap: 16px; }
   .mostrar-testes {
-    display: inline-flex; align-items: center; gap: 6px; margin-top: 9px;
-    font-size: 12.5px; color: var(--tk-muted); cursor: pointer; user-select: none;
+    display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
+    font-size: 13px; color: var(--tk-muted); cursor: pointer; user-select: none;
   }
+  .mostrar-testes input { margin: 0; accent-color: var(--tk-primary); cursor: pointer; }
+  .mostrar-testes:hover { color: var(--tk-ink); }
   .linha-consulta.eh-teste .consulta { opacity: .55; }
   .vincular-wrap { gap: 6px; }
   button.marca-teste {
@@ -397,15 +400,17 @@
   <section id="historico">
     <div class="titulo-secao">
       <h2>Histórico de consultas</h2>
-      <button class="acao leve" id="atualizar-historico">Atualizar</button>
+      <span class="acoes-hist">
+        <label class="mostrar-testes">
+          <input type="checkbox" id="mostrar-testes" /> Mostrar testes
+        </label>
+        <button class="acao leve" id="atualizar-historico">Atualizar</button>
+      </span>
     </div>
     <p class="sub" id="resumo-historico" style="margin:0 0 16px"></p>
     <div class="filtro-hist">
       <input id="filtro-historico" placeholder="Filtrar por cliente ou perfil…"
              autocomplete="off" spellcheck="false" />
-      <label class="mostrar-testes">
-        <input type="checkbox" id="mostrar-testes" /> Mostrar consultas de teste
-      </label>
     </div>
     <div id="lista-historico"><p class="vazio">Carregando…</p></div>
   </section>

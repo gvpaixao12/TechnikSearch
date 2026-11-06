@@ -998,3 +998,29 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--tk-bg); font
   .tk-fb__rate { width: 100%; }
   .tk-fb__rate .tk-fb__btn { flex: 1; justify-content: center; }
 }
+
+/* ─── "Não curti este carro" (botão por card) ───────────────────── */
+.tk-cc__acts { display: flex; gap: 6px; }
+.tk-icobtn.is-nao:hover, .tk-icobtn.is-nao.is-active { background: #c0392b; border-color: #c0392b; color: #fff; }
+.tk-nc {
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--tk-line);
+  display: flex; flex-direction: column; gap: 8px;
+  cursor: default;
+}
+.tk-nc__title { font-size: 12px; font-weight: 600; color: var(--tk-ink); }
+.tk-nc__opt {
+  appearance: none; cursor: pointer; text-align: left;
+  font-family: var(--tk-font); font-size: 13px; color: var(--tk-ink-2);
+  padding: 9px 12px; border-radius: 10px;
+  border: 1px solid var(--tk-line-2); background: transparent;
+  transition: border-color .15s, color .15s;
+}
+.tk-nc__opt:hover:not(:disabled) { border-color: #c0392b; color: var(--tk-ink); }
+.tk-nc__opt:disabled { opacity: .5; cursor: not-allowed; }
+.tk-nc__opt small { display: block; font-size: 11.5px; color: var(--tk-muted); margin-top: 2px; }
+.tk-nc__cancel { align-self: flex-end; appearance: none; border: 0; background: none; cursor: pointer; font-family: var(--tk-font); font-size: 12px; color: var(--tk-muted); }
+.tk-nc__msg { font-size: 12.5px; color: var(--tk-secondary); line-height: 1.45; }
+.tk-nc__msg.is-err { color: #c0392b; }
+.tk-cc.is-excluido { opacity: .55; }
+.tk-cc.is-excluido:hover { transform: none; box-shadow: none; }

@@ -22,9 +22,12 @@
     "fuse.js": "^7.0.0",
     "openai": "^4.77.0",
     "pg": "^8.23.0",
-    "sharp": "^0.33.5"
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "playwright": "^1.59.1"
+  },
+  "overrides": {
+    "qs": "^6.16.2"
   }
 }

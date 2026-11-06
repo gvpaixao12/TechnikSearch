@@ -148,7 +148,7 @@ function pickFront(images) {
   return images.find(im => im.view === 'front') || images[0];
 }
 
-function useCarImages({ brand, model, year, enabled = true }) {
+function useCarImages({ brand, model, year, enabled = true, reloadKey = 0 }) {
   const [state, setState] = useState({ loading: false, images: [] });
   useEffect(() => {
     if (!enabled || !brand || !model || !year) return;
@@ -160,7 +160,7 @@ function useCarImages({ brand, model, year, enabled = true }) {
       .then(data => { if (!cancelled) setState({ loading: false, images: data.images || [] }); })
       .catch(() => { if (!cancelled) setState({ loading: false, images: [] }); });
     return () => { cancelled = true; };
-  }, [brand, model, year, enabled]);
+  }, [brand, model, year, enabled, reloadKey]);
   return state;
 }
 
@@ -175,7 +175,9 @@ const _arrow = (side) => ({
 
 // Lazy-load via IntersectionObserver. Aspecto 4:3 (mais quadrado).
 // No card mostra SÓ a foto da frente; clique abre o tour de fotos por categoria.
-function CarPhoto({ brand, model, year, type = 'suv', eager = false, rounded = false, aspect = '4 / 3', openSignal = 0 }) {
+// reloadKey: o pai incrementa pra rebuscar (ex.: depois de apagar a capa).
+// onCover: avisa o pai qual URL está na capa — é a foto que "foto ruim" apaga.
+function CarPhoto({ brand, model, year, type = 'suv', eager = false, rounded = false, aspect = '4 / 3', openSignal = 0, reloadKey = 0, onCover }) {
   const containerRef = useRef(null);
   const [visible, setVisible] = useState(eager);
   const [tourOpen, setTourOpen] = useState(false);
@@ -194,9 +196,10 @@ function CarPhoto({ brand, model, year, type = 'suv', eager = false, rounded = f
   // incrementa openSignal. Abrir por aqui mantém a busca de imagens centralizada.
   useEffect(() => { if (openSignal) setTourOpen(true); }, [openSignal]);
 
-  const { images, loading } = useCarImages({ brand, model, year, enabled: visible });
+  const { images, loading } = useCarImages({ brand, model, year, enabled: visible, reloadKey });
   const n = images.length;
   const front = pickFront(images);
+  useEffect(() => { if (onCover) onCover(front?.url || null); }, [front?.url]);
 
   const containerStyle = {
     position: 'relative', width: '100%', aspectRatio: aspect,

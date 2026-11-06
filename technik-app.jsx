@@ -114,6 +114,21 @@ function App() {
   const [stage, setStage] = useState('form'); // form | loading | results
   const [sidebarOpen, setSidebarOpen] = useState(false); // menu off-canvas no mobile
 
+  // Quem está logado — vem da sessão (/api/me). Sem resposta, o rodapé da
+  // sidebar fica vazio em vez de mostrar um nome inventado.
+  const [eu, setEu] = useState(null);
+  useEffect(() => {
+    fetch(`${API_BASE}/api/me`)
+      .then(r => r.json())
+      .then(d => { if (d.ok) setEu(d); })
+      .catch(() => {});
+  }, []);
+  const euNome = eu?.nome || '';
+  const euIniciais = euNome.split(/\s+/).filter(Boolean)
+    .map(p => p[0]).filter((_, i, a) => i === 0 || i === a.length - 1)
+    .join('').toUpperCase();
+  const euPapel = !eu ? '' : eu.tipo !== 'usuario' ? 'Dispositivo' : eu.admin ? 'Administrador' : 'Consultor';
+
   // Form state — começa em branco para o consultor preencher
   const [client, setClient] = useState({ name: '', segment: '' });
   const [budget, setBudget]   = useState([50, 600]); // R$ mil
@@ -357,10 +372,10 @@ function App() {
             <span className={`tk-toggle ${t.darkMode ? 'is-on' : ''}`}><span /></span>
           </button>
           <div className="tk-side__user">
-            <div className="tk-side__avatar">RC</div>
+            <div className="tk-side__avatar">{euIniciais}</div>
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>Rodrigo Cunha</span>
-              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>Consultor sênior</span>
+              <span style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{euNome}</span>
+              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>{euPapel}</span>
             </div>
           </div>
         </div>
@@ -2980,7 +2995,8 @@ function ResultsView({ client, consultaId, cardStyle, showCompareBar, cars = [],
             <CarCard key={c.id} car={c} rank={i + 1}
               isComparing={compare.includes(c.id)}
               onCompare={() => toggleCompare(c.id)}
-              variant={cardStyle} />
+              variant={cardStyle}
+              consultaId={consultaId} client={client} briefing={briefing} />
           ))}
         </div>
       )}
@@ -3169,38 +3185,129 @@ function FichaTecnica({ ficha }) {
   );
 }
 
-function CarCard({ car, rank, isComparing, onCompare, variant = 'editorial' }) {
+// "Não curti este carro" — cada opção AGE (ver server/carro-feedback.js):
+// perfil tira a família do modelo das próximas buscas com o mesmo uso; foto
+// apaga a capa da galeria. Sem opção que só anota: botão que não muda nada é
+// justamente o que fazia o feedback da busca parecer inútil.
+function useNaoCurti({ car, consultaId, client, briefing }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState('idle');   // idle | sending | excluido | foto | error
+  const [msg, setMsg] = useState('');
+  const [cover, setCover] = useState(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const usos = briefing?.estiloDeVida || [];
+  const perfilTxt = usos.length ? usos.join(' + ') : 'esse perfil';
+
+  async function send(motivo) {
+    setState('sending');
+    try {
+      const res = await fetch(`${API_BASE}/api/carro-feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          consultaId, motivo, client, briefing,
+          marca: car.brand, modelo: car.model, ano: car.year,
+          fotoUrl: motivo === 'foto' ? cover : undefined,
+        }),
+      });
+      const j = await res.json();
+      if (!j.ok) throw new Error(j.reason || `HTTP ${res.status}`);
+      setOpen(false);
+      if (motivo === 'perfil') {
+        setState('excluido');
+        setMsg(`${car.versao || car.model} não aparece mais em buscas de ${perfilTxt}.`);
+      } else {
+        setState('foto');
+        setMsg(j.photoCount ? 'Foto removida.' : 'Foto removida — esse carro ficou sem fotos.');
+        setReloadKey(k => k + 1);
+      }
+    } catch (e) {
+      setState('error');
+      setMsg(`Não consegui salvar: ${e.message}`);
+    }
+  }
+
+  return { open, setOpen, state, msg, send, cover, setCover, reloadKey, perfilTxt };
+}
+
+function NaoCurtiPanel({ nc }) {
+  const stop = e => e.stopPropagation();
+  if (!nc.open && (nc.state === 'excluido' || nc.state === 'foto' || nc.state === 'error')) {
+    return (
+      <div className="tk-nc" onClick={stop}>
+        <div className={`tk-nc__msg ${nc.state === 'error' ? 'is-err' : ''}`}>{nc.msg}</div>
+      </div>
+    );
+  }
+  if (!nc.open) return null;
+  const busy = nc.state === 'sending';
+  return (
+    <div className="tk-nc" onClick={stop}>
+      <div className="tk-nc__title">Não curti porque…</div>
+      <button className="tk-nc__opt" disabled={busy} onClick={() => nc.send('perfil')}>
+        Não combina com esse perfil
+        <small>Sai das próximas buscas de {nc.perfilTxt}</small>
+      </button>
+      <button className="tk-nc__opt" disabled={busy || !nc.cover} onClick={() => nc.send('foto')}>
+        Foto da capa ruim
+        <small>{nc.cover ? 'Apaga essa foto da galeria agora' : 'Sem foto pra remover'}</small>
+      </button>
+      <button className="tk-nc__cancel" onClick={() => nc.setOpen(false)}>Cancelar</button>
+    </div>
+  );
+}
+
+function NaoCurtiBtn({ nc }) {
+  if (nc.state === 'excluido') return null;
+  return (
+    <button className={`tk-icobtn is-nao ${nc.open ? 'is-active' : ''}`}
+      onClick={(e) => { e.stopPropagation(); nc.setOpen(o => !o); }}
+      title="Não curti este carro">
+      <ThumbIcon down />
+    </button>
+  );
+}
+
+function CarCard({ car, rank, isComparing, onCompare, variant = 'editorial', consultaId, client, briefing }) {
   // Clicar em qualquer lugar do card abre a galeria de fotos. Cada clique
   // incrementa openSignal, que o CarPhoto observa pra abrir a tela cheia.
   const [openSignal, setOpenSignal] = useState(0);
   const openGallery = () => setOpenSignal(n => n + 1);
+  const nc = useNaoCurti({ car, consultaId, client, briefing });
+  const photoProps = { reloadKey: nc.reloadKey, onCover: nc.setCover };
+  const ccClass = `tk-cc ${nc.state === 'excluido' ? 'is-excluido' : ''}`;
 
   if (variant === 'minimal') {
     return (
-      <div className="tk-cc" onClick={openGallery} title="Ver todas as fotos" style={{ borderRadius: 10, cursor: 'pointer' }}>
+      <div className={ccClass} onClick={openGallery} title="Ver todas as fotos" style={{ borderRadius: 10, cursor: 'pointer' }}>
         <div style={{ padding: '14px 16px 0' }}>
           <div className="tk-cc__brand">{car.brand} · {car.year}</div>
           <div className="tk-cc__model" style={{ fontSize: 18 }}>{car.versao || car.model}</div>
           {car.motor && <div style={{ fontSize: 12, color: 'var(--tk-muted)', marginTop: 2 }}>{car.motor}</div>}
           <div style={{ height: 100, margin: '12px 0', overflow: 'hidden', borderRadius: 6 }}>
-            <CarPhoto brand={car.brand} model={car.model} year={car.year} type={car.type} openSignal={openSignal} />
+            <CarPhoto brand={car.brand} model={car.model} year={car.year} type={car.type} openSignal={openSignal} {...photoProps} />
           </div>
           <FichaTecnica ficha={car.fichaTecnica} />
         </div>
         <div className="tk-cc__foot">
           <div className="tk-cc__price" style={{ fontSize: 18 }}>{car.price}</div>
-          <button className={`tk-icobtn ${isComparing ? 'is-active' : ''}`} onClick={(e) => { e.stopPropagation(); onCompare(); }}>
-            <Icon.Compare />
-          </button>
+          <div className="tk-cc__acts">
+            <NaoCurtiBtn nc={nc} />
+            <button className={`tk-icobtn ${isComparing ? 'is-active' : ''}`} onClick={(e) => { e.stopPropagation(); onCompare(); }}>
+              <Icon.Compare />
+            </button>
+          </div>
         </div>
+        <NaoCurtiPanel nc={nc} />
       </div>
     );
   }
 
   return (
-    <div className="tk-cc" onClick={openGallery} title="Ver todas as fotos" style={{ cursor: 'pointer' }}>
+    <div className={ccClass} onClick={openGallery} title="Ver todas as fotos" style={{ cursor: 'pointer' }}>
       <div className="tk-cc__img" style={{ height: 'auto', padding: 0, overflow: 'hidden' }}>
-        <CarPhoto brand={car.brand} model={car.model} year={car.year} type={car.type} eager={rank === 1} rounded openSignal={openSignal} />
+        <CarPhoto brand={car.brand} model={car.model} year={car.year} type={car.type} eager={rank === 1} rounded openSignal={openSignal} {...photoProps} />
       </div>
       <div className="tk-cc__body">
         <div className="tk-cc__brand">{car.brand} · {car.year}</div>
@@ -3213,10 +3320,14 @@ function CarCard({ car, rank, isComparing, onCompare, variant = 'editorial' }) {
           <div style={{ fontSize: 10, color: 'var(--tk-muted)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 600 }}>A partir de</div>
           <div className="tk-cc__price">{car.price}</div>
         </div>
-        <button className={`tk-icobtn ${isComparing ? 'is-active' : ''}`} onClick={(e) => { e.stopPropagation(); onCompare(); }} title="Adicionar à comparação">
-          <Icon.Compare />
-        </button>
+        <div className="tk-cc__acts">
+          <NaoCurtiBtn nc={nc} />
+          <button className={`tk-icobtn ${isComparing ? 'is-active' : ''}`} onClick={(e) => { e.stopPropagation(); onCompare(); }} title="Adicionar à comparação">
+            <Icon.Compare />
+          </button>
+        </div>
       </div>
+      <NaoCurtiPanel nc={nc} />
     </div>
   );
 }
