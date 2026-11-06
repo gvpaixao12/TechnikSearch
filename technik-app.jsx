@@ -13,9 +13,21 @@ const API_BASE = window.API_BASE !== undefined
 const NAV = [
   { id: 'new',     label: 'Nova consulta', icon: <Icon.Plus />,   badge: '⌘N' },
   { id: 'drafts',  label: 'Rascunhos',     icon: <Icon.Bookmark /> },
-  { id: 'stock',   label: 'Estoque',       icon: <Icon.Car /> },
-  { id: 'settings',label: 'Ajustes',       icon: <Icon.Settings /> },
 ];
+
+// Estoque e Ajustes moram no menu do usuário (clique no card do rodapé da
+// sidebar), junto com "Alterar senha" e "Sair".
+const USER_NAV = [
+  { id: 'stock',   label: 'Estoque', icon: <Icon.Car /> },
+  { id: 'settings',label: 'Ajustes', icon: <Icon.Settings /> },
+];
+
+const IconeCadeado = () => (
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+);
+const IconeSair = () => (
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11"/></svg>
+);
 
 function fmtBRL(n) {
   return 'R$ ' + n.toLocaleString('pt-BR');
@@ -128,6 +140,23 @@ function App() {
     .map(p => p[0]).filter((_, i, a) => i === 0 || i === a.length - 1)
     .join('').toUpperCase();
   const euPapel = !eu ? '' : eu.tipo !== 'usuario' ? 'Dispositivo' : eu.admin ? 'Administrador' : 'Consultor';
+
+  // Menu do usuário (popover acima do card) e modal de troca de senha.
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [senhaOpen, setSenhaOpen] = useState(false);
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const fora = (e) => { if (!e.target.closest('.tk-side__userwrap')) setUserMenuOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setUserMenuOpen(false); };
+    document.addEventListener('mousedown', fora);
+    document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', fora); document.removeEventListener('keydown', esc); };
+  }, [userMenuOpen]);
+
+  function sair() {
+    fetch(`${API_BASE}/api/logout`, { method: 'POST' })
+      .finally(() => { location.href = `${API_BASE}/login`; });
+  }
 
   // Form state — começa em branco para o consultor preencher
   const [client, setClient] = useState({ name: '', segment: '' });
@@ -371,15 +400,45 @@ function App() {
             <span>Modo {t.darkMode ? 'escuro' : 'claro'}</span>
             <span className={`tk-toggle ${t.darkMode ? 'is-on' : ''}`}><span /></span>
           </button>
-          <div className="tk-side__user">
-            <div className="tk-side__avatar">{euIniciais}</div>
-            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-              <span style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{euNome}</span>
-              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>{euPapel}</span>
-            </div>
+          <div className="tk-side__userwrap">
+            {userMenuOpen && (
+              <div className="tk-usermenu" role="menu">
+                {USER_NAV.map(n => (
+                  <button key={n.id} role="menuitem"
+                    className={`tk-usermenu__item ${activeNav === n.id ? 'is-active' : ''}`}
+                    onClick={() => { setUserMenuOpen(false); handleNav(n.id); }}>
+                    {n.icon}<span>{n.label}</span>
+                  </button>
+                ))}
+                <div className="tk-usermenu__sep" />
+                {eu?.tipo === 'usuario' && (
+                  <button role="menuitem" className="tk-usermenu__item"
+                    onClick={() => { setUserMenuOpen(false); setSenhaOpen(true); }}>
+                    <IconeCadeado /><span>Alterar senha</span>
+                  </button>
+                )}
+                {eu?.tipo === 'usuario' && (
+                  <button role="menuitem" className="tk-usermenu__item tk-usermenu__item--sair" onClick={sair}>
+                    <IconeSair /><span>Sair</span>
+                  </button>
+                )}
+              </div>
+            )}
+            <button type="button"
+              className={`tk-side__user ${userMenuOpen || USER_NAV.some(n => n.id === activeNav) ? 'is-open' : ''}`}
+              aria-haspopup="menu" aria-expanded={userMenuOpen}
+              onClick={() => setUserMenuOpen(o => !o)}>
+              <div className="tk-side__avatar">{euIniciais}</div>
+              <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, textAlign: 'left' }}>
+                <span style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{euNome}</span>
+                <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>{euPapel}</span>
+              </div>
+              <Icon.ChevronRight style={{ transform: userMenuOpen ? 'rotate(-90deg)' : 'none', transition: 'transform .15s', opacity: 0.6 }} />
+            </button>
           </div>
         </div>
       </aside>
+      {senhaOpen && <SenhaModal onClose={() => setSenhaOpen(false)} />}
 
       {/* Main */}
       <section className="tk-main">
@@ -2334,6 +2393,97 @@ function CampoEstoque({ label, valor, onChange, placeholder, sugestoes, largo = 
 // Cadastro/edição. Só marca e modelo são obrigatórios: um consignado costuma
 // entrar no sistema antes de o documento chegar, e travar o cadastro por falta
 // de placa faria o consultor inventar uma.
+// Troca da própria senha, aberta pelo menu do usuário. Pede a atual (o backend
+// exige — sessão esquecida aberta não pode virar troca de senha) e mantém a
+// sessão daqui viva; as outras sessões caem no servidor.
+function SenhaModal({ onClose }) {
+  const [atual, setAtual] = useState('');
+  const [nova, setNova] = useState('');
+  const [nova2, setNova2] = useState('');
+  const [erro, setErro] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [ok, setOk] = useState(false);
+
+  async function salva(e) {
+    e.preventDefault();
+    setErro('');
+    if (!atual) return setErro('Informe a senha atual.');
+    if (nova.length < 8) return setErro('A nova senha precisa de pelo menos 8 caracteres.');
+    if (nova !== nova2) return setErro('As duas senhas novas não são iguais.');
+    if (nova === atual) return setErro('A nova senha é igual à atual.');
+    setBusy(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/trocar-senha`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ senhaAtual: atual, senha: nova }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!d.ok) throw new Error(d.reason || 'não consegui alterar a senha');
+      setOk(true);
+    } catch (e2) {
+      setErro(e2.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const fecha = () => { if (!busy) onClose(); };
+
+  return ReactDOM.createPortal(
+    <div onClick={fecha} style={{
+      position: 'fixed', inset: 0, zIndex: 999999,
+      background: 'rgba(10,10,25,0.55)', backdropFilter: 'blur(3px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }}>
+      <form onClick={e => e.stopPropagation()} onSubmit={salva} style={{
+        background: 'var(--tk-bg)', borderRadius: 16, width: '100%', maxWidth: 400,
+        boxShadow: '0 40px 120px rgba(0,0,0,0.4)', overflow: 'hidden',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '18px 20px', borderBottom: '1px solid var(--tk-line)' }}>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--tk-muted)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>Conta</div>
+            <div style={{ fontWeight: 700, fontSize: 17, lineHeight: 1.2 }}>Alterar senha</div>
+          </div>
+          <button type="button" onClick={fecha} aria-label="Fechar"
+            style={{ width: 34, height: 34, borderRadius: '50%', border: 'none', background: 'var(--tk-bg-2)', color: 'var(--tk-ink)', fontSize: 20, cursor: busy ? 'not-allowed' : 'pointer', lineHeight: 1 }}>×</button>
+        </div>
+
+        {ok ? (
+          <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <p style={{ margin: 0, fontSize: 14 }}>Senha alterada. Você continua conectado aqui.</p>
+            <button type="button" className="tk-btn tk-btn-primary" onClick={onClose}>Fechar</button>
+          </div>
+        ) : (
+          <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <span className="tk-label">Senha atual</span>
+              <input className="tk-input" type="password" autoComplete="current-password" autoFocus
+                value={atual} onChange={e => setAtual(e.target.value)} />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <span className="tk-label">Nova senha</span>
+              <input className="tk-input" type="password" autoComplete="new-password" placeholder="mínimo 8 caracteres"
+                value={nova} onChange={e => setNova(e.target.value)} />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <span className="tk-label">Repita a nova senha</span>
+              <input className="tk-input" type="password" autoComplete="new-password"
+                value={nova2} onChange={e => setNova2(e.target.value)} />
+            </label>
+            {erro && <div style={{ color: '#c0392b', fontSize: 13 }}>{erro}</div>}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+              <button type="button" className="tk-btn tk-btn-ghost" onClick={fecha} disabled={busy}>Cancelar</button>
+              <button type="submit" className="tk-btn tk-btn-primary" disabled={busy}>{busy ? 'Salvando…' : 'Salvar'}</button>
+            </div>
+          </div>
+        )}
+      </form>
+    </div>,
+    document.body
+  );
+}
+
 function StockFormModal({ veiculo, onClose, onSaved }) {
   const novo = !veiculo.id;
   const [f, setF] = useState(() => ({

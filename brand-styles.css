@@ -338,12 +338,43 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--tk-bg); font
 }
 .tk-toggle.is-on { background: var(--tk-accent); }
 .tk-toggle.is-on > span { transform: translateX(16px); }
+.tk-side__userwrap { position: relative; }
 .tk-side__user {
   display: flex; align-items: center; gap: 10px;
+  width: 100%;
   padding: 10px;
   border-radius: 10px;
+  border: 1px solid transparent;
   background: rgba(255,255,255,0.06);
+  color: #fff; font: inherit; cursor: pointer;
+  transition: background .15s, border-color .15s;
 }
+.tk-side__user:hover { background: rgba(255,255,255,0.1); }
+.tk-side__user.is-open { border-color: rgba(255,255,255,0.18); background: rgba(255,255,255,0.1); }
+
+/* Menu do usuário: abre pra cima, por cima do card */
+.tk-usermenu {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 8px);
+  background: var(--tk-paper, #fff);
+  color: var(--tk-ink);
+  border: 1px solid var(--tk-line);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0,0,0,0.35);
+  padding: 6px;
+  display: flex; flex-direction: column; gap: 2px;
+  z-index: 50;
+}
+.tk-usermenu__item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  border: none; border-radius: 8px; background: transparent;
+  font: inherit; font-size: 13px; font-weight: 500;
+  color: var(--tk-ink); cursor: pointer; text-align: left;
+}
+.tk-usermenu__item:hover { background: var(--tk-bg-2); }
+.tk-usermenu__item.is-active { background: var(--tk-bg-2); font-weight: 600; }
+.tk-usermenu__item--sair { color: #c0392b; }
+.tk-usermenu__sep { height: 1px; background: var(--tk-line); margin: 4px 6px; }
 .tk-side__avatar {
   width: 36px; height: 36px; border-radius: 50%;
   background: var(--tk-accent); color: var(--tk-primary);
