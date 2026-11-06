@@ -64,7 +64,7 @@ export async function saveConsulta({ id, client, result }) {
 // Colunas leves pra listagem/agregação (sem os jsonb grandes).
 const LIST_COLS = ['id', 'created_at', 'client_name', 'client_segment', 'ok',
   'orcamento_min', 'orcamento_max', 'tipos', 'total_resultados', 'mes_referencia',
-  'top_models', 'cliente_id'].map(c => 'c.' + c).join(', ');
+  'top_models', 'cliente_id', 'teste'].map(c => 'c.' + c).join(', ');
 
 // Lista as consultas mais recentes (resumo, sem briefing/top completos).
 //
@@ -76,13 +76,25 @@ const LIST_COLS = ['id', 'created_at', 'client_name', 'client_segment', 'ok',
 //
 // Requer `clientes-schema.sql` aplicado: sem a tabela, o join derruba a
 // listagem inteira. Aplique o schema ANTES de subir esta versão.
-export async function listConsultas({ limit = 50 } = {}) {
+//
+// Consultas de teste ficam de fora, a menos que `incluiTeste` — é o checkbox
+// "mostrar testes" do CRM, que precisa delas pra conseguir desmarcar alguma.
+export async function listConsultas({ limit = 50, incluiTeste = false } = {}) {
   return q(
     `select ${LIST_COLS}, cl.nome as cliente_nome
        from consultas c
        left join clientes cl on cl.id = c.cliente_id
+      ${incluiTeste ? '' : 'where not c.teste'}
       order by c.created_at desc limit $1`,
     [limit]
+  );
+}
+
+// Marca/desmarca uma consulta como teste. Lança se o id não existe.
+export async function marcaTeste(id, teste) {
+  return oneOrFail(
+    'update consultas set teste = $2 where id = $1 returning id, teste',
+    [id, !!teste], 'consulta não encontrada'
   );
 }
 
@@ -97,7 +109,7 @@ export async function getConsulta(id) {
 export async function getStats({ sample = 1000 } = {}) {
   const rows = await q(
     `select created_at, ok, orcamento_min, orcamento_max, total_resultados, tipos, top_models
-       from consultas order by created_at desc limit $1`,
+       from consultas where not teste order by created_at desc limit $1`,
     [sample]
   );
 

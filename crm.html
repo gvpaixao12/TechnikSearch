@@ -307,6 +307,27 @@
     font-size: 13px; line-height: 1.55;
   }
 
+  /* Consultas de teste: escondidas por padrão; com "mostrar testes" ligado
+     aparecem apagadas, com a etiqueta. */
+  .mostrar-testes {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 9px;
+    font-size: 12.5px; color: var(--tk-muted); cursor: pointer; user-select: none;
+  }
+  .linha-consulta.eh-teste .consulta { opacity: .55; }
+  .vincular-wrap { gap: 6px; }
+  button.marca-teste {
+    font: inherit; font-size: 11.5px; font-weight: 600;
+    padding: 4px 9px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+    background: none; color: var(--tk-muted); border: 1px solid transparent;
+  }
+  button.marca-teste:hover { border-color: var(--tk-bg-3); color: var(--tk-ink); }
+  button.marca-teste.ligado { border-color: #B7791F; color: #B7791F; }
+  .tag-teste {
+    display: inline-block; margin-left: 8px; padding: 1px 6px;
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+    border: 1px solid #B7791F; color: #B7791F; border-radius: 4px;
+  }
+
   .sem-res {
     display: inline-block; margin-left: 8px; padding: 1px 6px;
     font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
@@ -382,6 +403,9 @@
     <div class="filtro-hist">
       <input id="filtro-historico" placeholder="Filtrar por cliente ou perfil…"
              autocomplete="off" spellcheck="false" />
+      <label class="mostrar-testes">
+        <input type="checkbox" id="mostrar-testes" /> Mostrar consultas de teste
+      </label>
     </div>
     <div id="lista-historico"><p class="vazio">Carregando…</p></div>
   </section>
@@ -941,6 +965,7 @@
   var listaHist = document.getElementById('lista-historico');
   var resumoHist = document.getElementById('resumo-historico');
   var filtroHist = document.getElementById('filtro-historico');
+  var mostrarTestes = document.getElementById('mostrar-testes');
   var consultas = [];
   var abertos = {};   // overrides manuais de abrir/fechar, por cliente
 
@@ -964,7 +989,7 @@
   async function carregaHistorico(preserva) {
     if (!preserva) listaHist.innerHTML = '<p class="vazio">Carregando…</p>';
     try {
-      var r = await fetch('/api/consultas?limit=200');
+      var r = await fetch('/api/consultas?limit=200' + (mostrarTestes.checked ? '&testes=1' : ''));
       var d = await r.json();
       if (!d.ok) throw new Error(d.reason || 'falhou');
       consultas = d.consultas || [];
@@ -983,13 +1008,17 @@
       return ((c.client_name || '') + ' ' + (c.client_segment || '')).toLowerCase().indexOf(q) !== -1;
     });
 
+    var nTeste = consultas.filter(function (c) { return c.teste; }).length;
+    var nReais = consultas.length - nTeste;
     resumoHist.textContent = consultas.length
-      ? consultas.length + ' consulta' + (consultas.length !== 1 ? 's' : '') + ' registrada' +
-        (consultas.length !== 1 ? 's' : '') + '. Clique numa linha pra reabrir a recomendação na busca.'
+      ? nReais + ' consulta' + (nReais !== 1 ? 's' : '') + ' registrada' + (nReais !== 1 ? 's' : '') +
+        (nTeste ? ' (+ ' + nTeste + ' de teste)' : '') +
+        '. Clique numa linha pra reabrir a recomendação na busca.'
       : '';
 
     if (!consultas.length) {
-      listaHist.innerHTML = '<p class="vazio">Nenhuma consulta registrada ainda.</p>';
+      listaHist.innerHTML = '<p class="vazio">Nenhuma consulta registrada ainda' +
+        (mostrarTestes.checked ? '' : ' (as de teste estão escondidas)') + '.</p>';
       return;
     }
     if (!filtradas.length) {
@@ -1057,22 +1086,49 @@
       ? '<button class="vincular ligado" data-consulta="' + esc(c.id) + '" title="Trocar ou desfazer a vinculação">' + esc(c.cliente_nome || 'vinculado') + '</button>'
       : '<button class="vincular" data-consulta="' + esc(c.id) + '" title="Vincular esta consulta a um cliente">+ vincular</button>';
 
-    return '<div class="linha-consulta">' +
+    var tst = c.teste
+      ? '<button class="marca-teste ligado" data-teste="' + esc(c.id) + '" title="Voltar a contar esta consulta como real">teste ✕</button>'
+      : '<button class="marca-teste" data-teste="' + esc(c.id) + '" title="Marcar como teste — some do histórico e das estatísticas">marcar teste</button>';
+
+    return '<div class="linha-consulta' + (c.teste ? ' eh-teste' : '') + '">' +
       '<a class="consulta" href="/busca#consulta=' + encodeURIComponent(c.id) + '">' +
         '<span style="min-width:0">' +
           '<span class="quando">' + esc(quando(c.created_at)) + '</span>' +
           (c.client_segment ? '<span class="perfil">' + esc(c.client_segment) + '</span>' : '') +
+          (c.teste ? '<span class="tag-teste">teste</span>' : '') +
           (c.ok === false ? '<span class="sem-res">sem resultado</span>' : '') +
           '<div class="meta">' + esc(meta.join('  ·  ')) + '</div>' +
           carros +
         '</span>' +
         '<span class="abrir">abrir ›</span>' +
       '</a>' +
-      '<span class="vincular-wrap">' + lig + '</span>' +
+      '<span class="vincular-wrap">' + tst + lig + '</span>' +
     '</div>';
   }
 
+  // Marcar/desmarcar teste. Com "mostrar testes" desligado, a linha marcada
+  // some da lista no recarregamento — que é o efeito pedido.
+  async function alternaTeste(id, btn) {
+    var alvo = consultas.filter(function (c) { return c.id === id; })[0];
+    if (!alvo) return;
+    btn.disabled = true;
+    try {
+      var r = await fetch('/api/consultas/' + encodeURIComponent(id) + '/teste', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ teste: !alvo.teste }),
+      });
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.reason || 'falhou');
+      await carregaHistorico(true);
+    } catch (e) {
+      btn.disabled = false;
+      alert('Não consegui marcar: ' + e.message);
+    }
+  }
+
   listaHist.addEventListener('click', function (e) {
+    var t = e.target.closest ? e.target.closest('.marca-teste') : null;
+    if (t) { alternaTeste(t.dataset.teste, t); return; }
     var v = e.target.closest ? e.target.closest('.vincular') : null;
     if (v) {
       var alvo = consultas.filter(function (c) { return c.id === v.dataset.consulta; })[0];
@@ -1089,6 +1145,7 @@
 
   // Mudar o filtro zera os overrides: o padrão de abrir/fechar mudou junto.
   filtroHist.addEventListener('input', function () { abertos = {}; desenhaHistorico(); });
+  mostrarTestes.addEventListener('change', function () { carregaHistorico(true); });
   document.getElementById('atualizar-historico').addEventListener('click', function () { carregaHistorico(); });
 
   // ─── Clientes ──────────────────────────────────────────────────────────
@@ -1198,7 +1255,7 @@
         '</tr></thead><tbody>' +
         cs.map(function (x) {
           return '<tr>' +
-            '<td>' + esc(quando(x.created_at)) + '</td>' +
+            '<td>' + esc(quando(x.created_at)) + (x.teste ? '<span class="tag-teste">teste</span>' : '') + '</td>' +
             '<td>' + esc(x.client_segment || '—') + '</td>' +
             '<td class="num">' + (x.total_resultados || 0) + '</td>' +
             '<td>' + esc((x.top_models || []).slice(0, 3).join(' · ') || '—') + '</td>' +

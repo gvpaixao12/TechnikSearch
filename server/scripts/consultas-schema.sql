@@ -36,3 +36,9 @@ create table if not exists public.consultas (
 
 create index if not exists consultas_created_at_idx on public.consultas (created_at desc);
 create index if not exists consultas_client_name_idx on public.consultas (client_name);
+
+-- Consulta de teste (feita durante o desenvolvimento, ou marcada à mão no CRM).
+-- Fica no banco — dá pra desmarcar — mas some do histórico e das estatísticas
+-- por padrão. Nasce false: o que chega pela busca vale até alguém dizer que não.
+alter table public.consultas
+  add column if not exists teste boolean not null default false;

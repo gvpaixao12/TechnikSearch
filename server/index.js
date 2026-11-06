@@ -14,7 +14,7 @@ import { recommend, diagnoseMiss, suggestModels, invalidateRankingHints } from '
 import { loadCatalog, clearCatalogCache } from './catalog.js';
 import { iniciarAgendadorPrecos } from './agendador-precos.js';
 import { getOrBuildImages, listCachedCars, addManualImages, rebuildCarImages, getCarPhotos, deleteCarPhoto, setPhotoFavorite } from './imageCache.js';
-import { saveConsulta, listConsultas, getConsulta, getStats } from './history.js';
+import { saveConsulta, listConsultas, getConsulta, getStats, marcaTeste } from './history.js';
 import { saveFeedback, listFeedback } from './feedback.js';
 import { saveRascunho, listRascunhos, getRascunho, deleteRascunho } from './rascunhos.js';
 import {
@@ -357,7 +357,8 @@ app.get('/api/consultas/stats', exigeAuth('crm'), async (_req, res) => {
 app.get('/api/consultas', exigeAuth('crm'), async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
-    res.json({ ok: true, consultas: await listConsultas({ limit }) });
+    const incluiTeste = req.query.testes === '1';
+    res.json({ ok: true, consultas: await listConsultas({ limit, incluiTeste }) });
   } catch (e) {
     res.status(503).json({ ok: false, reason: e.message });
   }
@@ -370,6 +371,16 @@ app.get('/api/consultas/:id', async (req, res) => {
     res.json({ ok: true, consulta });
   } catch (e) {
     res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
+// Marca/desmarca como teste. Body: { teste: true|false }.
+app.post('/api/consultas/:id/teste', exigeAuth('crm'), async (req, res) => {
+  try {
+    const r = await marcaTeste(req.params.id, req.body?.teste === true);
+    res.json({ ok: true, teste: r.teste });
+  } catch (e) {
+    res.status(400).json({ ok: false, reason: e.message });
   }
 });
 

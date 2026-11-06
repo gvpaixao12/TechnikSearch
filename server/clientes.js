@@ -19,8 +19,8 @@ export async function listClientes({ busca = null, limit = 200 } = {}) {
   const termo = limpa(busca);
   return q(
     `select c.id, c.nome, c.telefone, c.email, c.criado_em, c.atualizado_em,
-            count(co.id)::int as total_consultas,
-            max(co.created_at)  as ultima_consulta
+            count(co.id) filter (where not co.teste)::int as total_consultas,
+            max(co.created_at) filter (where not co.teste) as ultima_consulta
        from clientes c
        left join consultas co on co.cliente_id = c.id
       ${termo ? 'where c.nome ilike $2 or c.telefone ilike $2 or c.email ilike $2' : ''}
@@ -37,7 +37,7 @@ export async function getCliente(id) {
   const cliente = await oneOrFail('select * from clientes where id = $1', [id], 'cliente não encontrado');
   const consultas = await q(
     `select id, created_at, client_segment, ok, orcamento_min, orcamento_max,
-            tipos, total_resultados, top_models
+            tipos, total_resultados, top_models, teste
        from consultas where cliente_id = $1 order by created_at desc`,
     [id]
   );
