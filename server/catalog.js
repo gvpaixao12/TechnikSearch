@@ -5,6 +5,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { lerOverlay, aplicaOverlay } from './precos-overlay.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FILE = path.join(__dirname, 'data', 'catalog.json');
@@ -20,8 +21,11 @@ export async function loadCatalog() {
     try {
       const raw = await fs.readFile(FILE, 'utf8');
       const data = JSON.parse(raw);
+      // Preços do mês atualizados na VPS (ver precos-overlay.js)
+      const ov = await lerOverlay();
+      const n = aplicaOverlay(data.entries, ov);
       _cache = data;
-      console.log(`[catalog] carregado: ${data.entries.length} entries (built ${data.builtAt})`);
+      console.log(`[catalog] carregado: ${data.entries.length} entries (built ${data.builtAt})${n ? ` · ${n} preços do overlay (${ov.mesReferencia})` : ''}`);
       return data;
     } catch (e) {
       throw new Error(`Catálogo não encontrado em ${FILE}. Rode: node server/scripts/build-catalog.js  (erro: ${e.message})`);

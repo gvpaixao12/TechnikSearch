@@ -8,6 +8,9 @@ node_modules/
 
 # Server runtime
 server/cache/
+# Preços FIPE do mês, gravados pela própria VPS (ver server/precos-overlay.js)
+server/data/precos-fipe.json
+server/data/precos-fipe.json.tmp
 
 # Logs
 *.log

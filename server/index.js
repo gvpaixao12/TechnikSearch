@@ -12,6 +12,7 @@ import { runCurator } from './agents.js';
 import { normalizeBriefing } from './briefing.js';
 import { recommend, diagnoseMiss, suggestModels, invalidateRankingHints } from './recommend.js';
 import { loadCatalog, clearCatalogCache } from './catalog.js';
+import { iniciarAgendadorPrecos } from './agendador-precos.js';
 import { getOrBuildImages, listCachedCars, addManualImages, rebuildCarImages, getCarPhotos, deleteCarPhoto, setPhotoFavorite } from './imageCache.js';
 import { saveConsulta, listConsultas, getConsulta, getStats } from './history.js';
 import { saveFeedback, listFeedback } from './feedback.js';
@@ -790,4 +791,5 @@ app.use((err, _req, res, _next) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Technik server on http://localhost:${PORT}`);
+  iniciarAgendadorPrecos();
 });

@@ -17,13 +17,17 @@
 //   node scripts/refresh-precos-fipe.js              # DRY-RUN: só conta o que faria
 //   node scripts/refresh-precos-fipe.js --apply      # atualiza e grava
 //   node scripts/refresh-precos-fipe.js --apply --limit=500
+//   node scripts/refresh-precos-fipe.js --apply --overlay   # grava em data/precos-fipe.json
+//     (modo da VPS: não toca no catalog.json versionado — ver precos-overlay.js)
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { lerOverlay, gravarOverlay, aplicaOverlay, chavePreco } from '../precos-overlay.js';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FILE = path.join(__dirname, '..', 'data', 'catalog.json');
 const APPLY = process.argv.includes('--apply');
+const OVERLAY = process.argv.includes('--overlay');
 const LIMIT = parseInt((process.argv.find(a => a.startsWith('--limit=')) || '').slice(8), 10) || Infinity;
 const RATE_MS = parseInt(process.env.FIPE_OFICIAL_RATE_MS || '', 10) || 1000;
 const SALVA_A_CADA = 100;
@@ -68,6 +72,10 @@ const tabela = tabelas[0];
 const mesAtual = tabela.Mes.trim().replace('/', ' de ');
 console.log(`Tabela FIPE atual: ${mesAtual} (código ${tabela.Codigo})`);
 
+// No modo overlay, o que já foi atualizado em rodada anterior (e está no
+// overlay) conta como feito — é isso que torna a rodada da VPS retomável.
+const overlay = OVERLAY ? await lerOverlay() : null;
+if (overlay) aplicaOverlay(entries, overlay);
 const pendentes = entries.filter(e => e.codigoFipe && e.anoId && e.mesReferencia !== mesAtual);
 console.log(`${entries.length} entradas · ${entries.length - pendentes.length} já em ${mesAtual} · ${pendentes.length} pendentes`);
 if (!APPLY) {
@@ -75,7 +83,9 @@ if (!APPLY) {
   process.exit(0);
 }
 
-const salvar = () => fs.writeFile(FILE, JSON.stringify(data), 'utf8');
+const salvar = () => overlay
+  ? gravarOverlay({ ...overlay, mesReferencia: mesAtual, atualizadoEm: new Date().toISOString() })
+  : fs.writeFile(FILE, JSON.stringify(data), 'utf8');
 
 let feitas = 0, atualizadas = 0, naoAchados = 0, naoAchadosSeguidos = 0, motivoParada = null;
 const variacoes = [];
@@ -114,6 +124,10 @@ for (const e of pendentes) {
     e.preco = preco;
     e.precoTexto = r.Valor.trim();
     e.mesReferencia = (r.MesReferencia || mesAtual).trim();
+    if (overlay) {
+      overlay.precos = overlay.precos || {};
+      overlay.precos[chavePreco(e)] = { preco: e.preco, precoTexto: e.precoTexto, mesReferencia: e.mesReferencia };
+    }
     atualizadas++;
   }
 
@@ -124,6 +138,9 @@ for (const e of pendentes) {
   await sleep(RATE_MS);
 }
 
+// mesCompleto = o agendador não precisa mais rodar neste mês. Só marca quando
+// a rodada passou por todas as pendentes (parada no meio = retoma depois).
+if (overlay && !motivoParada) overlay.mesCompleto = mesAtual;
 await salvar();
 variacoes.sort((a, b) => a - b);
 const pct = x => (x * 100).toFixed(1) + '%';
