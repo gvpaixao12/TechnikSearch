@@ -3086,7 +3086,11 @@ function ResultsView({ client, consultaId, cardStyle, showCompareBar, cars = [],
             <>
               <div className="tk-results__client-row">
                 <span>Orçamento</span>
-                <strong>{fmtBRL(briefing.orcamentoReais.min)} — {fmtBRL(briefing.orcamentoReais.max)}</strong>
+                {/* max null = busca "sem teto" (budgetOpen): fmtBRL(null) quebrava e
+                    derrubava a tela inteira de resultados em branco. */}
+                <strong>{briefing.orcamentoReais.max == null
+                  ? `${fmtBRL(briefing.orcamentoReais.min)}+`
+                  : `${fmtBRL(briefing.orcamentoReais.min)} — ${fmtBRL(briefing.orcamentoReais.max)}`}</strong>
               </div>
               {briefing.tiposDesejados?.length > 0 && (
                 <div className="tk-results__client-row"><span>Tipo</span><strong>{briefing.tiposDesejados.join(' · ')}</strong></div>
