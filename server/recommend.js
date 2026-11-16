@@ -261,12 +261,25 @@ function chaveVersao(e) {
 // a do meio e a mais barata de cada modelo — com 100 Polos no pool, o Polo GTS
 // (justamente o que o hatch esportivo pede) caía fora da amostra. Anos
 // vizinhos do mesmo acabamento não são escolhas diferentes; acabamentos são.
-function amostraPorModelo(pool, max) {
+//
+// `prefere` (opcional): entre anos/câmbios do MESMO acabamento, a entrada que
+// casa vence a mais nova/cara. É o caso do câmbio manual: "Hilux CD 4x4 Mec." e
+// "Hilux CD 4x4 Aut." têm a mesma chave de versão, e sem isso o Aut. (mais caro)
+// ficava e o manual nunca chegava ao LLM — a observação "quer manual" falava de
+// um carro que o curador não via.
+function amostraPorModelo(pool, max, prefere = null) {
   const porVersao = new Map();
+  const melhor = (e, atual) => {
+    if (prefere) {
+      const pe = prefere(e), pa = prefere(atual);
+      if (pe !== pa) return pe;
+    }
+    return e.ano > atual.ano || (e.ano === atual.ano && e.preco > atual.preco);
+  };
   for (const e of pool) {
     const k = chaveVersao(e);
     const atual = porVersao.get(k);
-    if (!atual || e.ano > atual.ano || (e.ano === atual.ano && e.preco > atual.preco)) porVersao.set(k, e);
+    if (!atual || melhor(e, atual)) porVersao.set(k, e);
   }
   const grupos = [...agrupaPorFamilia([...porVersao.values()]).values()].map(g => {
     const ord = [...g].sort((a, b) => b.preco - a.preco);
@@ -278,8 +291,19 @@ function amostraPorModelo(pool, max) {
   });
   const out = [];
   for (let r = 0; r < max; r++) for (const g of grupos) if (g[r]) out.push(g[r]);
-  return out;
+  // Os preferidos na frente (ordem estável): o curador lê a lista em ordem, e
+  // um manual na posição 180 de 200 é um manual que ele não escolhe.
+  return prefere ? [...out.filter(prefere), ...out.filter(e => !prefere(e))] : out;
 }
+
+// "Câmbio manual" nas observações livres. O briefing não tem campo de câmbio:
+// é por aqui que o consultor pede, e é a FIPE ("Mec.") que diz quem é manual.
+const PEDE_MANUAL = /\b(cambio manual|manual|mecanico|mecanica)\b/;
+const E_MANUAL = /\bmec\b|\bmanual\b/;
+function pedeManual(briefing) {
+  return PEDE_MANUAL.test(normText(briefing.observacoes || ''));
+}
+const eManual = e => E_MANUAL.test(normText(e.modelo));
 
 // Teto por MARCA na lista do vendedor (30). Medido com o catálogo completo:
 // hatch até 60k tinha Onix, HB20, Sandero, Fit e Etios no pool, e o curador
@@ -466,8 +490,9 @@ async function recommendFromCatalog(briefing, log) {
   // Amostra por versão — sempre, não só com pool grande: com 22 SUVs de 7
   // lugares, cortar "2 por modelo" sem amostra antes pegava os 2 primeiros do
   // catálogo, arbitrário.
-  const amostra = completaAte(amostraPorModelo(pool, VERSOES_POR_MODELO_CURADOR), pool, MIN_CANDIDATOS);
-  log('amostra-por-modelo', { pool: pool.length, amostra: amostra.length });
+  const prefere = pedeManual(briefing) ? eManual : null;
+  const amostra = completaAte(amostraPorModelo(pool, VERSOES_POR_MODELO_CURADOR, prefere), pool, MIN_CANDIDATOS);
+  log('amostra-por-modelo', { pool: pool.length, amostra: amostra.length, manuais: prefere ? amostra.filter(prefere).length : undefined });
   let candidates = amostra;
 
   // Curador leve LLM: se sobrou muito, prioriza os ~30 mais relevantes
