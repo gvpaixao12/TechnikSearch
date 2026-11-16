@@ -64,7 +64,7 @@ export async function saveConsulta({ id, client, result }) {
 // Colunas leves pra listagem/agregação (sem os jsonb grandes).
 const LIST_COLS = ['id', 'created_at', 'client_name', 'client_segment', 'ok',
   'orcamento_min', 'orcamento_max', 'tipos', 'total_resultados', 'mes_referencia',
-  'top_models', 'cliente_id', 'teste'].map(c => 'c.' + c).join(', ');
+  'top_models', 'cliente_id', 'teste', 'modelo'].map(c => 'c.' + c).join(', ');
 
 // Lista as consultas mais recentes (resumo, sem briefing/top completos).
 //
@@ -95,6 +95,25 @@ export async function marcaTeste(id, teste) {
   return oneOrFail(
     'update consultas set teste = $2 where id = $1 returning id, teste',
     [id, !!teste], 'consulta não encontrada'
+  );
+}
+
+// Marca/desmarca uma consulta como pesquisa modelo. Lança se o id não existe.
+export async function marcaModelo(id, modelo) {
+  return oneOrFail(
+    'update consultas set modelo = $2 where id = $1 returning id, modelo',
+    [id, !!modelo], 'consulta não encontrada'
+  );
+}
+
+// As pesquisas modelo, pra vitrine da busca. Inclui as de teste de propósito:
+// modelo quase sempre é teste (não conta nas estatísticas) e precisa aparecer.
+export async function listModelos() {
+  return q(
+    `select id, created_at, client_name, client_segment, orcamento_min, orcamento_max,
+            tipos, total_resultados, top_models
+       from consultas where modelo
+      order by created_at desc limit 50`
   );
 }
 

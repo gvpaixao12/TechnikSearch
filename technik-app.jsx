@@ -13,6 +13,7 @@ const API_BASE = window.API_BASE !== undefined
 const NAV = [
   { id: 'new',     label: 'Nova consulta', icon: <Icon.Plus />,   badge: '⌘N' },
   { id: 'drafts',  label: 'Rascunhos',     icon: <Icon.Bookmark /> },
+  { id: 'modelos', label: 'Pesquisas modelo', icon: <Icon.Star width="16" height="16" /> },
 ];
 
 // Estoque e Ajustes moram no menu do usuário (clique no card do rodapé da
@@ -283,7 +284,7 @@ function App() {
       // Repopula o formulário a partir do briefing salvo, pra que "Editar
       // briefing" abra a tela já preenchida com o que o cliente pediu.
       applyForm(briefingToForm(c.briefing || {}, client));
-      setRecommendation({ top: c.top || [], briefing: c.briefing, diagnostico: c.diagnostico, consultaId: c.id });
+      setRecommendation({ top: c.top || [], briefing: c.briefing, diagnostico: c.diagnostico, consultaId: c.id, modelo: !!c.modelo });
       setLoadError(null);
       setDraftId(null);
       setActiveNav('new');
@@ -291,6 +292,29 @@ function App() {
     } catch (e) {
       console.warn('[openConsulta]', e);
       alert('Não consegui abrir essa consulta: ' + e.message);
+    }
+  }
+
+  // Fixa/desfixa a consulta aberta como pesquisa modelo (menu "Pesquisas
+  // modelo"). A rota exige escopo `crm`: no desktop (token de dispositivo) o
+  // servidor recusa e o alerta explica — consultor logado consegue.
+  const [modeloSalvando, setModeloSalvando] = useState(false);
+  async function toggleModelo() {
+    const id = recommendation?.consultaId;
+    if (!id || modeloSalvando) return;
+    setModeloSalvando(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/consultas/${id}/modelo`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelo: !recommendation.modelo }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.reason || `HTTP ${r.status}`);
+      setRecommendation(rec => (rec && rec.consultaId === id ? { ...rec, modelo: j.modelo } : rec));
+    } catch (e) {
+      alert('Não consegui fixar como modelo: ' + e.message);
+    } finally {
+      setModeloSalvando(false);
     }
   }
 
@@ -450,6 +474,7 @@ function App() {
           <div className="tk-topbar__title">
             <span className="tk-eyebrow">
               {activeNav === 'drafts' && 'Briefings em aberto'}
+              {activeNav === 'modelos' && 'Vitrine'}
               {activeNav === 'stock' && 'Pátio da loja'}
               {activeNav === 'settings' && 'Configurações'}
               {activeNav === 'new' && stage === 'form' && 'Nova consulta · etapa 1/2'}
@@ -458,6 +483,7 @@ function App() {
             </span>
             <h1>
               {activeNav === 'drafts' && 'Rascunhos'}
+              {activeNav === 'modelos' && 'Pesquisas modelo'}
               {activeNav === 'stock' && 'Estoque'}
               {activeNav === 'settings' && 'Ajustes'}
               {activeNav === 'new' && stage === 'form' && 'Briefing do perfil'}
@@ -488,6 +514,14 @@ function App() {
             )}
             {activeNav === 'new' && stage === 'results' && (
               <>
+                {recommendation?.consultaId && (
+                  <button className="tk-btn tk-btn-ghost" onClick={toggleModelo} disabled={modeloSalvando}
+                    title={recommendation.modelo ? 'Tirar do menu Pesquisas modelo' : 'Mostrar no menu Pesquisas modelo'}
+                    style={recommendation.modelo ? { color: 'var(--tk-primary)', borderColor: 'var(--tk-primary)' } : undefined}>
+                    <Icon.Star width="14" height="14" style={recommendation.modelo ? undefined : { opacity: 0.35 }} />
+                    {recommendation.modelo ? ' Pesquisa modelo' : ' Fixar como modelo'}
+                  </button>
+                )}
                 <button className="tk-btn tk-btn-ghost" onClick={() => setStage('form')}>← Editar briefing</button>
               </>
             )}
@@ -496,6 +530,8 @@ function App() {
 
         {activeNav === 'drafts' ? (
           <DraftsView onNew={() => handleNav('new')} onResumeDraft={resumeDraft} />
+        ) : activeNav === 'modelos' ? (
+          <ModelosView onOpen={openConsulta} />
         ) : activeNav === 'stock' ? (
           <StockView />
         ) : activeNav === 'settings' ? (
@@ -2024,6 +2060,100 @@ function DraftsView({ onNew, onResumeDraft }) {
                 <Icon.Trash />
               </button>
             </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Pesquisas modelo: consultas fixadas pra demonstração (botão "Fixar como
+// modelo" nos resultados, ou ☆ no histórico do CRM). Diferente do histórico,
+// pode morar nesta tela: só entra o que alguém escolheu mostrar.
+function ModelosView({ onOpen }) {
+  const [state, setState] = useState({ loading: true, error: null, modelos: [] });
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/api/consultas/modelos`)
+      .then(r => r.json())
+      .then(j => {
+        if (cancelled) return;
+        if (!j.ok) throw new Error(j.reason || 'Falha ao carregar as pesquisas modelo');
+        setState({ loading: false, error: null, modelos: j.modelos });
+      })
+      .catch(e => { if (!cancelled) setState({ loading: false, error: e.message, modelos: [] }); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // orcamento_* vêm do Postgres como integer; max null = busca "sem teto".
+  const faixa = (m) => {
+    const min = m.orcamento_min != null ? fmtBRL(Number(m.orcamento_min)) : null;
+    if (m.orcamento_max == null) return min ? `${min}+` : '';
+    return `${min || 'R$ 0'} — ${fmtBRL(Number(m.orcamento_max))}`;
+  };
+
+  if (state.loading) {
+    return <div className="tk-results tk-scroll"><div className="tk-help" style={{ padding: 28 }}>Carregando pesquisas modelo…</div></div>;
+  }
+
+  if (state.error) {
+    return (
+      <div className="tk-results tk-scroll">
+        <div className="tk-results__hero">
+          <div>
+            <span className="tk-eyebrow" style={{ color: '#c0392b' }}>Pesquisas modelo indisponíveis</span>
+            <h1>Não consegui carregar as pesquisas modelo.</h1>
+            <p style={{ color: 'var(--tk-muted)' }}><strong>Detalhe:</strong> {state.error}</p>
+            <p style={{ color: 'var(--tk-muted)', fontSize: 13 }}>
+              Confirme que a coluna <code>modelo</code> existe (rode <code>server/scripts/consultas-schema.sql</code>).
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="tk-results tk-scroll">
+      <div className="tk-results__hero">
+        <div>
+          <span className="tk-eyebrow">Vitrine</span>
+          <h1>{state.modelos.length} pesquisa{state.modelos.length !== 1 ? 's' : ''} modelo.</h1>
+          <p>Recomendações prontas pra mostrar, sem refazer a busca. Para incluir uma, abra o resultado e use “Fixar como modelo”.</p>
+        </div>
+      </div>
+
+      {state.modelos.length === 0 ? (
+        <div className="tk-help" style={{ padding: '28px 4px' }}>
+          Nenhuma pesquisa fixada ainda.
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 14 }}>
+          {state.modelos.map(m => (
+            <button key={m.id} onClick={() => onOpen(m.id)} title="Abrir esta pesquisa"
+              style={{
+                display: 'flex', flexDirection: 'column', gap: 8, textAlign: 'left', cursor: 'pointer',
+                padding: '18px 18px 16px', borderRadius: 14, font: 'inherit', color: 'var(--tk-ink)',
+                border: '1px solid var(--tk-line)', background: 'var(--tk-bg)',
+              }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--tk-primary)' }}>
+                <Icon.Star width="13" height="13" />
+                <span className="tk-eyebrow" style={{ color: 'inherit' }}>{m.client_segment || 'Pesquisa modelo'}</span>
+              </span>
+              <span style={{ fontWeight: 700, fontSize: 17, letterSpacing: '-0.01em' }}>{m.client_name || 'Sem nome'}</span>
+              <span style={{ fontFamily: 'var(--tk-font-mono)', fontSize: 11.5, color: 'var(--tk-muted)' }}>
+                {[faixa(m), (m.tipos || []).join(' · '), `${m.total_resultados || 0} carros`].filter(Boolean).join('  ·  ')}
+              </span>
+              {(m.top_models || []).length > 0 && (
+                <span style={{ fontSize: 13, color: 'var(--tk-muted)', lineHeight: 1.45 }}>
+                  {(m.top_models || []).slice(0, 4).join(' · ')}{m.top_models.length > 4 ? ' …' : ''}
+                </span>
+              )}
+              <span style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, fontWeight: 600, color: 'var(--tk-primary)' }}>
+                Abrir <Icon.ChevronRight />
+              </span>
+            </button>
           ))}
         </div>
       )}

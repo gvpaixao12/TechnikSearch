@@ -15,7 +15,7 @@ import { saveCarroFeedback, listExclusoesPerfil, deleteCarroFeedback } from './c
 import { loadCatalog, clearCatalogCache } from './catalog.js';
 import { iniciarAgendadorPrecos } from './agendador-precos.js';
 import { getOrBuildImages, listCachedCars, addManualImages, rebuildCarImages, getCarPhotos, deleteCarPhoto, setPhotoFavorite } from './imageCache.js';
-import { saveConsulta, listConsultas, getConsulta, getStats, marcaTeste } from './history.js';
+import { saveConsulta, listConsultas, getConsulta, getStats, marcaTeste, marcaModelo, listModelos } from './history.js';
 import { saveFeedback, listFeedback } from './feedback.js';
 import { saveRascunho, listRascunhos, getRascunho, deleteRascunho } from './rascunhos.js';
 import {
@@ -386,6 +386,18 @@ app.get('/api/consultas', exigeAuth('crm'), async (req, res) => {
   }
 });
 
+// Pesquisas modelo: a vitrine do menu "Pesquisas modelo" da busca. Escopo
+// `busca` (portão global) e não `crm`, ao contrário da lista acima: só entra
+// aqui o que alguém marcou de propósito pra ser mostrado. Registrada ANTES de
+// `/:id`, senão "modelos" seria lido como um id.
+app.get('/api/consultas/modelos', async (_req, res) => {
+  try {
+    res.json({ ok: true, modelos: await listModelos() });
+  } catch (e) {
+    res.status(503).json({ ok: false, reason: e.message });
+  }
+});
+
 app.get('/api/consultas/:id', async (req, res) => {
   try {
     const consulta = await getConsulta(req.params.id);
@@ -401,6 +413,18 @@ app.post('/api/consultas/:id/teste', exigeAuth('crm'), async (req, res) => {
   try {
     const r = await marcaTeste(req.params.id, req.body?.teste === true);
     res.json({ ok: true, teste: r.teste });
+  } catch (e) {
+    res.status(400).json({ ok: false, reason: e.message });
+  }
+});
+
+// Marca/desmarca como pesquisa modelo. Body: { modelo: true|false }. Escopo
+// `crm`: expor uma consulta na vitrine põe o nome do cliente dela na tela que o
+// comprador vê — então quem marca é consultor logado, não o token do desktop.
+app.post('/api/consultas/:id/modelo', exigeAuth('crm'), async (req, res) => {
+  try {
+    const r = await marcaModelo(req.params.id, req.body?.modelo === true);
+    res.json({ ok: true, modelo: r.modelo });
   } catch (e) {
     res.status(400).json({ ok: false, reason: e.message });
   }

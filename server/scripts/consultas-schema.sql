@@ -42,3 +42,11 @@ create index if not exists consultas_client_name_idx on public.consultas (client
 -- por padrão. Nasce false: o que chega pela busca vale até alguém dizer que não.
 alter table public.consultas
   add column if not exists teste boolean not null default false;
+
+-- Pesquisa modelo: consulta exposta na busca (menu "Pesquisas modelo") pra
+-- demonstrar o produto sem refazer a busca. Independe de `teste`: as modelos
+-- costumam ser testes (não contam nas estatísticas) e mesmo assim aparecem lá.
+-- Rode ANTES de subir a versão que lê a coluna — a listagem do CRM a seleciona.
+alter table public.consultas
+  add column if not exists modelo boolean not null default false;
+create index if not exists consultas_modelo_idx on public.consultas (created_at desc) where modelo;
