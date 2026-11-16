@@ -667,10 +667,19 @@ function scheduleRevalidate({ marca, modelo, ano, key, images }) {
   _inFlight.set(key, p);
 }
 
+// Foto que uma pessoa escolheu — subida à mão ou marcada com estrela. A visão
+// NÃO tem voto sobre ela: foto de imprensa oficial tem placa alemã e cairia
+// como "europeu", e a curadoria das pesquisas modelo sumiria na primeira visita.
+function confiada(im) {
+  return !!im && (im.manual === true || im.favorite === true);
+}
+
 // Uma entry é "vision-validada" se alguma das fotos foi marcada com `vision`.
 // (Flag persistido por foto dentro de `images`, já que não há coluna própria.)
+// Entry só com fotos confiadas também conta: não há o que a visão julgar.
 function isVisionValidated(cached) {
-  return (cached?.images || []).some(im => im && im.vision === true);
+  const imgs = (cached?.images || []).filter(Boolean);
+  return imgs.some(im => im.vision === true) || (imgs.length > 0 && imgs.every(confiada));
 }
 
 // Re-valida com visão as fotos QUE JÁ ESTÃO no cache, sem nova busca na web
@@ -681,9 +690,12 @@ async function revalidateExisting({ marca, modelo, ano, key, images }) {
   await acquireBuildSlot();
   try {
     const byView = { front: [], rear: [], side: [], interior: [] };
+    // Confiadas passam direto (ver confiada()): não vão pra visão e voltam
+    // intactas, na frente — a capa escolhida à mão continua sendo a capa.
+    const confiadas = images.filter(confiada);
     let banidas = 0;
     for (const im of images) {
-      if (!byView[im.view]) continue;
+      if (!byView[im.view] || confiada(im)) continue;
       // Fotos JÁ salvas de origem banida não são reenviadas pra visão: elas caem
       // aqui e somem do índice. É o que limpa o acervo antigo (marca d'água de
       // agregador) sem precisar refazer o carro na mão. `url` aponta pro R2, então
@@ -718,13 +730,13 @@ async function revalidateExisting({ marca, modelo, ano, key, images }) {
       return { key, images, validated: images.length >= 2, cached: true };
     }
 
-    const kept = [];
+    const kept = [...confiadas];
     for (const view of ['front', 'rear', 'side', 'interior'])
       for (const im of approved[view]) kept.push({ url: im.url, view, sourcePage: im.page || null, vision: true });
 
     // validateImages pode retornar 0 aprovadas silenciosamente (TPM/TPD que captura
     // internamente). Nesse caso preservamos o que tínhamos — nunca zeramos o cache.
-    if (kept.length === 0 && images.length > 0) {
+    if (kept.length === confiadas.length && images.length > confiadas.length) {
       console.warn(`[revalida] ${key}: visão retornou 0 aprovadas — mantendo ${images.length} fotos atuais`);
       return { key, images, validated: images.length >= 2, cached: true };
     }
