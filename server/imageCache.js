@@ -304,7 +304,9 @@ export async function deleteCarPhoto({ marca, modelo, ano, url }) {
 // Rebuild com IA (portão de visão) de um carro específico:
 //   scope 'full'    → apaga TUDO desse carro (bucket + índice) e refaz as 4 vistas.
 //   scope 'missing' → busca só as vistas sem foto e faz merge com as existentes.
-export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', onProgress = () => {} }) {
+// rich=false pula as buscas por cor: o --completar quer só preencher vista vazia,
+// e ali quem resolve é a busca de reserva — cor era ~40% do Serper gasto.
+export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', rich = true, onProgress = () => {} }) {
   if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
   onProgress({ stage: 'queue' });
   await acquireBuildSlot();
@@ -343,7 +345,7 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', onP
     }
 
     onProgress({ stage: 'search' });
-    const byViewRaw = await searchByView({ marca, modelo, ano, rich: true, views: targetViews });
+    const byViewRaw = await searchByView({ marca, modelo, ano, rich, views: targetViews });
     onProgress({ stage: 'download' });
     const byView = await downloadByView(byViewRaw, targetViews);
     const totalCand = targetViews.reduce((s, v) => s + (byView[v]?.length || 0), 0);

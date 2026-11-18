@@ -163,7 +163,7 @@ const MARCA_GLOBAL = /^(audi|bmw|mercedes-benz|porsche|volvo|land rover|jaguar|l
 // prompt como "escolha as melhores N", e o modelo tratava a resposta como um
 // ranking a preencher em vez de um julgamento foto a foto — foi assim que um
 // sedã entrou na lateral de um hatch.
-function _selecionaAprovadas(text, images, cap, ano, view) {
+function _selecionaAprovadas(text, images, cap, ano, view, rotulo = '') {
   let json;
   try { json = JSON.parse(text); } catch { return []; }
 
@@ -320,7 +320,11 @@ Retorne EXCLUSIVAMENTE este JSON, com UMA entrada por foto, na ordem de 1 a ${im
     },
     ...images.map(img => ({
       type: 'image_url',
-      image_url: { url: img.visionUrl || img.url },
+      // detail 'low': a foto já vai reduzida a 512px (VISION_WIDTH), e no modo
+      // auto o gpt-4o-mini cobrava ~8.5k tokens por imagem pra enxergar esses
+      // mesmos pixels; no low são ~2.8k. ~3x menos tokens por chamada, que era o
+      // que segurava o pacer de TPM (3 chamadas/min no --completar).
+      image_url: { url: img.visionUrl || img.url, detail: 'low' },
     })),
   ];
 

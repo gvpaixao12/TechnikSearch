@@ -263,7 +263,7 @@ async function completar(cars, faltando) {
       const c = todo[i];
       const antes = faltando.get(makeKey(c));
       try {
-        const r = await rebuildCarImages({ marca: c.marca, modelo: c.modelo, ano: c.ano, scope: 'missing' });
+        const r = await rebuildCarImages({ marca: c.marca, modelo: c.modelo, ano: c.ano, scope: 'missing', rich: false });
         const preenchidas = antes.filter(v => (r.views?.[v] || 0) > 0);
         if (preenchidas.length) { ganharam++; vistasGanhas += preenchidas.length; }
         console.log(`[completar ${String(i+1).padStart(4)}/${todo.length}] ${(c.marca+' '+c.modelo).slice(0, 46).padEnd(46)} ${c.ano}  faltava ${antes.join('+')} → ${preenchidas.length ? '+' + preenchidas.join('+') : 'nada aprovado'}`);
