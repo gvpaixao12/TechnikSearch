@@ -179,10 +179,14 @@ function _selecionaAprovadas(text, images, cap, ano, view, rotulo = '') {
 
   const vistos = new Set();
   const ok = [];
+  // Motivo de cada reprovação, numa linha por lote. Sem isso "faltou traseira"
+  // não separava "a busca não achou foto" de "a visão reprovou tudo, e por quê".
+  const reprovadas = [];
   for (const v of (Array.isArray(json.fotos) ? json.fotos : [])) {
     const i = Number(v?.n) - 1;
     if (!Number.isInteger(i) || i < 0 || i >= images.length) continue;
-    if (v.ok !== true || vistos.has(i)) continue;
+    if (v.ok !== true) { reprovadas.push(`#${v.n} ${String(v.motivo || '?').slice(0, 40)}`); continue; }
+    if (vistos.has(i)) continue;
     // Portão de ano. Sem os anos (o modelo omitiu o campo) vale o veredito
     // dele — não dá pra zerar a galeria por causa de um campo faltando.
     const [ini, fim] = Array.isArray(v.anos) ? v.anos.map(Number) : [];
@@ -199,6 +203,9 @@ function _selecionaAprovadas(text, images, cap, ano, view, rotulo = '') {
       capa: Number.isFinite(capa) ? Math.max(0, Math.min(10, capa)) : null,
       cor: String(v.cor || '').toLowerCase().trim(),
     });
+  }
+  if (reprovadas.length) {
+    console.log(`[validator] ${rotulo}${view}: ${ok.length}/${images.length} ok · reprovadas: ${reprovadas.join(' · ')}`);
   }
 
   // Na frente, a nota de capa pesa na seleção junto com a de limpeza: com a cota
@@ -429,7 +436,7 @@ Retorne EXCLUSIVAMENTE este JSON, com UMA entrada por foto, na ordem de 1 a ${im
   });
 
   const text = completion.choices?.[0]?.message?.content || '{}';
-  return _selecionaAprovadas(text, images, cap, ano, view);
+  return _selecionaAprovadas(text, images, cap, ano, view, `${marca} ${modelo} ${ano} · `);
 }
 
 // Valida uma view: lote os candidatos em grupos de MAX_IMAGES_PER_CALL e mescla

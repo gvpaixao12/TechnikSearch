@@ -355,6 +355,10 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', ric
       onProgress({ stage: 'validate' });
       approved = await validateImages({ marca, modelo, ano, byView });
     }
+    // Por vista: quantas a busca trouxe → quantas a visão aprovou. Vista com
+    // 0 candidatos é falta de foto na web; com N→0 é reprovação (motivo nas
+    // linhas "[validator] … reprovadas" logo acima).
+    console.log(`[rebuild] ${key}: ${targetViews.map(v => `${v} ${byView[v]?.length || 0}→${approved[v]?.length || 0}`).join(' · ')}`);
     await completaVistasVazias({ marca, modelo, ano, views: targetViews, byView, approved });
 
     onProgress({ stage: 'upload' });
