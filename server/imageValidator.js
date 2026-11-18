@@ -152,6 +152,11 @@ const BODY_LABEL = {
 const ANO_FOLGA_ANTES = 0;
 const ANO_FOLGA_DEPOIS = 1;
 
+// Marcas só importadas (ou com produção local idêntica à global): o carro
+// vendido aqui é o mesmo da foto de imprensa estrangeira. Nomes como a FIPE
+// grafa. Fica fora quem tem versão própria pro Brasil (VW, Fiat, GM, Ford...).
+const MARCA_GLOBAL = /^(audi|bmw|mercedes-benz|porsche|volvo|land rover|jaguar|lexus|mini|ferrari|lamborghini|maserati|aston martin)$/i;
+
 // Lê o veredito POR FOTO e aplica em código o que não dá pra confiar ao LLM: o
 // portão de ano (a geração que ele declarou tem que conter o ano alvo) e a
 // diversidade de cor na seleção final. Antes as duas coisas eram pedidas no
@@ -252,6 +257,21 @@ async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3
 
   const isExternal = view !== 'interior';
   const isFront = view === 'front';
+  const marcaGlobal = MARCA_GLOBAL.test(String(marca).trim());
+
+  // Regras de mercado. Para marca nacional/popular, placa estrangeira e "versão
+  // de outro mercado" reprovam (o Golf europeu não é o daqui). Para importado
+  // premium o carro é o MESMO do mundo todo, e quase toda foto de imprensa tem
+  // placa europeia/americana: a regra zerava frente e traseira (as vistas que
+  // mostram placa) — medido no RS3 Sedan 2026, que ficou só com lateral e
+  // interior. Volante à direita continua reprovando nos dois casos.
+  const geracaoHint = marcaGlobal
+    ? `Atenção: ${marca} é importada e o Brasil recebe a MESMA geração do mercado global, sem defasagem — julgue a geração pelo ano ${ano}.`
+    : `Atenção: a geração europeia de ${ano} normalmente NÃO é a que se vendia aqui — o Brasil costuma receber a geração anterior por vários anos.`;
+  const mercadoRegras = marcaGlobal
+    ? `- Placa estrangeira (europeia, alemã, americana) NÃO reprova: ${marca} é importada e quase toda foto de imprensa é de fora — o carro é o mesmo vendido aqui. Só reprove por mercado se houver diferença VISÍVEL do carro brasileiro (ex: luzes laterais âmbar americanas no para-choque).`
+    : `- **PLACA ESTRANGEIRA** visível: placa europeia (faixa azul da UE à esquerda), alemã, americana etc. indica carro de fora — REPROVE. Placa brasileira (Mercosul ou a cinza antiga) é ok.
+- Versão de outro mercado: faróis, para-choque, rodas ou detalhes que não correspondem ao vendido no Brasil. Em dúvida sobre o mercado, REPROVE.`;
 
   // Só nas vistas externas: do painel não dá pra dizer a carroceria, e com
   // "em dúvida, reprove" a regra zeraria os interiores.
@@ -274,11 +294,10 @@ Julgue CADA foto POR SI. Isto NÃO é uma escolha das melhores: cada foto passa 
 
 REPROVE a foto se QUALQUER item abaixo for verdade:
 - **CARROCERIA ERRADA**: o formato do carro não é o da carroceria alvo. Sedã tem porta-malas saliente (três volumes); hatch termina na tampa traseira; perua/SW estende o teto até a traseira; cupê tem teto caído e silhueta esportiva; SUV é alto; picape tem caçamba. Confira o perfil ANTES de aprovar — é o erro mais comum.
-- **GERAÇÃO ERRADA**: o carro tem que ser da geração vendida NO BRASIL em ${ano}. Farol, grade, para-choque e lanterna de outra geração REPROVAM, mesmo sendo a mesma marca e o mesmo modelo. Atenção: a geração europeia de ${ano} normalmente NÃO é a que se vendia aqui — o Brasil costuma receber a geração anterior por vários anos.
+- **GERAÇÃO ERRADA**: o carro tem que ser da geração vendida NO BRASIL em ${ano}. Farol, grade, para-choque e lanterna de outra geração REPROVAM, mesmo sendo a mesma marca e o mesmo modelo. ${geracaoHint}
 - Marca ou modelo visivelmente diferentes.
 - **VOLANTE À DIREITA (mão inglesa)**: se o volante aparecer e estiver do lado DIREITO, é unidade de outro mercado (Reino Unido/Japão/Austrália/Índia) — REPROVE. Vale pro interior e pra qualquer foto que mostre o painel.
-- **PLACA ESTRANGEIRA** visível: placa europeia (faixa azul da UE à esquerda), alemã, americana etc. indica carro de fora — REPROVE. Placa brasileira (Mercosul ou a cinza antiga) é ok.
-- Versão de outro mercado: faróis, para-choque, rodas ou detalhes que não correspondem ao vendido no Brasil. Em dúvida sobre o mercado, REPROVE.
+${mercadoRegras}
 - VISTA ERRADA (ex: interior quando pedi ${VIEW_LABEL[view]}).
 - Render 3D/CAD, desenho, ilustração, miniatura, brinquedo ou peça solta — queremos FOTO REAL.
 - **ANÚNCIO DE CONCESSIONÁRIA / CLASSIFICADO**: tarja, faixa, moldura, rodapé ou borda com TELEFONE, nome de loja/revenda/seminovos, endereço, lista de cidades, "R$"/preço, KM ou logo de revenda — REPROVE SEMPRE, mesmo com o carro limpo. Qualquer telefone visível REPROVA.
