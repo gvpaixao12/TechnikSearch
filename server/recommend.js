@@ -76,8 +76,10 @@ function combMatch(briefingFuels, entryFuel) {
 // rodar EXATAMENTE o mesmo filtro num carro específico (ver diagnoseMiss).
 // Duplicar a regra aqui e lá significaria diagnóstico mentindo com o tempo.
 
-const MARGEM_NORMAL = { lo: 0.95, hi: 1.05 };   // folga pequena no orçamento
-const MARGEM_RELAXADA = { lo: 0.90, hi: 1.10 }; // usada quando sobram <5 opções
+// Orçamento é cravado nas duas pontas, sem folga: mínimo e teto são escolha
+// explícita de quem busca. Antes havia 5% de folga (10% no modo "relaxado",
+// quando sobravam <5 opções) e uma M240i de R$ 292k entrava num mínimo de 300k.
+// Pouca opção dentro da faixa é resposta honesta, não motivo pra sair dela.
 
 // Deriva do briefing normalizado tudo que os filtros consultam.
 function filtroContext(briefing) {
@@ -96,15 +98,15 @@ function filtroContext(briefing) {
 
 // Por que esta entrada do catálogo NÃO entra no pool? null = entra.
 // A ordem dos testes é a ordem de precedência do motivo reportado.
-function motivoDescarte(e, ctx, margem = MARGEM_NORMAL) {
+function motivoDescarte(e, ctx) {
   if (!e.preco) return 'semPreco';
   if (ctx.anoMin && e.ano < ctx.anoMin) return 'ano';
   if (ctx.anoMax && e.ano > ctx.anoMax) return 'ano';
   if (ctx.tiposPedidos.length && !ctx.tiposPedidos.includes(e.tipo)) return 'tipo';
   if (ctx.combsPedidas.length && !combMatch(ctx.combsPedidas, e.combustivel)) return 'comb';
   if (!cabeLugares(e, ctx.lugaresMin)) return 'lugares';
-  if (e.preco < ctx.orc.min * margem.lo) return 'orcamento';
-  if (ctx.orc.max != null && e.preco > ctx.orc.max * margem.hi) return 'orcamento';
+  if (e.preco < ctx.orc.min) return 'orcamento';
+  if (ctx.orc.max != null && e.preco > ctx.orc.max) return 'orcamento';
   return null;
 }
 
@@ -438,20 +440,13 @@ async function recommendFromCatalog(briefing, log) {
 
   const reasonsCount = { ano: 0, tipo: 0, comb: 0, lugares: 0, orcamento: 0, semPreco: 0 };
 
-  // Modo normal: 95% a 105% do orçamento (margem pequena)
   let pool = catalog.entries.filter(e => {
-    const motivo = motivoDescarte(e, ctx, MARGEM_NORMAL);
+    const motivo = motivoDescarte(e, ctx);
     if (motivo) { reasonsCount[motivo]++; return false; }
     return true;
   });
 
   log('catalog-filtered', { count: pool.length, descartes: reasonsCount });
-
-  // Relaxa orçamento se sobrou pouco — piso em 90% do mínimo (mais conservador)
-  if (pool.length < 5) {
-    pool = catalog.entries.filter(e => !motivoDescarte(e, ctx, MARGEM_RELAXADA));
-    log('catalog-relaxed', { count: pool.length });
-  }
 
   // Dedupe por código FIPE (mesmo carro com 2+ codigosModelo iguais)
   const seenFipe = new Set();
@@ -718,7 +713,7 @@ async function recommendLegacy(briefing, log) {
     if (anoMax && Number(f.anoModelo) > Number(anoMax)) return false;
     if (tiposPedidosSlug.length && !tiposPedidosSlug.includes(tipoSlug(p.cand.tipo))) return false;
     if (combsOK.length && !combMatch(combsOK, f.combustivel)) return false;
-    if (f.preco < orc.min * 0.85 || (orc.max != null && f.preco > orc.max * 1.05)) return false;
+    if (f.preco < orc.min || (orc.max != null && f.preco > orc.max)) return false;
     return true;
   });
 
@@ -885,19 +880,17 @@ export async function diagnoseMiss({ briefing, termo, topModels = [] }) {
   const descartes = {};
   const cortadasPor = {};   // motivo → versões cortadas por ele (pra explicação)
   const passaram = [];
-  let passariaRelaxado = false;
   for (const e of matches) {
-    const motivo = motivoDescarte(e, ctx, MARGEM_NORMAL);
+    const motivo = motivoDescarte(e, ctx);
     if (!motivo) { passaram.push(e); continue; }
     descartes[motivo] = (descartes[motivo] || 0) + 1;
     (cortadasPor[motivo] ||= []).push(e);
-    if (!motivoDescarte(e, ctx, MARGEM_RELAXADA)) passariaRelaxado = true;
   }
 
   const exemplos = matches.slice(0, 5).map(e => ({
     marca: e.marca, modelo: e.modelo, ano: e.ano,
     preco: e.preco, tipo: e.tipo, combustivel: e.combustivel,
-    motivo: motivoDescarte(e, ctx, MARGEM_NORMAL),
+    motivo: motivoDescarte(e, ctx),
   }));
 
   // 4. Passou nos filtros mas não foi entregue → o vendedor LLM não escolheu.
@@ -914,15 +907,12 @@ export async function diagnoseMiss({ briefing, termo, topModels = [] }) {
 
   // 5. Todas cortadas → reporta o motivo dominante com os números.
   const dominante = Object.entries(descartes).sort((a, b) => b[1] - a[1])[0]?.[0];
-  const nota = passariaRelaxado
-    ? ' Entraria na busca relaxada (usada só quando sobram menos de 5 opções).'
-    : '';
   return {
     termo, causa: 'cortado-por-filtro',
     filtro: dominante,
     resumo: `${plural(matches.length, 'versão', 'versões')} de “${termo}” no catálogo, nenhuma passou nos filtros. `
-      + `Motivo principal — ${FILTRO_LABEL[dominante] || dominante}: ${explicaDescarte(dominante, cortadasPor[dominante] || matches, ctx)}${nota}`,
-    detalhe: { candidatosNoCatalogo: matches.length, passaramFiltro: 0, descartes, passariaRelaxado, exemplos },
+      + `Motivo principal — ${FILTRO_LABEL[dominante] || dominante}: ${explicaDescarte(dominante, cortadasPor[dominante] || matches, ctx)}`,
+    detalhe: { candidatosNoCatalogo: matches.length, passaramFiltro: 0, descartes, exemplos },
   };
 }
 

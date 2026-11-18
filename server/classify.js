@@ -149,7 +149,10 @@ const TYPE_RULES = [
     /\b911\b/i, /\bcayman\b/i, /\bboxster\b/i, /\b718\b/i,
     // Audi TT, A5/RS5 Coupé
     /\baudi\s*tt\b/i, /\btt\s*\d/i,
-    /\brs[3-8]\s+sed/i, /\brs[3-8]\s+coupe/i,
+    // "RS3 Sedan" NÃO: é sedã (cai em \bsedan\b lá embaixo). Estava aqui e
+    // aparecia em busca de cupê — e o validador de fotos reprovava as externas
+    // dele por não terem silhueta de cupê, sobrando só interior na capa.
+    /\brs[3-8]\s+coupe/i,
     /\ba3\s*cabriolet\b/i, /\ba5\s*coupe\b/i,
     // Mercedes CLA / SL / SLC
     /\bcla\b/i, /\bsl-?class\b/i, /\bslc\b/i, /\bslk\b/i,

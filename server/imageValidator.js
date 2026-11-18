@@ -142,11 +142,15 @@ const BODY_LABEL = {
   perua: { nome: 'perua / station wagon', desc: 'frente de hatch ou sedã com o teto reto prolongado até a traseira, tampa traseira quase vertical' },
 };
 
-// Tolerância do portão de ano. O ano-modelo da FIPE costuma ser o ano de
-// produção + 1, e um facelift no meio da geração faz o LLM devolver a fase em
-// vez da geração inteira. Um ano de folga de cada lado absorve os dois casos
-// sem deixar passar a geração errada — essa erra por 5+ anos, não por 1.
-const ANO_TOLERANCIA = 1;
+// Tolerância do portão de ano, ASSIMÉTRICA. Depois do fim da geração, 1 ano de
+// folga: o ano-modelo da FIPE costuma ser o de produção + 1, então o último
+// lote sai com ano-modelo um acima. Antes do início, ZERO: ano-modelo anterior
+// ao lançamento é o carro da geração passada. Com 1 de folga dos dois lados,
+// a M4 G82 (2021+) virou capa da M4 2020, que ainda é a F82 — e a troca de
+// geração é justamente onde a folga erra, porque a foto mais farta na web é a
+// do modelo novo.
+const ANO_FOLGA_ANTES = 0;
+const ANO_FOLGA_DEPOIS = 1;
 
 // Lê o veredito POR FOTO e aplica em código o que não dá pra confiar ao LLM: o
 // portão de ano (a geração que ele declarou tem que conter o ano alvo) e a
@@ -177,7 +181,7 @@ function _selecionaAprovadas(text, images, cap, ano, view) {
     // dele — não dá pra zerar a galeria por causa de um campo faltando.
     const [ini, fim] = Array.isArray(v.anos) ? v.anos.map(Number) : [];
     if (Number.isFinite(ini) && Number.isFinite(fim)
-        && (ano < ini - ANO_TOLERANCIA || ano > fim + ANO_TOLERANCIA)) {
+        && (ano < ini - ANO_FOLGA_ANTES || ano > fim + ANO_FOLGA_DEPOIS)) {
       console.log(`[validator] ${view} #${v.n}: geração ${ini}-${fim} não cobre ${ano} — reprovada`);
       continue;
     }

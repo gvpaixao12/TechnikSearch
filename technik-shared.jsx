@@ -142,10 +142,16 @@ function groupByView(images) {
   return out;
 }
 
-// Escolhe a foto da frente pro card (fallback: primeira disponível).
+// Escolhe a capa do card: frente, senão lateral, senão traseira. Interior NUNCA
+// vira capa — o RS3 com só fotos de volante parecia outro produto. Sem foto
+// externa o card mostra a silhueta, e o interior continua na galeria.
 function pickFront(images) {
   if (!images || !images.length) return null;
-  return images.find(im => im.view === 'front') || images[0];
+  for (const v of ['front', 'side', 'rear']) {
+    const im = images.find(x => x.view === v);
+    if (im) return im;
+  }
+  return null;
 }
 
 function useCarImages({ brand, model, year, enabled = true, reloadKey = 0 }) {
@@ -207,18 +213,40 @@ function CarPhoto({ brand, model, year, type = 'suv', eager = false, rounded = f
     background: 'rgba(0,0,0,0.04)',
   };
 
-  if (!visible || n === 0) {
+  // Sem capa externa: silhueta. Se houver só interior, o clique ainda abre a
+  // galeria — a foto existe, só não serve de capa.
+  if (!visible || !front) {
+    const temGaleria = visible && n > 0;
     return (
-      <div ref={containerRef} style={containerStyle}>
-        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--tk-primary)' }}>
-          <CarSilhouette type={type} sw={1.4} />
-        </div>
-        {visible && loading && (
-          <div style={{ position: 'absolute', bottom: 6, right: 8, fontSize: 10, color: 'var(--tk-muted)', opacity: 0.6, fontFamily: 'JetBrains Mono, monospace' }}>
-            carregando…
+      <>
+        <div
+          ref={containerRef}
+          onClick={temGaleria ? () => setTourOpen(true) : undefined}
+          title={temGaleria ? 'Ver fotos do interior' : undefined}
+          style={{ ...containerStyle, cursor: temGaleria ? 'zoom-in' : undefined }}
+        >
+          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--tk-primary)' }}>
+            <CarSilhouette type={type} sw={1.4} />
           </div>
+          {visible && loading && (
+            <div style={{ position: 'absolute', bottom: 6, right: 8, fontSize: 10, color: 'var(--tk-muted)', opacity: 0.6, fontFamily: 'JetBrains Mono, monospace' }}>
+              carregando…
+            </div>
+          )}
+          {temGaleria && (
+            <div style={{ position: 'absolute', bottom: 8, right: 8, padding: '4px 9px', background: 'rgba(0,0,0,0.55)', color: '#fff', borderRadius: 999, fontSize: 11, fontWeight: 600 }}>
+              {n === 1 ? '1 foto do interior' : `${n} fotos do interior`}
+            </div>
+          )}
+        </div>
+        {tourOpen && temGaleria && (
+          <PhotoTourModal
+            brand={brand} model={model} year={year}
+            images={images}
+            onClose={() => setTourOpen(false)}
+          />
         )}
-      </div>
+      </>
     );
   }
 
