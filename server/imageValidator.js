@@ -309,7 +309,8 @@ ${mercadoRegras}
 Em dúvida, REPROVE. Melhor zero foto que uma foto errada.
 
 Retorne EXCLUSIVAMENTE este JSON, com UMA entrada por foto, na ordem de 1 a ${images.length}:
-{"fotos":[{"n":1,"ok":true,"anos":[2006,2013],"cor":"prata","nota":8${isFront ? ',"capa":7' : ''}},{"n":2,"ok":false,"motivo":"sedã"}]}
+{"fotos":[{"n":1,"ok":true,"anos":[<primeiro ano>,<último ano>],"cor":"<cor>","nota":<0 a 10>${isFront ? ',"capa":<0 a 10>' : ''}},{"n":2,"ok":false,"motivo":"<motivo>"}]}
+(os <…> são só o formato — troque pelos valores reais de CADA foto; não copie números de exemplo)
 
 - "ok": true SÓ se a foto passar em TODOS os critérios acima.
 - "anos": [primeiro, último] ano em que ESSA geração exata foi vendida NOVA NO BRASIL (não a produção mundial — a mesma geração chega ao Brasil anos depois, e é isso que separa o carro certo do errado). Obrigatório quando ok=true: é assim que conferimos o ano.
