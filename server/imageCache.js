@@ -10,8 +10,8 @@
 // que a web não tem foto boa).
 
 import sharp from 'sharp';
-import { searchByView } from './imageProviders.js';
-import { validateImages, isTpdExhausted } from './imageValidator.js';
+import { searchByView, searchFallback } from './imageProviders.js';
+import { validateImages, isTpdExhausted, isVisionAborted } from './imageValidator.js';
 import {
   BUCKET, putObject, removeObjects, listPrefix, pathFromUrl,
 } from './storage.js';
@@ -85,6 +85,13 @@ function pickDiverse(sorted, k) {
   return picked;
 }
 
+// Nota de "capa" que a visão dá às fotos da frente (0-10: imprensa, em
+// movimento, cenário bonito, 3/4 dianteiro). Gravada por foto pra que a ordem
+// da frente — e portanto a capa do card — sobreviva no índice.
+function notaCapa(im) {
+  return Number.isFinite(im?.capa) ? { capa: im.capa } : {};
+}
+
 function scoreImage(im) {
   let s = 0;
   if (im.source === 'commons') s += 1000;   // Commons é curado, prioridade alta
@@ -101,6 +108,31 @@ function selectHeuristic(byView, perView = HEURISTIC_PER_VIEW) {
     out[view] = pickDiverse(sorted, perView);
   }
   return out;
+}
+
+// Segunda chance pras vistas que terminaram SEM foto aprovada: uma busca de
+// reserva (inglês, sem aspas) e mais uma rodada de visão só nelas. Sem isto um
+// interior todo de mão inglesa, ou uma traseira toda de placa alemã, deixava a
+// vista vazia por 180 dias — a entrada conta como validada e ninguém volta.
+// Muta `approved`. Não roda com a visão fora do ar (TPD/disjuntor): aí a
+// reprovação não foi da foto, e gastar Serper não resolve.
+async function completaVistasVazias({ marca, modelo, ano, views, byView, approved }) {
+  const vazias = views.filter(v => (approved[v] || []).length === 0);
+  if (!vazias.length || isTpdExhausted() || isVisionAborted()) return;
+  await Promise.all(vazias.map(async view => {
+    const tentadas = new Set((byView[view] || []).map(im => im.url));
+    const raw = await searchFallback({ marca, modelo, ano, view, tentadas });
+    if (!raw.length) return;
+    const baixadas = await downloadByView({ [view]: raw }, [view]);
+    if (!baixadas[view]?.length) return;
+    try {
+      const r = await validateImages({ marca, modelo, ano, byView: baixadas });
+      approved[view] = r[view] || [];
+      console.log(`[images] reserva ${view}: ${approved[view].length} aprovada(s) de ${baixadas[view].length}`);
+    } catch (e) {
+      console.warn(`[images] reserva ${view} falhou: ${e.message}`);
+    }
+  }));
 }
 
 // Lista todas as entradas do cache de imagens — o "catálogo". Cada linha é um
@@ -311,7 +343,7 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', onP
     }
 
     onProgress({ stage: 'search' });
-    const byViewRaw = await searchByView({ marca, modelo, ano, rich: true });
+    const byViewRaw = await searchByView({ marca, modelo, ano, rich: true, views: targetViews });
     onProgress({ stage: 'download' });
     const byView = await downloadByView(byViewRaw, targetViews);
     const totalCand = targetViews.reduce((s, v) => s + (byView[v]?.length || 0), 0);
@@ -321,6 +353,7 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', onP
       onProgress({ stage: 'validate' });
       approved = await validateImages({ marca, modelo, ano, byView });
     }
+    await completaVistasVazias({ marca, modelo, ano, views: targetViews, byView, approved });
 
     onProgress({ stage: 'upload' });
     const uploaded = [];
@@ -329,7 +362,7 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', onP
       for (const img of (approved[view] || [])) {
         try {
           const publicUrl = await uploadOne({ key, view, idx, buffer: img.buffer });
-          uploaded.push({ url: publicUrl, view, sourcePage: img.page || null, vision: true });
+          uploaded.push({ url: publicUrl, view, sourcePage: img.page || null, vision: true, ...notaCapa(img) });
           idx++;
         } catch (e) {
           console.warn(`[rebuild] ${key} ${view}#${idx}: ${e.message}`);
@@ -527,6 +560,7 @@ async function _buildImagesUnlocked({ marca, modelo, ano, key, skipVision = fals
   const approved = skipVision
     ? selectHeuristic(byView, HEURISTIC_PER_VIEW)
     : await validateImages({ marca, modelo, ano, byView });
+  if (!skipVision) await completaVistasVazias({ marca, modelo, ano, views, byView, approved });
   const totalApproved = views.reduce((s, v) => s + approved[v].length, 0);
   console.log(`[images] ${key}: ${totalApproved} ${skipVision ? 'selecionadas (heurística)' : 'aprovadas no vision'}`);
 
@@ -536,7 +570,7 @@ async function _buildImagesUnlocked({ marca, modelo, ano, key, skipVision = fals
     for (const img of approved[view]) {
       try {
         const publicUrl = await uploadOne({ key, view, idx, buffer: img.buffer });
-        uploaded.push({ url: publicUrl, view, sourcePage: img.page || null, vision: !skipVision });
+        uploaded.push({ url: publicUrl, view, sourcePage: img.page || null, vision: !skipVision, ...notaCapa(img) });
         idx++;
       } catch (e) {
         console.warn(`[images] upload ${view} #${idx} falhou: ${e.message}`);
@@ -588,6 +622,7 @@ async function upgradeWithVision({ marca, modelo, ano, key }) {
       console.log(`[upgrade] ${key}: vision falhou (${e.message}), mantendo heurística`);
       return;
     }
+    await completaVistasVazias({ marca, modelo, ano, views, byView, approved });
     const totalApproved = views.reduce((s, v) => s + approved[v].length, 0);
     if (totalApproved < 2) {
       console.log(`[upgrade] ${key}: vision aprovou ${totalApproved} fotos — mantendo heurística`);
@@ -600,7 +635,7 @@ async function upgradeWithVision({ marca, modelo, ano, key }) {
       for (const img of approved[view]) {
         try {
           const publicUrl = await uploadOne({ key, view, idx, buffer: img.buffer });
-          uploaded.push({ url: publicUrl, view, sourcePage: img.page || null, vision: true });
+          uploaded.push({ url: publicUrl, view, sourcePage: img.page || null, vision: true, ...notaCapa(img) });
           idx++;
         } catch (e) {
           console.warn(`[upgrade] ${key} upload ${view}#${idx}: ${e.message}`);
@@ -732,7 +767,7 @@ async function revalidateExisting({ marca, modelo, ano, key, images }) {
 
     const kept = [...confiadas];
     for (const view of ['front', 'rear', 'side', 'interior'])
-      for (const im of approved[view]) kept.push({ url: im.url, view, sourcePage: im.page || null, vision: true });
+      for (const im of approved[view]) kept.push({ url: im.url, view, sourcePage: im.page || null, vision: true, ...notaCapa(im) });
 
     // validateImages pode retornar 0 aprovadas silenciosamente (TPM/TPD que captura
     // internamente). Nesse caso preservamos o que tínhamos — nunca zeramos o cache.

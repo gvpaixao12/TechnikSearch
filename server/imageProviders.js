@@ -127,10 +127,48 @@ const RICH_TARGET = 12;        // candidatos desejados por view antes de parar
 const EXT_COLORS = ['branco', 'preto', 'vermelho'];   // exterior (front/side)
 const INT_FINISHES = ['interior preto', 'interior bege']; // acabamento interno
 
+// Intercala a busca principal com as de cor: 2 da principal pra cada 1 de cada
+// cor. Antes as de cor iam pro FIM da lista, e o corte de candidatos (12 no
+// download, 10 na visão) as descartava quase sempre — crédito Serper pago por
+// foto que nunca era vista, e o pool de interior ficava só com a busca genérica.
+function intercala(principal, extras) {
+  const out = [];
+  const filas = extras.map(l => [...l]);
+  const p = [...principal];
+  while (p.length || filas.some(f => f.length)) {
+    out.push(...p.splice(0, 2));
+    for (const f of filas) if (f.length) out.push(f.shift());
+  }
+  return out;
+}
+
+// Busca de reserva pra uma vista que terminou SEM foto aprovada: em inglês e sem
+// aspas — material de imprensa internacional (onde interior e traseira de
+// esportivo costumam estar) e trims cuja frase exata não existe na web. Recebe
+// as URLs já tentadas pra não pagar visão duas vezes pela mesma foto.
+const FALLBACK_TERMS = {
+  front: 'front three quarter',
+  rear: 'rear view',
+  side: 'side view',
+  interior: 'interior',
+};
+export async function searchFallback({ marca, modelo, ano, view, tentadas = new Set() }) {
+  const q = `${marca} ${cleanModelName(modelo)} ${ano} ${FALLBACK_TERMS[view] || view}`;
+  try {
+    const s = await searchSerper(q, { num: SERPER_NUM });
+    return dedupeByUrl(s).filter(im => !tentadas.has(im.url));
+  } catch (e) {
+    console.warn(`[providers] Serper reserva ${view} falhou: ${e.message}`);
+    return [];
+  }
+}
+
 // Buscas direcionadas por view. Retorna { front, rear, side, interior } com
 // candidatos dedupados de Commons + Serper. Em modo rich, soma buscas por cor
 // pra trazer variações de exterior (front/side) e de acabamento (interior).
-export async function searchByView({ marca, modelo, ano, rich = false }) {
+// views: só busca essas (o "completar vistas que faltam" não precisa pagar
+// Serper pelas vistas que já têm foto).
+export async function searchByView({ marca, modelo, ano, rich = false, views = ['front', 'rear', 'side', 'interior'] }) {
   const modeloLimpo = cleanModelName(modelo);
   const base = `${marca} ${modeloLimpo} ${ano}`;
   const baseEn = `${marca} ${modeloLimpo} ${ano}`;
@@ -153,6 +191,7 @@ export async function searchByView({ marca, modelo, ano, rich = false }) {
   const out = { front: [], rear: [], side: [], interior: [] };
 
   for (const [view, { pt, en }] of Object.entries(plans)) {
+    if (!views.includes(view)) continue;
     // Commons é predominantemente catalogado em inglês.
     try {
       const c = await searchCommons(en, { limit: COMMONS_LIMIT });
@@ -176,15 +215,15 @@ export async function searchByView({ marca, modelo, ano, rich = false }) {
     }
     // Buscas por cor (rich): rodam sempre, pois o objetivo é variedade de cor,
     // não só quantidade. O teto real de fotos vem dos limites de download/validação.
+    const porCor = [];
     for (const q of colorQueries[view]) {
       try {
-        const s = await searchSerper(q, { num: SERPER_NUM_COLOR });
-        out[view].push(...s);
+        porCor.push(await searchSerper(q, { num: SERPER_NUM_COLOR }));
       } catch (e) {
         console.warn(`[providers] Serper cor "${q}" falhou: ${e.message}`);
       }
     }
-    out[view] = dedupeByUrl(out[view]);
+    out[view] = dedupeByUrl(intercala(out[view], porCor));
   }
   return out;
 }

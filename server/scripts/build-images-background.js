@@ -14,6 +14,14 @@
 //   cd server && node scripts/build-images-background.js                 # visão, conc=4
 //   cd server && node scripts/build-images-background.js --concurrency=6
 //   cd server && node scripts/build-images-background.js --heuristic     # sem LLM
+//   cd server && node scripts/build-images-background.js --relatorio     # só conta: quantos têm cada vista
+//   cd server && node scripts/build-images-background.js --completar     # busca SÓ as vistas que faltam
+//   cd server && node scripts/build-images-background.js --completar --limite=50
+//
+// --completar: carro já validado mas com vista vazia (sem interior, sem traseira…)
+// era pulado pra sempre — "tem foto com visão" bastava pra contar como pronto.
+// Este modo pega esses e roda o rebuild 'missing': busca e valida só as vistas
+// vazias, sem tocar nas fotos que já existem. Custa Serper + visão por vista.
 //
 // Pode interromper com Ctrl+C — termina os carros em voo e sai; a próxima execução
 // pula os que já estão prontos.
@@ -21,13 +29,20 @@
 import 'dotenv/config';
 import { q as dbq, exec as dbexec } from '../db.js';
 import { loadCatalog } from '../catalog.js';
-import { getOrBuildImages, makeKey, KEY_PREFIX } from '../imageCache.js';
+import { getOrBuildImages, rebuildCarImages, makeKey, KEY_PREFIX, VIEW_KEYS } from '../imageCache.js';
 import { isVisionAborted } from '../imageValidator.js';
 import { listFolders, listPrefix, removeObjects } from '../storage.js';
 
 const ARGS = process.argv.slice(2);
 const PRUNE_OLD = ARGS.includes('--prune-old');
 const USE_VISION = !ARGS.includes('--heuristic');
+const RELATORIO = ARGS.includes('--relatorio');
+const COMPLETAR = ARGS.includes('--completar');
+const LIMITE = (() => {
+  const a = ARGS.find(x => x.startsWith('--limite='));
+  const n = a ? parseInt(a.split('=')[1], 10) : Infinity;
+  return Number.isFinite(n) && n > 0 ? n : Infinity;
+})();
 const CONCURRENCY = (() => {
   const a = ARGS.find(x => x.startsWith('--concurrency='));
   const n = a ? parseInt(a.split('=')[1], 10) : 4;
@@ -116,16 +131,37 @@ async function main() {
   const allKeys = cars.map(c => makeKey({ marca: c.marca, modelo: c.modelo, ano: c.ano }));
   const doneKeys = new Set();
   const emptyKeys = [];
+  const faltando = new Map();   // key → vistas vazias (só carros já com foto)
+  const porVista = { front: 0, rear: 0, side: 0, interior: 0 };
+  let comFoto = 0;
   // Uma query só: o `= any($1)` não tem o teto de 200 do `.in()` do PostgREST.
   try {
     for (const row of await dbq('select key, images from car_images_cache where key = any($1)', [allKeys])) {
       const imgs = Array.isArray(row.images) ? row.images : [];
       if (imgs.length === 0) { emptyKeys.push(row.key); continue; }
+      comFoto++;
+      const vazias = VIEW_KEYS.filter(v => !imgs.some(im => im && im.view === v));
+      for (const v of VIEW_KEYS) if (!vazias.includes(v)) porVista[v]++;
+      if (vazias.length) faltando.set(row.key, vazias);
       const visionOk = imgs.some(im => im && im.vision === true);
       if (!USE_VISION || visionOk) doneKeys.add(row.key);
       // modo visão + heurístico → fica de fora de doneKeys → entra no todo
     }
   } catch (e) { console.warn('[bg] erro lendo cache:', e.message); }
+
+  if (RELATORIO) {
+    const pct = n => comFoto ? `${Math.round(100 * n / comFoto)}%` : '-';
+    console.log(`\n[relatório] ${cars.length} carros no catálogo · ${comFoto} com foto · ${emptyKeys.length} vazios`);
+    for (const v of VIEW_KEYS) console.log(`  ${v.padEnd(9)} ${String(porVista[v]).padStart(5)}  (${pct(porVista[v])} dos com foto)`);
+    console.log(`  completos ${String(comFoto - faltando.size).padStart(5)}  (${pct(comFoto - faltando.size)})`);
+    const combos = new Map();
+    for (const vs of faltando.values()) { const k = vs.join('+'); combos.set(k, (combos.get(k) || 0) + 1); }
+    console.log('  faltando:');
+    for (const [k, n] of [...combos].sort((a, b) => b[1] - a[1])) console.log(`    ${String(n).padStart(5)}  ${k}`);
+    return;
+  }
+
+  if (COMPLETAR) return completar(cars, faltando);
 
   // Apaga entradas vazias pra que o getOrBuildImages refaça
   if (emptyKeys.length) {
@@ -204,6 +240,42 @@ async function main() {
   console.log(`Falhou: ${fail}`);
   if (isVisionAborted()) console.log('⛔ ABORTADO pelo disjuntor de 429 (rate limit). Rode de novo mais tarde.');
   else if (stop) console.log('Interrompido pelo usuário.');
+}
+
+// Rebuild 'missing' nos carros que têm foto mas não têm todas as vistas.
+async function completar(cars, faltando) {
+  const todo = cars
+    .filter(c => faltando.has(makeKey({ marca: c.marca, modelo: c.modelo, ano: c.ano })))
+    .slice(0, LIMITE);
+  const vistasTotal = todo.reduce((s, c) => s + faltando.get(makeKey(c)).length, 0);
+  console.log(`[completar] ${faltando.size} carros incompletos · processando ${todo.length} (${vistasTotal} vistas)\n`);
+
+  let stop = false;
+  process.on('SIGINT', () => { console.log('\n[completar] Ctrl+C, terminando os em voo…'); stop = true; });
+
+  let next = 0, ganharam = 0, vistasGanhas = 0, fail = 0;
+  async function worker(id) {
+    await sleep(id * STAGGER_MS);
+    while (!stop) {
+      if (isVisionAborted()) { stop = true; break; }
+      const i = next++;
+      if (i >= todo.length) break;
+      const c = todo[i];
+      const antes = faltando.get(makeKey(c));
+      try {
+        const r = await rebuildCarImages({ marca: c.marca, modelo: c.modelo, ano: c.ano, scope: 'missing' });
+        const preenchidas = antes.filter(v => (r.views?.[v] || 0) > 0);
+        if (preenchidas.length) { ganharam++; vistasGanhas += preenchidas.length; }
+        console.log(`[completar ${String(i+1).padStart(4)}/${todo.length}] ${(c.marca+' '+c.modelo).slice(0, 46).padEnd(46)} ${c.ano}  faltava ${antes.join('+')} → ${preenchidas.length ? '+' + preenchidas.join('+') : 'nada aprovado'}`);
+      } catch (e) {
+        fail++;
+        console.warn(`[completar ${i+1}/${todo.length}] ${c.marca} ${c.modelo} ${c.ano} FAIL: ${e.message}`);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, todo.length) }, (_, id) => worker(id)));
+  console.log(`\n[completar] ${ganharam}/${todo.length} carros ganharam vista (${vistasGanhas} vistas) · ${fail} falhas`);
+  if (isVisionAborted()) console.log('⛔ ABORTADO pelo disjuntor de 429. Rode de novo mais tarde.');
 }
 
 main().catch(e => {

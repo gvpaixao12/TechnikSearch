@@ -168,7 +168,8 @@ function _selecionaAprovadas(text, images, cap, ano, view) {
     return json.aprovadas
       .map(n => Number(n) - 1)
       .filter(i => Number.isInteger(i) && i >= 0 && i < images.length)
-      .slice(0, cap);
+      .slice(0, cap)
+      .map(i => ({ i, capa: null }));
   }
 
   const vistos = new Set();
@@ -186,10 +187,20 @@ function _selecionaAprovadas(text, images, cap, ano, view) {
       continue;
     }
     vistos.add(i);
-    ok.push({ i, nota: Number(v.nota) || 0, cor: String(v.cor || '').toLowerCase().trim() });
+    const capa = Number(v.capa);
+    ok.push({
+      i,
+      nota: Number(v.nota) || 0,
+      capa: Number.isFinite(capa) ? Math.max(0, Math.min(10, capa)) : null,
+      cor: String(v.cor || '').toLowerCase().trim(),
+    });
   }
 
-  ok.sort((a, b) => b.nota - a.nota);
+  // Na frente, a nota de capa pesa na seleção junto com a de limpeza: com a cota
+  // cheia, uma foto de pátio bem limpa não pode tirar da galeria a foto de
+  // imprensa em movimento que seria a capa.
+  const peso = e => e.nota + (view === 'front' ? (e.capa || 0) : 0);
+  ok.sort((a, b) => peso(b) - peso(a));
 
   // Diversidade de cor: a primeira passada só aceita cor inédita, a segunda
   // completa a cota. Com veredito por foto o LLM não escolhe mais nada, então a
@@ -206,7 +217,7 @@ function _selecionaAprovadas(text, images, cap, ano, view) {
     if (out.length >= cap) break;
     if (!out.includes(e)) out.push(e);
   }
-  return out.map(e => e.i);
+  return out.map(e => ({ i: e.i, capa: e.capa }));
 }
 
 // Llama 4 Scout aceita no máx 5 imagens por chamada.
@@ -240,6 +251,7 @@ async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3
     : '';
 
   const isExternal = view !== 'interior';
+  const isFront = view === 'front';
 
   // Só nas vistas externas: do painel não dá pra dizer a carroceria, e com
   // "em dúvida, reprove" a regra zeraria os interiores.
@@ -278,13 +290,14 @@ REPROVE a foto se QUALQUER item abaixo for verdade:
 Em dúvida, REPROVE. Melhor zero foto que uma foto errada.
 
 Retorne EXCLUSIVAMENTE este JSON, com UMA entrada por foto, na ordem de 1 a ${images.length}:
-{"fotos":[{"n":1,"ok":true,"anos":[2006,2013],"cor":"prata","nota":8},{"n":2,"ok":false,"motivo":"sedã"}]}
+{"fotos":[{"n":1,"ok":true,"anos":[2006,2013],"cor":"prata","nota":8${isFront ? ',"capa":7' : ''}},{"n":2,"ok":false,"motivo":"sedã"}]}
 
 - "ok": true SÓ se a foto passar em TODOS os critérios acima.
 - "anos": [primeiro, último] ano em que ESSA geração exata foi vendida NOVA NO BRASIL (não a produção mundial — a mesma geração chega ao Brasil anos depois, e é isso que separa o carro certo do errado). Obrigatório quando ok=true: é assim que conferimos o ano.
 - "cor": cor predominante ${isExternal ? 'da pintura' : 'do revestimento interno'}, uma palavra.
 - "nota": 0 a 10, o quanto a foto é limpa e representativa.
-- "motivo": 2 a 4 palavras, só quando ok=false.`,
+- "motivo": 2 a 4 palavras, só quando ok=false.${isFront ? `
+- "capa": 0 a 10, o quanto a foto serve de CAPA de catálogo (só quando ok=true; NÃO muda o ok). Nota ALTA: foto de imprensa/fabricante, carro em MOVIMENTO ou em cenário bonito (estrada, serra, pista, paisagem), ângulo 3/4 dianteiro, carro grande e inteiro no quadro, luz caprichada. Nota MÉDIA: estúdio ou fundo neutro, carro parado mas bem enquadrado. Nota BAIXA: estacionado em pátio, rua ou garagem, outros carros em volta, salão de exposição/concessionária, frente reta sem ângulo, carro cortado ou pequeno no quadro, foto amadora.` : ''}`,
     },
     ...images.map(img => ({
       type: 'image_url',
@@ -409,12 +422,16 @@ async function validateView({ marca, modelo, ano, view, byView }) {
     const remaining = target - approved.length;
     try {
       const okIdx = await validateBatch({ marca, modelo, ano, view, images: batch, maxApproved: remaining });
-      for (const i of okIdx) approved.push(batch[i]);
+      for (const { i, capa } of okIdx) approved.push(capa == null ? batch[i] : { ...batch[i], capa });
     } catch (e) {
       console.warn(`[validator] ${view} lote (offset ${start}) falhou: ${e.message} — encerrando view`);
       break; // TPD/TPM ou erro: preserva o que já foi aprovado
     }
   }
+  // A capa do card é a PRIMEIRA foto da frente. Os lotes chegam em ordem de
+  // busca, então sem reordenar a melhor capa do 2º lote ficava atrás de
+  // qualquer aprovada do 1º. sort é estável: sem nota de capa, a ordem fica.
+  if (view === 'front') approved.sort((a, b) => (b.capa ?? -1) - (a.capa ?? -1));
   return approved.slice(0, target);
 }
 
