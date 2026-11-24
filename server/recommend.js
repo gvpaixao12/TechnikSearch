@@ -6,6 +6,7 @@ import { splitModelo, baseModelo } from './classify.js';
 import { listRankingMisses } from './feedback.js';
 import { listExclusoesPerfil } from './carro-feedback.js';
 import { saneaFicha } from './ficha-sanity.js';
+import { chaveFicha, carregaFichas, salvaFichas } from './ficha-cache.js';
 
 const TIPO_TO_SLUG = {
   'Hatch': 'hatch',
@@ -491,10 +492,18 @@ async function recommendFromCatalog(briefing, log) {
   log('amostra-por-modelo', { pool: pool.length, amostra: amostra.length, manuais: prefere ? amostra.filter(prefere).length : undefined });
   let candidates = amostra;
 
+  // Fichas já guardadas de tudo que pode chegar ao LLM: a amostra e os
+  // sinalizados (que a repescagem pode puxar de fora dela). Servem pro curador
+  // e o vendedor ORDENAREM com número na mão, e poupam o vendedor de reescrever.
+  const chaveDe = e => chaveFicha(e.codigoFipe, e.ano);
+  const fichas = await carregaFichas([...amostra, ...sinalizados.keys()].map(chaveDe));
+  const fichaDe = e => fichas.get(chaveDe(e)) || null;
+  log('fichas-guardadas', { count: fichas.size });
+
   // Curador leve LLM: se sobrou muito, prioriza os ~30 mais relevantes
   if (amostra.length > CURADOR_N) {
     try {
-      const ids = await runCuradorLeve(briefing, amostra);
+      const ids = await runCuradorLeve(briefing, amostra, { fichaDe });
       const byKey = new Map(amostra.map(e => [`${e.marcaId}|${e.modeloId}|${e.anoId}`, e]));
       const picked = ids.map(id => byKey.get(id)).filter(Boolean);
       candidates = picked.length >= 5 ? picked : amostra;
@@ -555,6 +564,7 @@ async function recommendFromCatalog(briefing, log) {
       combustivel: e.combustivel,
     },
     cand: { tipo: e.tipo, combustivel: e.combustivel, marca: e.marca, modelo: e.modelo, ano: e.ano },
+    fichaConhecida: fichaDe(e),
   }));
 
   // Os IDs que o vendedor usa (c1, c2...) só existem aqui — o lembrete precisa
@@ -577,6 +587,7 @@ async function recommendFromCatalog(briefing, log) {
 
   const byId = new Map(candidatesForVendor.map((p, i) => [`c${i + 1}`, p]));
   const seenInTop = new Set();
+  const novasFichas = [];
   const topEnriched = top
     .map(t => {
       const pair = byId.get(t.candidatoId);
@@ -586,11 +597,19 @@ async function recommendFromCatalog(briefing, log) {
       seenInTop.add(t.candidatoId);
       seenInTop.add(`fipe:${f.codigoFipe}`);
       const { versao, motor } = splitModelo(f.modelo);
+      // Ficha guardada vence a que o vendedor acabou de escrever: é a mesma
+      // pra todo mundo, e é onde correção manual mora. O saneamento roda nas
+      // duas (idempotente) pra regra nova do ficha-sanity valer pro que já
+      // estava guardado. Cópia: o objeto do cache não pode ser mutado aqui.
+      const ficha = saneaFicha(pair.fichaConhecida || t.fichaTecnica, f.marca, f.modelo).ficha;
+      if (!pair.fichaConhecida) {
+        novasFichas.push({ chave: chaveFicha(f.codigoFipe, f.anoModelo), marca: f.marca, modelo: f.modelo, ano: f.anoModelo, ficha });
+      }
       return {
         id: slugifyId(f.marca, f.modelo, f.anoModelo),
         rank: t.rank,
         // Nome FIPE corrige o palpite do LLM (tração, cv, Mec./Aut., Nm).
-        fichaTecnica: saneaFicha(t.fichaTecnica, f.marca, f.modelo).ficha,
+        fichaTecnica: ficha,
         brand: f.marca,
         model: f.modelo,
         versao,
@@ -606,6 +625,10 @@ async function recommendFromCatalog(briefing, log) {
     })
     .filter(Boolean)
     .sort((a, b) => a.rank - b.rank);
+  // Grava ANTES da correção de lugares logo abaixo: aquela é regra do
+  // pipeline (lista SEMPRE_SETE) e roda de novo a cada leitura.
+  salvaFichas(novasFichas.map(n => ({ ...n, ficha: { ...n.ficha } })), top.llm);
+  log('fichas-novas', { count: novasFichas.length });
 
   // A ficha que o vendedor acabou de escrever é a mesma que o cliente vai ler:
   // entregar um carro cuja ficha diz "5 lugares" pra quem pediu 7 é o sistema

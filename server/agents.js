@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { briefingToText } from './briefing.js';
 import { registraLLM, registraRateLimit } from './usage.js';
+import { resumoFicha } from './ficha-cache.js';
 
 // Provedores de texto (curador + vendedor), em ORDEM DE PREFERÊNCIA. Se o
 // primeiro falhar, a chamada cai no próximo sem o usuário perceber. Motivo: o
@@ -150,7 +151,8 @@ const VENDOR_SCHEMA_DESC = `Retorne EXCLUSIVAMENTE um JSON com este formato exat
 - Cada ficha é da versão EXATA daquele candidato. Não reaproveite números de outro carro da lista (ex.: 420i Cabriolet NÃO tem a potência do M235i). Potência e câmbio que aparecem no nome FIPE ("530cv", "Mec.", "Aut.") são a verdade.
 - Use SOMENTE os candidatos da lista que recebeu. Não invente carros novos.
 - Referencie cada carro pelo "candidatoId" exato fornecido.
-- Todos os campos são obrigatórios em cada item.`;
+- Candidato marcado "FICHA JÁ CONHECIDA": a ficha está guardada no servidor. Devolva só { "candidatoId", "rank" } — NÃO escreva "fichaTecnica" pra ele. Use os dados que vieram nele pra ordenar.
+- Nos demais, todos os campos são obrigatórios.`;
 
 const CURATOR_SYSTEM = `Você é especialista no mercado de carros usados do Brasil. Gere uma shortlist de 25 a 40 candidatos pra um briefing.
 
@@ -230,6 +232,20 @@ Antes de retornar: revise cada candidato (orçamento, ano>=anoMin, carroceria ce
 
 ${CURATOR_SCHEMA_DESC}`;
 
+// O que cada perfil do briefing quer dizer, compartilhado entre o curador leve
+// e o vendedor. Precisa estar nos DOIS: com pool pequeno (SUV 7 lugares tem ~20
+// candidatos) o curador leve nem roda, e quem ordena é o vendedor sozinho —
+// que antes não tinha regra nenhuma de perfil.
+//
+// "Design" era só a palavra solta no briefing. É gosto, mas não é aleatório:
+// quem marca design reclama de carro com cara velha e de versão de entrada
+// pelada, e é isso que a regra tenta capturar.
+const CRITERIOS_PERFIL = `CRITÉRIOS DE PERFIL (use pra ordenar):
+- Família ↔ espaço/segurança. Urbano ↔ compactos. Trabalho/offroad ↔ picape/SUV robusto.
+- Uso esportivo = DESEMPENHO, não acabamento. Priorize motor turbo ou de maior potência (TB, TSI, TFSI, Turbo, 2.0, cv alto), versões esportivas de fábrica (GTI, HGT, AMG, M Sport, R-Design, Sport) e hatches premium de tração forte (Mercedes Classe A 250, BMW 125i/130i, Audi A3, Golf TSI, Volvo V40 T4/T5). Um 1.0/1.3 aspirado com pacote visual topo de linha NÃO é esportivo — vai pro fim. Ano mais antigo não é demérito quando o briefing aceita esse ano.
+- Prioridade "design" = APARÊNCIA e presença, não desempenho. Priorize: (1) geração ou facelift mais recente que caiba no orçamento — carro de linha nova envelhece melhor; (2) versões topo ou com pacote visual de fábrica (R-Line, M Sport, AMG Line, S line, GT Line, N Line, Limited, Diamond, Black/Night Edition, Overland, Highline), que trazem roda maior, faróis full LED e acabamento diferenciado; (3) modelos reconhecidos pelo desenho (ex.: Volvo, Range Rover Evoque/Velar, Peugeot 2008/3008/5008 atuais, Jeep Compass/Commander, Kia Sportage nova geração, Mini). Versão de entrada "pelada" e linhas de desenho utilitário/datado (Spin, Doblò, Grand Livina, Zafira) vão pro fim quando design é prioridade — a não ser que sejam os únicos que atendem um requisito duro (ex.: 7 lugares).
+- Esportivo + design juntos: pacote visual sozinho NÃO basta. O ideal é a versão que tem os dois (motor forte E visual de topo); depois, desempenho com visual comum; por último, só visual.`;
+
 const VENDOR_SYSTEM = `Você é um especialista técnico em automóveis vendidos no Brasil. Conhece motorização, câmbio, potência, torque, consumo e dimensões dos modelos.
 
 Você vai receber: (1) o briefing do cliente, (2) uma lista de candidatos JÁ validados na Tabela FIPE com preços reais.
@@ -244,6 +260,9 @@ REGRA DE QUANTIDADE — INVIOLÁVEL:
 
 Ordenação:
 - Ordene por aderência ao briefing — apenas para ter uma ordem estável. NÃO dê notas, nem destaque "o melhor". O front exibe lado a lado, sem ranking visível ao usuário.
+- Quando houver mais de ${TOP_N} candidatos, a ordem decide quem fica de fora: siga os critérios de perfil abaixo.
+
+${CRITERIOS_PERFIL}
 
 REGRA DE OURO PARA A FICHA TÉCNICA:
 - Preencha os campos da ficha técnica com dados REAIS da versão exata (modelo + ano-modelo) recebida.
@@ -276,6 +295,7 @@ async function runChat({ system, user, maxTokens = 3500, valida }) {
       if (valida && !valida(json)) throw new Error('resposta fora do formato esperado');
       if (p.foraAte) p.foraAte = 0;
       if (p !== PROVEDORES[0]) console.warn(`[llm] servido pelo reserva ${p.nome}/${p.model}`);
+      Object.defineProperty(json, '_llm', { value: `${p.nome}/${p.model}` });
       return json;
     } catch (e) {
       ultimoErro = e;
@@ -332,20 +352,26 @@ Regras:
 - Se a lista tiver <= ${CURADOR_N} itens, devolva todos ordenados.
 - Lugares mínimos e porta-malas mínimo do briefing NÃO foram filtrados com certeza: priorize quem atende e mande pro fim quem você sabe que não atende (ex: pediu 7 lugares, a versão tem 5).
 - Diversifique: no máximo 2 versões do mesmo modelo (dois Argo, dois Golf) entre os ${CURADOR_N}. A ordem da lista de entrada NÃO indica relevância.
-- Considere: cliente família ↔ espaço/segurança; cliente urbano ↔ compactos; cliente trabalho/offroad ↔ picape/SUV robusto.
-- Uso esportivo = DESEMPENHO, não acabamento. Priorize motor turbo ou de maior potência (TB, TSI, TFSI, Turbo, 2.0, cv alto), versões esportivas de fábrica (GTI, HGT, AMG, M Sport, R-Design, Sport) e hatches premium de tração forte (Mercedes Classe A 250, BMW 125i/130i, Audi A3, Golf TSI, Volvo V40 T4/T5). Um 1.0/1.3 aspirado com pacote visual topo de linha NÃO é esportivo — vai pro fim da lista. Ano mais antigo não é demérito quando o briefing aceita esse ano.
+- Alguns itens trazem "ficha:" com dados conferidos (lugares, potência, motor). Use-os em vez da memória — ex.: pediu 7 lugares e a ficha diz 5, vai pro fim.
+
+${CRITERIOS_PERFIL}
 
 Retorne EXCLUSIVAMENTE este JSON:
 { "ids": ["string", "string", ...] }
 Cada ID é EXATAMENTE como aparece no formato "marcaId|modeloId|anoId" da lista de entrada.`;
 
-export async function runCuradorLeve(briefing, pool) {
+// `fichaDe(entry)` devolve a ficha guardada daquela entrada (ou null). É uma
+// função, e não um campo na entrada, porque as entradas do catálogo ficam em
+// memória entre buscas — pendurar a ficha nelas vazaria de uma busca pra outra.
+export async function runCuradorLeve(briefing, pool, { fichaDe = () => null } = {}) {
   if (pool.length <= CURADOR_N) return pool.map(e => `${e.marcaId}|${e.modeloId}|${e.anoId}`);
   const briefText = briefingToText(briefing);
-  // Lista compacta — só ID + marca/modelo/ano/preço
-  const itensTexto = pool.map(e =>
-    `${e.marcaId}|${e.modeloId}|${e.anoId} :: ${e.marca} ${e.modelo} ${e.ano} (${e.tipo}, ${e.combustivel}) ${e.precoTexto}`
-  ).join('\n');
+  // Lista compacta — ID + marca/modelo/ano/preço, e o resumo da ficha quando
+  // ela já está guardada (ver ficha-cache.js).
+  const itensTexto = pool.map(e => {
+    const ficha = resumoFicha(fichaDe(e));
+    return `${e.marcaId}|${e.modeloId}|${e.anoId} :: ${e.marca} ${e.modelo} ${e.ano} (${e.tipo}, ${e.combustivel}) ${e.precoTexto}${ficha ? ` · ficha: ${ficha}` : ''}`;
+  }).join('\n');
   const prompt = `Briefing:\n${briefText}\n\nLista (${pool.length} itens):\n${itensTexto}\n\nDevolva os ${CURADOR_N} IDs mais relevantes em ordem de relevância.`;
   const json = await runChat({ system: CURADOR_LEVE_SYSTEM, user: prompt, maxTokens: CURADOR_N * 40, valida: j => Array.isArray(j?.ids) });
   return Array.isArray(json?.ids) ? json.ids : [];
@@ -364,10 +390,15 @@ export async function runCuradorLeve(briefing, pool) {
 export async function runVendor(briefing, resolvedCandidates, { lembretes = [] } = {}) {
   const briefText = briefingToText(briefing);
 
+  // `fichaConhecida` vem do ficha-cache: o vendedor só ordena esses e não
+  // reescreve a ficha — é daí que sai a economia de tokens e de tempo.
   const candidatosTexto = resolvedCandidates.map((c, i) => {
     const id = `c${i + 1}`;
-    return `[${id}] ${c.fipe.marca} ${c.fipe.modelo} (${c.fipe.anoModelo}) — FIPE ${c.fipe.precoTexto} — ${c.fipe.combustivel}`;
+    const ficha = resumoFicha(c.fichaConhecida);
+    return `[${id}] ${c.fipe.marca} ${c.fipe.modelo} (${c.fipe.anoModelo}) — FIPE ${c.fipe.precoTexto} — ${c.fipe.combustivel}`
+      + (c.fichaConhecida ? ` — FICHA JÁ CONHECIDA${ficha ? `: ${ficha}` : ''}` : '');
   }).join('\n');
+  const semFicha = resolvedCandidates.filter(c => !c.fichaConhecida).length;
 
   // Vem ANTES da lista de candidatos de propósito: depois de 30 linhas de
   // lista, o aviso era ignorado — o carro entrava no prompt e continuava
@@ -379,10 +410,16 @@ export async function runVendor(briefing, resolvedCandidates, { lembretes = [] }
     : '';
 
   const prompt = `Briefing do cliente:\n\n${briefText}\n\n---\n\n${blocoLembretes}Candidatos validados na FIPE (use o ID exato como "candidatoId" na resposta):\n\n${candidatosTexto}\n\nMonte o top ${TOP_N} final.`;
-  // ~250 tokens de ficha por item; o default (3500) truncava acima de ~12.
+  // ~250 tokens de ficha por item sem ficha guardada; ~20 por item que só
+  // precisa de id + rank. O default (3500) truncava acima de ~12 fichas.
+  const comFicha = Math.min(semFicha, TOP_N);
   const json = await runChat({
-    system: VENDOR_SYSTEM, user: prompt, maxTokens: TOP_N * 350,
+    system: VENDOR_SYSTEM, user: prompt,
+    maxTokens: Math.max(1500, comFicha * 350 + (TOP_N - comFicha) * 40),
     valida: j => Array.isArray(j?.top) && j.top.length > 0,
   });
+  // Quem escreveu as fichas (pra coluna modelo_llm do cache). Não enumerável
+  // pra não vazar em JSON.stringify nem mudar o formato do array.
+  Object.defineProperty(json.top, 'llm', { value: json._llm || null });
   return json.top;
 }
