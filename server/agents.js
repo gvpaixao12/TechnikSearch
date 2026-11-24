@@ -398,7 +398,6 @@ export async function runVendor(briefing, resolvedCandidates, { lembretes = [] }
     return `[${id}] ${c.fipe.marca} ${c.fipe.modelo} (${c.fipe.anoModelo}) — FIPE ${c.fipe.precoTexto} — ${c.fipe.combustivel}`
       + (c.fichaConhecida ? ` — FICHA JÁ CONHECIDA${ficha ? `: ${ficha}` : ''}` : '');
   }).join('\n');
-  const semFicha = resolvedCandidates.filter(c => !c.fichaConhecida).length;
 
   // Vem ANTES da lista de candidatos de propósito: depois de 30 linhas de
   // lista, o aviso era ignorado — o carro entrava no prompt e continuava
@@ -410,12 +409,14 @@ export async function runVendor(briefing, resolvedCandidates, { lembretes = [] }
     : '';
 
   const prompt = `Briefing do cliente:\n\n${briefText}\n\n---\n\n${blocoLembretes}Candidatos validados na FIPE (use o ID exato como "candidatoId" na resposta):\n\n${candidatosTexto}\n\nMonte o top ${TOP_N} final.`;
-  // ~250 tokens de ficha por item sem ficha guardada; ~20 por item que só
-  // precisa de id + rank. O default (3500) truncava acima de ~12 fichas.
-  const comFicha = Math.min(semFicha, TOP_N);
+  // ~250 tokens de ficha por item; o default (3500) truncava acima de ~12.
+  // O teto fica cheio MESMO com ficha guardada: max_tokens não custa nada (paga
+  // o que sai), e o modelo nem sempre obedece "não escreva a ficha". Medido em
+  // produção: teto de 40/item com as 25 guardadas → JSON cortado, busca morta.
+  // A economia vem de ele não escrever, não de proibir com o teto.
   const json = await runChat({
     system: VENDOR_SYSTEM, user: prompt,
-    maxTokens: Math.max(1500, comFicha * 350 + (TOP_N - comFicha) * 40),
+    maxTokens: TOP_N * 350,
     valida: j => Array.isArray(j?.top) && j.top.length > 0,
   });
   // Quem escreveu as fichas (pra coluna modelo_llm do cache). Não enumerável
