@@ -391,6 +391,94 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', ric
   }
 }
 
+// Galeria "vitrine" pros carros que mais aparecem nas consultas: mais fotos por
+// vista, mais cores e foto de imprensa na capa (ver searchByView/validateImages
+// com vitrine). NÃO-destrutiva, ao contrário do scope 'full':
+//   1. busca + visão primeiro, sem tocar no que existe;
+//   2. só troca se a nova galeria tiver frente e for >= à atual (senão mantém);
+//   3. sobe com numeração DEPOIS da maior existente (nada é sobrescrito), grava
+//      o índice e só então apaga os arquivos antigos — sem janela sem foto, e a
+//      URL nova fura qualquer cache de CDN/navegador da foto antiga.
+// Favoritas e manuais são mantidas, na frente (a capa escolhida à mão continua).
+// dryRun: faz busca e visão (gasta) mas não grava — pra calibrar o resultado.
+const VITRINE_CANDIDATES_PER_VIEW = 25;
+export async function vitrineCarImages({ marca, modelo, ano, dryRun = false }) {
+  if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
+  await acquireBuildSlot();
+  try {
+    const key = makeKey({ marca, modelo, ano });
+    const row = await readCacheRow(key);
+    const prev = Array.isArray(row?.images) ? row.images : [];
+    const kept = prev.filter(im => im && (im.favorite || im.manual));
+    const replaceable = prev.filter(im => im && !im.favorite && !im.manual);
+
+    const byViewRaw = await searchByView({ marca, modelo, ano, vitrine: true });
+    const byView = await downloadByView(byViewRaw, VIEW_KEYS, VITRINE_CANDIDATES_PER_VIEW);
+    let approved = { front: [], rear: [], side: [], interior: [] };
+    if (VIEW_KEYS.some(v => byView[v]?.length)) {
+      approved = await validateImages({ marca, modelo, ano, byView, vitrine: true });
+    }
+    await completaVistasVazias({ marca, modelo, ano, views: VIEW_KEYS, byView, approved });
+
+    const novas = VIEW_KEYS.reduce((s, v) => s + (approved[v]?.length || 0), 0);
+    const capa = approved.front?.[0]?.capa ?? null;
+    const resumo = {
+      key, antes: viewCounts(prev), depois: Object.fromEntries(VIEW_KEYS.map(v => [v, approved[v]?.length || 0])),
+      capa, mantidas: kept.length,
+    };
+    console.log(`[vitrine] ${key}: ${VIEW_KEYS.map(v => `${v} ${byView[v]?.length || 0}→${approved[v]?.length || 0}`).join(' · ')} · capa ${capa ?? '-'}`);
+
+    const frenteAntes = replaceable.some(im => im.view === 'front');
+    if (novas < replaceable.length || (frenteAntes && !approved.front?.length)) {
+      return { ...resumo, trocou: false, motivo: `nova galeria (${novas}) pior que a atual (${replaceable.length})` };
+    }
+    if (dryRun) return { ...resumo, trocou: false, motivo: 'dry-run' };
+
+    // Numeração a partir da maior já usada na pasta (inclusive órfãs), pra
+    // nenhum upload cair em cima de arquivo que ainda está no índice.
+    const existentes = await listPrefix(`${key}/`);
+    const startIdx = { front: 0, rear: 0, side: 0, interior: 0 };
+    for (const o of existentes) {
+      const m = String(o.path).match(/\/(front|rear|side|interior)-(\d+)\.(?:webp|avif)$/i);
+      if (m) startIdx[m[1]] = Math.max(startIdx[m[1]], parseInt(m[2], 10));
+    }
+    const uploaded = [];
+    for (const view of VIEW_KEYS) {
+      let idx = startIdx[view];
+      for (const img of (approved[view] || [])) {
+        try {
+          const publicUrl = await uploadOne({ key, view, idx, buffer: img.buffer });
+          uploaded.push({ url: publicUrl, view, sourcePage: img.page || null, vision: true, vitrine: true, ...notaCapa(img) });
+          idx++;
+        } catch (e) {
+          console.warn(`[vitrine] ${key} ${view}#${idx}: ${e.message}`);
+        }
+      }
+    }
+    if (uploaded.length < replaceable.length) {
+      // Upload falhou no meio: não troca. Os que subiram viram órfãos e são
+      // apagados aqui mesmo pra não acumular no bucket.
+      const orfaos = uploaded.map(im => storagePathFromUrl(im.url)).filter(Boolean);
+      if (orfaos.length) await removeObjects(orfaos).catch(() => {});
+      return { ...resumo, trocou: false, motivo: `upload incompleto (${uploaded.length}/${novas})` };
+    }
+
+    const images = [...kept, ...uploaded];
+    await writeCache({
+      key, marca, modelo, ano, images, validated: images.length >= 2,
+      expires_at: new Date(Date.now() + TTL_VALIDATED_DAYS * 86400_000).toISOString(),
+    });
+    const velhos = replaceable.map(im => storagePathFromUrl(im.url)).filter(Boolean);
+    if (velhos.length) {
+      try { await removeObjects(velhos); }
+      catch (e) { console.warn(`[vitrine] ${key}: limpeza dos antigos falhou (${e.message}) — índice já aponta pros novos`); }
+    }
+    return { ...resumo, trocou: true, total: images.length };
+  } finally {
+    releaseBuildSlot();
+  }
+}
+
 function slug(s) {
   return String(s || '').toLowerCase()
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -510,12 +598,12 @@ async function writeCache(row) {
 
 // Pra cada view, baixa os top-N candidatos e prepara a versão vision em base64.
 // Resultado: cada imagem ganha { buffer, visionUrl } adicionais.
-async function downloadByView(byViewRaw, views) {
+async function downloadByView(byViewRaw, views, maxPerView = MAX_CANDIDATES_PER_VIEW) {
   const out = {};
   for (const v of views) {
     const slice = (byViewRaw[v] || [])
       .filter(im => !isBannedSource(im))
-      .slice(0, MAX_CANDIDATES_PER_VIEW);
+      .slice(0, maxPerView);
     const downloaded = await Promise.all(slice.map(async im => {
       const buffer = await downloadImage(im.url);
       if (!buffer) return null;

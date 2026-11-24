@@ -239,6 +239,11 @@ const APPROVED_PER_VIEW = { front: 6, side: 4, rear: 4, interior: 8 };
 const DEFAULT_APPROVED = 4;
 // Teto de candidatos enviados ao vision por view (segura quota: ~2 lotes/view).
 const MAX_CANDIDATES_TO_VALIDATE = 10;
+// Modo vitrine (carros que mais aparecem nas consultas): galeria maior e com mais
+// cores. Mais candidatos vão pra visão — o pool de busca também é maior — e a
+// cota por vista sobe. A diversidade de cor de _selecionaAprovadas faz o resto.
+const VITRINE_APPROVED_PER_VIEW = { front: 10, side: 6, rear: 6, interior: 8 };
+const VITRINE_MAX_CANDIDATES = 25;
 
 async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3, retries = 5 }) {
   if (images.length === 0) return [];
@@ -442,9 +447,9 @@ Retorne EXCLUSIVAMENTE este JSON, com UMA entrada por foto, na ordem de 1 a ${im
 // Valida uma view: lote os candidatos em grupos de MAX_IMAGES_PER_CALL e mescla
 // as aprovadas até o alvo da view. Se TPD/TPM estourar no meio, fica com o que
 // já aprovou.
-async function validateView({ marca, modelo, ano, view, byView }) {
-  const target = APPROVED_PER_VIEW[view] || DEFAULT_APPROVED;
-  const candidates = (byView[view] || []).slice(0, MAX_CANDIDATES_TO_VALIDATE);
+async function validateView({ marca, modelo, ano, view, byView, vitrine = false }) {
+  const target = (vitrine ? VITRINE_APPROVED_PER_VIEW : APPROVED_PER_VIEW)[view] || DEFAULT_APPROVED;
+  const candidates = (byView[view] || []).slice(0, vitrine ? VITRINE_MAX_CANDIDATES : MAX_CANDIDATES_TO_VALIDATE);
   if (candidates.length === 0) return [];
 
   const approved = [];
@@ -470,10 +475,10 @@ async function validateView({ marca, modelo, ano, view, byView }) {
 // APPROVED_PER_VIEW[view] fotos. As views são independentes, então rodar em
 // paralelo corta a latência ~4x (o gpt-4o-mini não tem teto por minuto que
 // inviabilize isso). O semáforo de builds em imageCache limita o fan-out total.
-export async function validateImages({ marca, modelo, ano, byView }) {
+export async function validateImages({ marca, modelo, ano, byView, vitrine = false }) {
   const views = ['front', 'rear', 'side', 'interior'];
   const results = await Promise.all(
-    views.map(view => validateView({ marca, modelo, ano, view, byView }))
+    views.map(view => validateView({ marca, modelo, ano, view, byView, vitrine }))
   );
   const out = { front: [], rear: [], side: [], interior: [] };
   views.forEach((v, i) => { out[v] = results[i]; });

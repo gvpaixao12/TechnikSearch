@@ -126,6 +126,12 @@ const RICH_TARGET = 12;        // candidatos desejados por view antes de parar
 // Cores pra diversificar configurações (só no modo rich, via Serper):
 const EXT_COLORS = ['branco', 'preto', 'vermelho'];   // exterior (front/side)
 const INT_FINISHES = ['interior preto', 'interior bege']; // acabamento interno
+// Vitrine (carros que mais aparecem): paleta maior e foto de imprensa pra capa.
+// "divulgação" é como a imprensa brasileira credita foto de fabricante; em
+// inglês, "press photo"/"driving" puxa o material oficial em movimento/cenário
+// — o estilo de capa que a nota "capa" da visão premia.
+const VITRINE_COLORS = ['branco', 'preto', 'vermelho', 'azul', 'cinza', 'prata'];
+const VITRINE_INT = ['interior preto', 'interior bege', 'interior caramelo'];
 
 // Intercala a busca principal com as de cor: 2 da principal pra cada 1 de cada
 // cor. Antes as de cor iam pro FIM da lista, e o corte de candidatos (12 no
@@ -168,7 +174,8 @@ export async function searchFallback({ marca, modelo, ano, view, tentadas = new 
 // pra trazer variações de exterior (front/side) e de acabamento (interior).
 // views: só busca essas (o "completar vistas que faltam" não precisa pagar
 // Serper pelas vistas que já têm foto).
-export async function searchByView({ marca, modelo, ano, rich = false, views = ['front', 'rear', 'side', 'interior'] }) {
+export async function searchByView({ marca, modelo, ano, rich = false, vitrine = false, views = ['front', 'rear', 'side', 'interior'] }) {
+  if (vitrine) rich = true;
   const modeloLimpo = cleanModelName(modelo);
   const base = `${marca} ${modeloLimpo} ${ano}`;
   const baseEn = `${marca} ${modeloLimpo} ${ano}`;
@@ -180,7 +187,12 @@ export async function searchByView({ marca, modelo, ano, rich = false, views = [
   };
 
   // Queries extras por cor (rich). Front recebe mais cores; side 1; interior por acabamento.
-  const colorQueries = rich ? {
+  const colorQueries = vitrine ? {
+    front: VITRINE_COLORS.map(c => `${base} ${c}`),
+    rear: VITRINE_COLORS.slice(0, 3).map(c => `${base} traseira ${c}`),
+    side: VITRINE_COLORS.slice(0, 3).map(c => `${base} lateral ${c}`),
+    interior: VITRINE_INT.map(c => `${base} ${c}`),
+  } : rich ? {
     front: EXT_COLORS.map(c => `${base} frente ${c}`),
     rear: [],
     side: EXT_COLORS.slice(0, 1).map(c => `${base} lateral ${c}`),
@@ -192,6 +204,15 @@ export async function searchByView({ marca, modelo, ano, rich = false, views = [
 
   for (const [view, { pt, en }] of Object.entries(plans)) {
     if (!views.includes(view)) continue;
+    // Vitrine, frente: foto de imprensa PRIMEIRO. É dela que sai a capa — a
+    // busca genérica traz sobretudo carro parado em pátio de revenda.
+    const imprensa = [];
+    if (vitrine && view === 'front') {
+      for (const q of [`"${marca} ${modeloLimpo}" ${ano} divulgação`, `${baseEn} press photo`, `${baseEn} driving road`]) {
+        try { imprensa.push(...await searchSerper(q, { num: SERPER_NUM })); }
+        catch (e) { console.warn(`[providers] Serper imprensa "${q}" falhou: ${e.message}`); }
+      }
+    }
     // Commons é predominantemente catalogado em inglês.
     try {
       const c = await searchCommons(en, { limit: COMMONS_LIMIT });
@@ -199,7 +220,9 @@ export async function searchByView({ marca, modelo, ano, rich = false, views = [
     } catch (e) {
       console.warn(`[providers] Commons ${view} falhou: ${e.message}`);
     }
-    if (out[view].length < target) {
+    // Na vitrine a busca principal roda sempre: o Commons sozinho enchia o alvo
+    // com foto amadora de rua e a principal (Google) nem era chamada.
+    if (vitrine || out[view].length < target) {
       try {
         // Aspas na frase do modelo pra FORÇAR o acabamento no resultado. Sem
         // isso o Google trata "EXL"/"LX"/"Personal" como token fraco e devolve a
@@ -223,7 +246,9 @@ export async function searchByView({ marca, modelo, ano, rich = false, views = [
         console.warn(`[providers] Serper cor "${q}" falhou: ${e.message}`);
       }
     }
-    out[view] = dedupeByUrl(intercala(out[view], porCor));
+    out[view] = imprensa.length
+      ? dedupeByUrl(intercala(imprensa, [out[view], ...porCor]))
+      : dedupeByUrl(intercala(out[view], porCor));
   }
   return out;
 }
