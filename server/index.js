@@ -16,6 +16,7 @@ import { loadCatalog, clearCatalogCache } from './catalog.js';
 import { iniciarAgendadorPrecos } from './agendador-precos.js';
 import { getOrBuildImages, listCachedCars, addManualImages, rebuildCarImages, getCarPhotos, deleteCarPhoto, setPhotoFavorite } from './imageCache.js';
 import { saveConsulta, listConsultas, getConsulta, getStats, marcaTeste, marcaModelo, listModelos } from './history.js';
+import { saneaTop } from './ficha-sanity.js';
 import { saveFeedback, listFeedback } from './feedback.js';
 import { saveRascunho, listRascunhos, getRascunho, deleteRascunho } from './rascunhos.js';
 import {
@@ -402,6 +403,9 @@ app.get('/api/consultas/:id', async (req, res) => {
   try {
     const consulta = await getConsulta(req.params.id);
     if (!consulta) return res.status(404).json({ ok: false, reason: 'Consulta não encontrada' });
+    // Consultas salvas antes do saneamento da ficha se corrigem na leitura
+    // (é idempotente). O registro no banco fica como foi entregue.
+    if (Array.isArray(consulta.top)) consulta.top = saneaTop(consulta.top);
     res.json({ ok: true, consulta });
   } catch (e) {
     res.status(503).json({ ok: false, reason: e.message });

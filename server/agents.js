@@ -134,8 +134,8 @@ const VENDOR_SCHEMA_DESC = `Retorne EXCLUSIVAMENTE um JSON com este formato exat
         "motor": "string — Ex: '1.3 Turbo Flex', '2.0 Aspirado', '1.5 Híbrido'. Se não souber, use ''.",
         "cambio": "string — Ex: 'CVT', 'Automático 6 marchas', 'Manual 5 marchas'. Se não souber, use ''.",
         "potencia": "string — Potência máxima. Ex: '170 cv', '116 cv'. Se não souber, use ''.",
-        "torque": "string — Torque máximo. Ex: '27,5 kgfm', '15,2 kgfm'. Se não souber, use ''.",
-        "tracao": "string — Ex: 'Dianteira', '4x4', '4x2'. Se não souber, use ''.",
+        "torque": "string — Torque máximo, SEMPRE em kgfm (nunca Nm). Ex: '27,5 kgfm', '15,2 kgfm'. Se não souber, use ''.",
+        "tracao": "string — Um destes: 'Dianteira', 'Traseira', '4x4'. Esportivos de motor dianteiro longitudinal são 'Traseira' (Mustang, Camaro, BMW M2/M4/Z4 e Série 3 a 8 sem xDrive, Porsche 718/911, Mercedes Classe C/E/S sem 4MATIC, Jaguar F-Type). Se não souber, use ''.",
         "consumoCidade": "string — Ex: '11,5 km/l (gasolina)', '8 km/l'. Se não souber, use ''.",
         "consumoEstrada": "string — Ex: '14 km/l (gasolina)'. Se não souber, use ''.",
         "porta_malas": "string — Capacidade. Ex: '420 L'. Se não souber, use ''.",
@@ -147,6 +147,7 @@ const VENDOR_SCHEMA_DESC = `Retorne EXCLUSIVAMENTE um JSON com este formato exat
 - "rank" é inteiro começando em 1 (apenas para ordenação interna; não é exibido como score ao usuário).
 - "lugares" é inteiro (5, 7 etc). Se não souber, use 0.
 - Para os campos string da ficha, se não tiver certeza do valor REAL para a versão exata do modelo/ano, retorne string vazia "" — NUNCA invente número. É melhor faltar dado do que mostrar dado errado.
+- Cada ficha é da versão EXATA daquele candidato. Não reaproveite números de outro carro da lista (ex.: 420i Cabriolet NÃO tem a potência do M235i). Potência e câmbio que aparecem no nome FIPE ("530cv", "Mec.", "Aut.") são a verdade.
 - Use SOMENTE os candidatos da lista que recebeu. Não invente carros novos.
 - Referencie cada carro pelo "candidatoId" exato fornecido.
 - Todos os campos são obrigatórios em cada item.`;

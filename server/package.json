@@ -8,7 +8,8 @@
     "start": "node index.js",
     "test:fipe": "node scripts/test-fipe.js",
     "test:hints": "node --experimental-test-module-mocks scripts/test-hints-pipeline.js",
-    "test:clientes": "node --experimental-test-module-mocks scripts/test-clientes.js",
+    "test:ficha": "node --test scripts/test-ficha-sanity.js",
+    "test:clientes":"node --experimental-test-module-mocks scripts/test-clientes.js",
     "backup": "node scripts/backup-db.mjs",
     "backup:verificar": "node scripts/backup-db.mjs --verificar",
     "diag:hints": "node scripts/diag-hints.js"

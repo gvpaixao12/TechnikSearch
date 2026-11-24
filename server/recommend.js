@@ -5,6 +5,7 @@ import { loadCatalog } from './catalog.js';
 import { splitModelo, baseModelo } from './classify.js';
 import { listRankingMisses } from './feedback.js';
 import { listExclusoesPerfil } from './carro-feedback.js';
+import { saneaFicha } from './ficha-sanity.js';
 
 const TIPO_TO_SLUG = {
   'Hatch': 'hatch',
@@ -588,7 +589,8 @@ async function recommendFromCatalog(briefing, log) {
       return {
         id: slugifyId(f.marca, f.modelo, f.anoModelo),
         rank: t.rank,
-        fichaTecnica: t.fichaTecnica || {},
+        // Nome FIPE corrige o palpite do LLM (tração, cv, Mec./Aut., Nm).
+        fichaTecnica: saneaFicha(t.fichaTecnica, f.marca, f.modelo).ficha,
         brand: f.marca,
         model: f.modelo,
         versao,
@@ -734,7 +736,8 @@ async function recommendLegacy(briefing, log) {
       return {
         id: slugifyId(f.marca, f.modelo, f.anoModelo),
         rank: t.rank,
-        fichaTecnica: t.fichaTecnica || {},
+        // Nome FIPE corrige o palpite do LLM (tração, cv, Mec./Aut., Nm).
+        fichaTecnica: saneaFicha(t.fichaTecnica, f.marca, f.modelo).ficha,
         brand: f.marca, model: f.modelo, versao, motor, year: f.anoModelo,
         type: tipoSlug(pair.cand.tipo),
         fuel: f.combustivel,
