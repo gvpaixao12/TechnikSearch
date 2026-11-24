@@ -283,8 +283,15 @@ for (const nome of ARQUIVOS_FRONTEND) {
 // Apresentação: a tela real da busca com as pesquisas modelo congeladas em
 // mockup/ (fetch falso, sem IA). Mesma lista fechada da raiz. A barra final
 // importa: o HTML usa caminhos relativos (../technik-app.jsx, mockup-data.js).
-app.get('/apresentacao', (_req, res) => res.redirect('/apresentacao/'));
-app.get('/apresentacao/', (_req, res) => res.sendFile(path.join(FRONTEND_DIR, 'mockup', 'index.html')));
+// Uma rota só: o roteamento do Express não é estrito, então '/apresentacao'
+// também casa com '/apresentacao/' — duas rotas separadas viravam loop de redirect.
+app.get('/apresentacao', (req, res) => {
+  if (!req.path.endsWith('/')) {
+    const qs = req.originalUrl.slice(req.path.length);
+    return res.redirect(302, '/apresentacao/' + qs);
+  }
+  res.sendFile(path.join(FRONTEND_DIR, 'mockup', 'index.html'));
+});
 for (const nome of ['mockup-data.js', 'mockup-shim.js']) {
   app.get('/apresentacao/' + nome, (_req, res) => res.sendFile(path.join(FRONTEND_DIR, 'mockup', nome)));
 }
