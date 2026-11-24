@@ -2,17 +2,47 @@ import OpenAI from 'openai';
 import { briefingToText } from './briefing.js';
 import { registraLLM, registraRateLimit } from './usage.js';
 
-// Provedor de texto (curador + vendedor). Default: Groq (Llama 3.3 70B) — grátis,
-// mas com teto diário de tokens. Pra trocar de provedor SEM editar código, basta
-// preencher LLM_API_KEY no .env (aí usa OpenAI por default; ajuste LLM_BASE_URL /
-// LLM_MODEL pra Anthropic etc). Tudo via SDK da OpenAI (endpoints compatíveis).
-//   OpenAI:    LLM_API_KEY=sk-...            (default: gpt-4o-mini)
-//   Anthropic: LLM_API_KEY=sk-ant-...  LLM_BASE_URL=https://api.anthropic.com/v1  LLM_MODEL=claude-haiku-4-5
-// Fallback Groq sem provedor custom: 'llama-3.1-8b-instant' (caso TPD do 70B esgote).
-const USE_CUSTOM_LLM = !!process.env.LLM_API_KEY;
-const MODEL = USE_CUSTOM_LLM
-  ? (process.env.LLM_MODEL || 'gpt-4o-mini')
-  : 'llama-3.3-70b-versatile';
+// Provedores de texto (curador + vendedor), em ORDEM DE PREFERÊNCIA. Se o
+// primeiro falhar, a chamada cai no próximo sem o usuário perceber. Motivo: o
+// crédito da OpenAI já zerou uma vez e derrubou a recomendação inteira — com um
+// reserva configurado, isso vira só uma linha de log.
+// Tudo via SDK da OpenAI (endpoints compatíveis).
+//   1) Principal: LLM_API_KEY [+ LLM_BASE_URL, LLM_MODEL]    (default: OpenAI gpt-4o-mini)
+//   2) Reserva:   LLM_FALLBACK_API_KEY [+ LLM_FALLBACK_BASE_URL, LLM_FALLBACK_MODEL]
+//                 (default: Anthropic claude-haiku-5-5)
+//   3) Último:    GROQ_API_KEY [+ GROQ_TEXT_MODEL]            (default: llama-3.3-70b-versatile)
+// Qualquer um pode faltar; precisa existir pelo menos um.
+const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
+
+// Provedor com falha "dura" (sem crédito, chave inválida, modelo inexistente)
+// fica de fora por este tempo — senão TODA busca pagaria a latência de bater
+// nele antes de cair no reserva.
+const QUARENTENA_MS = 15 * 60 * 1000;
+// Uma chamada do vendedor gera ~9k tokens; com o default do SDK (10 min) um
+// provedor travado seguraria a busca e o reserva nunca entraria.
+const TIMEOUT_MS = 180_000;
+
+function nomeDoProvedor(baseURL) {
+  return /groq/i.test(baseURL) ? 'groq' : /anthropic/i.test(baseURL) ? 'anthropic' : 'openai';
+}
+
+function montaProvedores() {
+  const lista = [];
+  const add = (apiKey, baseURL, model) => {
+    if (!apiKey) return;
+    lista.push({ nome: nomeDoProvedor(baseURL), apiKey, baseURL, model, client: null, foraAte: 0 });
+  };
+  add(process.env.LLM_API_KEY,
+    process.env.LLM_BASE_URL || 'https://api.openai.com/v1',
+    process.env.LLM_MODEL || 'gpt-4o-mini');
+  add(process.env.LLM_FALLBACK_API_KEY,
+    process.env.LLM_FALLBACK_BASE_URL || 'https://api.anthropic.com/v1',
+    process.env.LLM_FALLBACK_MODEL || 'claude-haiku-5-5');
+  add(process.env.GROQ_API_KEY, GROQ_BASE_URL, process.env.GROQ_TEXT_MODEL || 'llama-3.3-70b-versatile');
+  return lista;
+}
+
+const PROVEDORES = montaProvedores();
 
 // Tamanho do resultado. Era 10; com o catálogo cobrindo o mercado (12,6 mil
 // carros), 10 vagas obrigavam a IA a escolher entre Onix, HB20 e Gol — e ela
@@ -22,34 +52,59 @@ export const TOP_N = 25;
 // O curador manda o dobro pro vendedor, pra ele ter de onde escolher.
 export const CURADOR_N = TOP_N * 2;
 
-// Quem está pagando esta conta — só pra etiquetar o consumo no painel de uso.
-const BASE_URL = USE_CUSTOM_LLM ? (process.env.LLM_BASE_URL || 'https://api.openai.com/v1') : 'groq';
-const PROVIDER = /groq/i.test(BASE_URL) ? 'groq'
-  : /anthropic/i.test(BASE_URL) ? 'anthropic'
-  : USE_CUSTOM_LLM ? 'openai' : 'groq';
+console.log(`[llm] texto: ${PROVEDORES.map(p => `${p.nome}/${p.model}`).join(' → ') || 'NENHUM PROVEDOR'}`);
 
-console.log(`[llm] texto via ${BASE_URL} · model=${MODEL}`);
+function clientDe(p) {
+  if (!p.client) p.client = new OpenAI({ apiKey: p.apiKey, baseURL: p.baseURL, timeout: TIMEOUT_MS });
+  return p.client;
+}
 
-let _client = null;
-function getClient() {
-  if (_client) return _client;
-  if (USE_CUSTOM_LLM) {
-    _client = new OpenAI({
-      apiKey: process.env.LLM_API_KEY,
-      baseURL: process.env.LLM_BASE_URL || 'https://api.openai.com/v1',
-      // O default do SDK e 2, e as duas caiam dentro da mesma janela saturada
-      // quando o pipeline de fotos cravava o TPM da conta — a recomendacao
-      // morria com 429 pedindo 1.5k tokens. O SDK respeita o retry-after, e o
-      // proprio 429 costuma dizer "try again in 453ms": e so precisar de uma
-      // fresta. Chamada de texto e barata; insistir aqui custa quase nada.
-      maxRetries: 6,
-    });
-  } else {
-    const apiKey = process.env.GROQ_API_KEY;
-    if (!apiKey) throw new Error('GROQ_API_KEY ausente no .env');
-    _client = new OpenAI({ apiKey, baseURL: 'https://api.groq.com/openai/v1', maxRetries: 6 });
+// Falha que não se resolve tentando de novo daqui a pouco: sem saldo, chave
+// errada, modelo fora do catálogo (o Groq já tirou o 70B do ar com 404), teto
+// DIÁRIO de tokens. 429 comum (TPM/RPM) não entra — passa em segundos.
+function falhaDura(err) {
+  const s = err?.status;
+  if ([401, 402, 403, 404].includes(s)) return true;
+  const txt = `${err?.code || ''} ${err?.error?.code || ''} ${err?.message || ''}`;
+  return s === 429 && /insufficient_quota|quota|billing|credit|per day|TPD/i.test(txt);
+}
+
+// Anthropic (endpoint compatível) ignora response_format e às vezes embrulha o
+// JSON em ```json ... ```. Aceita isso em vez de jogar a resposta fora.
+function parseJSON(text) {
+  try { return JSON.parse(text); } catch { /* tenta extrair abaixo */ }
+  const ini = text.indexOf('{');
+  const fim = text.lastIndexOf('}');
+  if (ini >= 0 && fim > ini) return JSON.parse(text.slice(ini, fim + 1));
+  throw new Error('nenhum objeto JSON na resposta');
+}
+
+async function chamaProvedor(p, { system, user, maxTokens, maxRetries }) {
+  // `.withResponse()` entrega a resposta HTTP junto: é de onde saem os headers
+  // x-ratelimit-*, o único sinal de quanto ainda cabe na janela da conta.
+  const { data: completion, response } = await clientDe(p).chat.completions.create({
+    model: p.model,
+    temperature: 0.3,
+    max_tokens: maxTokens,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ],
+  }, { maxRetries }).withResponse();
+  registraRateLimit(response?.headers, 'texto');
+  registraLLM({ provider: p.nome, modelo: p.model, operacao: 'texto', usage: completion?.usage });
+  const text = completion.choices?.[0]?.message?.content;
+  if (!text) throw new Error('Resposta vazia do modelo');
+  const finishReason = completion.choices?.[0]?.finish_reason;
+  if (finishReason === 'length') {
+    console.warn(`[llm] ${p.nome}: resposta truncada por max_tokens — JSON pode estar inválido`);
   }
-  return _client;
+  try {
+    return parseJSON(text);
+  } catch (e) {
+    throw new Error(`JSON inválido do modelo (finish_reason=${finishReason}): ${e.message}`);
+  }
 }
 
 const CURATOR_SCHEMA_DESC = `Retorne EXCLUSIVAMENTE um JSON com este formato exato:
@@ -200,33 +255,48 @@ Não escreva nada fora do JSON.
 
 ${VENDOR_SCHEMA_DESC}`;
 
-async function runChat({ system, user, maxTokens = 3500 }) {
-  const client = getClient();
-  // `.withResponse()` entrega a resposta HTTP junto: é de onde saem os headers
-  // x-ratelimit-*, o único sinal de quanto ainda cabe na janela da conta.
-  const { data: completion, response } = await client.chat.completions.create({
-    model: MODEL,
-    temperature: 0.3,
-    max_tokens: maxTokens,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-  }).withResponse();
-  registraRateLimit(response?.headers, 'texto');
-  registraLLM({ provider: PROVIDER, modelo: MODEL, operacao: 'texto', usage: completion?.usage });
-  const text = completion.choices?.[0]?.message?.content;
-  if (!text) throw new Error('Resposta vazia do modelo');
-  const finishReason = completion.choices?.[0]?.finish_reason;
-  if (finishReason === 'length') {
-    console.warn('[runChat] resposta truncada por max_tokens — JSON pode estar inválido');
+// `valida` recebe o JSON e diz se ele serve. Resposta fora do formato também
+// passa pro próximo provedor — antes, um `top` ausente estourava lá no
+// recommend.js como "Cannot read properties of undefined".
+async function runChat({ system, user, maxTokens = 3500, valida }) {
+  if (!PROVEDORES.length) throw new Error('Nenhum provedor de LLM no .env (LLM_API_KEY, LLM_FALLBACK_API_KEY ou GROQ_API_KEY)');
+  const agora = Date.now();
+  const vivos = PROVEDORES.filter(p => p.foraAte <= agora);
+  // Todos em quarentena: tenta assim mesmo. O crédito pode ter sido recarregado.
+  const fila = vivos.length ? vivos : PROVEDORES;
+  let ultimoErro;
+  for (const [i, p] of fila.entries()) {
+    const temReserva = i < fila.length - 1;
+    try {
+      // Sem reserva, insiste: o 429 de TPM (pipeline de fotos cravando a conta)
+      // costuma dizer "try again in 453ms" e o SDK respeita o retry-after. Com
+      // reserva, desistir cedo e trocar de provedor é mais rápido.
+      const json = await chamaProvedor(p, { system, user, maxTokens, maxRetries: temReserva ? 2 : 6 });
+      if (valida && !valida(json)) throw new Error('resposta fora do formato esperado');
+      if (p.foraAte) p.foraAte = 0;
+      if (p !== PROVEDORES[0]) console.warn(`[llm] servido pelo reserva ${p.nome}/${p.model}`);
+      return json;
+    } catch (e) {
+      ultimoErro = e;
+      if (falhaDura(e)) {
+        p.foraAte = Date.now() + QUARENTENA_MS;
+        console.error(`[llm] ${p.nome}/${p.model} em quarentena por ${QUARENTENA_MS / 60000} min (${e.message})`);
+      } else {
+        console.warn(`[llm] ${p.nome}/${p.model} falhou (${e.message})${temReserva ? ' — tentando o próximo' : ''}`);
+      }
+    }
   }
-  try {
-    return JSON.parse(text);
-  } catch (e) {
-    throw new Error(`JSON inválido do modelo (finish_reason=${finishReason}): ${e.message}`);
-  }
+  throw ultimoErro;
+}
+
+// Pro painel/diagnóstico: quem está ativo e quem está de castigo.
+export function statusProvedores() {
+  const agora = Date.now();
+  return PROVEDORES.map(p => ({
+    provedor: p.nome, modelo: p.model,
+    ativo: p.foraAte <= agora,
+    voltaEm: p.foraAte > agora ? new Date(p.foraAte).toISOString() : null,
+  }));
 }
 
 function dedupeCandidatos(lista) {
@@ -242,7 +312,7 @@ function dedupeCandidatos(lista) {
 export async function runCurator(briefing) {
   const briefText = briefingToText(briefing);
   const prompt = `Briefing do cliente:\n\n${briefText}\n\nGere a shortlist de 25 a 40 candidatos. Uma versão por modelo/ano — prefira ampliar o número de MODELOS diferentes a repetir acabamentos do mesmo carro. Explore tanto marcas populares quanto premium — sempre dentro do briefing.`;
-  const json = await runChat({ system: CURATOR_SYSTEM, user: prompt });
+  const json = await runChat({ system: CURATOR_SYSTEM, user: prompt, valida: j => Array.isArray(j?.candidatos) });
   const lista = dedupeCandidatos(json?.candidatos || []);
   console.log(`[curator] gerou ${lista.length} (após dedupe)`);
   if (lista.length === 0) throw new Error('Curador não retornou candidatos válidos');
@@ -276,7 +346,7 @@ export async function runCuradorLeve(briefing, pool) {
     `${e.marcaId}|${e.modeloId}|${e.anoId} :: ${e.marca} ${e.modelo} ${e.ano} (${e.tipo}, ${e.combustivel}) ${e.precoTexto}`
   ).join('\n');
   const prompt = `Briefing:\n${briefText}\n\nLista (${pool.length} itens):\n${itensTexto}\n\nDevolva os ${CURADOR_N} IDs mais relevantes em ordem de relevância.`;
-  const json = await runChat({ system: CURADOR_LEVE_SYSTEM, user: prompt, maxTokens: CURADOR_N * 40 });
+  const json = await runChat({ system: CURADOR_LEVE_SYSTEM, user: prompt, maxTokens: CURADOR_N * 40, valida: j => Array.isArray(j?.ids) });
   return Array.isArray(json?.ids) ? json.ids : [];
 }
 
@@ -309,6 +379,9 @@ export async function runVendor(briefing, resolvedCandidates, { lembretes = [] }
 
   const prompt = `Briefing do cliente:\n\n${briefText}\n\n---\n\n${blocoLembretes}Candidatos validados na FIPE (use o ID exato como "candidatoId" na resposta):\n\n${candidatosTexto}\n\nMonte o top ${TOP_N} final.`;
   // ~250 tokens de ficha por item; o default (3500) truncava acima de ~12.
-  const json = await runChat({ system: VENDOR_SYSTEM, user: prompt, maxTokens: TOP_N * 350 });
+  const json = await runChat({
+    system: VENDOR_SYSTEM, user: prompt, maxTokens: TOP_N * 350,
+    valida: j => Array.isArray(j?.top) && j.top.length > 0,
+  });
   return json.top;
 }
