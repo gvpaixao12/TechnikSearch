@@ -11,7 +11,9 @@ import { resumoFicha } from './ficha-cache.js';
 //   1) Principal: LLM_API_KEY [+ LLM_BASE_URL, LLM_MODEL]    (default: OpenAI gpt-4o-mini)
 //   2) Reserva:   LLM_FALLBACK_API_KEY [+ LLM_FALLBACK_BASE_URL, LLM_FALLBACK_MODEL]
 //                 (default: Anthropic claude-haiku-5-5)
-//   3) Último:    GROQ_API_KEY [+ GROQ_TEXT_MODEL]            (default: llama-3.3-70b-versatile)
+//   3) Último:    GROQ_API_KEY [+ GROQ_TEXT_MODEL]            (default: openai/gpt-oss-120b)
+//      O Groq troca o catálogo sem aviso (o llama-3.3-70b-versatile sumiu com
+//      404 em 2026-08). Lista viva: GET https://api.groq.com/openai/v1/models
 // Qualquer um pode faltar; precisa existir pelo menos um.
 const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
 
@@ -39,7 +41,7 @@ function montaProvedores() {
   add(process.env.LLM_FALLBACK_API_KEY,
     process.env.LLM_FALLBACK_BASE_URL || 'https://api.anthropic.com/v1',
     process.env.LLM_FALLBACK_MODEL || 'claude-haiku-5-5');
-  add(process.env.GROQ_API_KEY, GROQ_BASE_URL, process.env.GROQ_TEXT_MODEL || 'llama-3.3-70b-versatile');
+  add(process.env.GROQ_API_KEY, GROQ_BASE_URL, process.env.GROQ_TEXT_MODEL || 'openai/gpt-oss-120b');
   return lista;
 }
 
