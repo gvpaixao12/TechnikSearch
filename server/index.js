@@ -280,6 +280,15 @@ for (const nome of ARQUIVOS_FRONTEND) {
   app.get('/' + nome, (_req, res) => res.sendFile(path.join(FRONTEND_DIR, nome)));
 }
 
+// Apresentação: a tela real da busca com as pesquisas modelo congeladas em
+// mockup/ (fetch falso, sem IA). Mesma lista fechada da raiz. A barra final
+// importa: o HTML usa caminhos relativos (../technik-app.jsx, mockup-data.js).
+app.get('/apresentacao', (_req, res) => res.redirect('/apresentacao/'));
+app.get('/apresentacao/', (_req, res) => res.sendFile(path.join(FRONTEND_DIR, 'mockup', 'index.html')));
+for (const nome of ['mockup-data.js', 'mockup-shim.js']) {
+  app.get('/apresentacao/' + nome, (_req, res) => res.sendFile(path.join(FRONTEND_DIR, 'mockup', nome)));
+}
+
 app.get('/api/health', async (_req, res) => {
   let catalogTotal = null;
   let catalogBuiltAt = null;

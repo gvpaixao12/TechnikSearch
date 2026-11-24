@@ -328,6 +328,12 @@ function App() {
   // salva por cima.
   useEffect(() => {
     function abrePeloHash() {
+      // #modelos: abre direto na vitrine (o card "Apresentação" do CRM usa).
+      if (location.hash === '#modelos') {
+        history.replaceState(null, '', location.pathname + location.search);
+        setActiveNav('modelos');
+        return;
+      }
       const m = /^#consulta=(.+)$/.exec(location.hash);
       if (!m) return;
       history.replaceState(null, '', location.pathname + location.search);
