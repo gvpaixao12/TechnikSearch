@@ -207,7 +207,10 @@ async function readCacheRow(key) {
 // pela visão — inserção manual é confiada. Faz merge com o que já existe na
 // entrada e marca cada foto com view:'manual'/manual:true pra distinguir das
 // buscadas. Renova o TTL como entrada validada.
-export async function addManualImages({ marca, modelo, ano, dataUrls, view }) {
+// fontes (opcional): página de origem de cada imagem, na mesma ordem de
+// dataUrls — vai pro índice como sourcePage, e daí pro log de fontes se a
+// foto um dia for apagada.
+export async function addManualImages({ marca, modelo, ano, dataUrls, view, fontes = [] }) {
   if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
   if (!Array.isArray(dataUrls) || dataUrls.length === 0) throw new Error('nenhuma imagem enviada');
   if (!VIEW_KEYS.includes(view)) throw new Error(`vista inválida: use ${VIEW_KEYS.join(', ')}`);
@@ -215,17 +218,23 @@ export async function addManualImages({ marca, modelo, ano, dataUrls, view }) {
 
   const existing = await readCacheRow(key);
   const current = Array.isArray(existing?.images) ? existing.images : [];
-  // idx continua a numeração de arquivos já existentes NESTA vista (front-01,
-  // front-02…) pra não sobrescrever fotos anteriores da mesma vista.
-  let idx = current.filter(im => im && im.view === view).length;
+  // Numeração DEPOIS do maior arquivo já usado nesta vista. Contar as fotos da
+  // vista não basta: a vitrine e as limpezas deixam buracos (front-07..front-16
+  // com 9 fotos), e idx = 9 sobrescrevia o front-09 que estava no ar.
+  const existentes = await listPrefix(`${key}/`).catch(() => []);
+  let idx = 0;
+  for (const p of [...existentes.map(o => o.path), ...current.map(im => storagePathFromUrl(im.url) || '')]) {
+    const m = String(p).match(new RegExp(`/${view}-(\\d+)\\.(?:webp|avif)$`, 'i'));
+    if (m) idx = Math.max(idx, parseInt(m[1], 10));   // uploadOne grava idx + 1
+  }
 
   const uploaded = [];
-  for (const dataUrl of dataUrls) {
+  for (const [n, dataUrl] of dataUrls.entries()) {
     const buffer = dataUrlToBuffer(dataUrl);
     if (!buffer) continue;
     try {
       const publicUrl = await uploadOne({ key, view, idx, buffer });
-      uploaded.push({ url: publicUrl, view, sourcePage: null, vision: false, manual: true });
+      uploaded.push({ url: publicUrl, view, sourcePage: fontes[n] || null, vision: false, manual: true });
       idx++;
     } catch (e) {
       console.warn(`[manual] upload ${key} ${view} #${idx}: ${e.message}`);
