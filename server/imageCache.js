@@ -16,6 +16,7 @@ import {
   BUCKET, putObject, removeObjects, listPrefix, pathFromUrl,
 } from './storage.js';
 import { q, one, exec, jsonb } from './db.js';
+import { registraRemocao, carregaBloqueados, fonteBloqueada } from './fontes-fotos.js';
 const TTL_VALIDATED_DAYS = 180;
 const TTL_FAILED_DAYS = 7;
 const MAX_WIDTH = 1200;            // resize p/ storage final
@@ -64,6 +65,7 @@ function isBannedSource(im) {
   const url = (im.url || '').toLowerCase();
   const page = (im.page || '').toLowerCase();
   if (BAD_URL_PATTERNS.some(rx => rx.test(url) || rx.test(page))) return true;
+  if (fonteBloqueada(im)) return true;
   return WATERMARK_DOMAINS.some(d => url.includes(d) || page.includes(d));
 }
 
@@ -288,7 +290,11 @@ export async function deleteCarPhoto({ marca, modelo, ano, url }) {
   const key = makeKey({ marca, modelo, ano });
   const row = await readCacheRow(key);
   const images = Array.isArray(row?.images) ? row.images : [];
-  if (!images.some(im => im.url === url)) throw new Error('foto não encontrada nesse carro');
+  const removida = images.find(im => im.url === url);
+  if (!removida) throw new Error('foto não encontrada nesse carro');
+  // Foto apagada à mão = foto que o portão deixou passar. O site de origem vai
+  // pro log que decide quais fontes bloquear (ver fontes-fotos.js).
+  registraRemocao(key, removida);
 
   const path = storagePathFromUrl(url);
   if (path) {
@@ -670,6 +676,7 @@ function tiraDuplicatas(approved, jaVistos = [], rotulo = '') {
 async function downloadByView(byViewRaw, views, maxPerView = MAX_CANDIDATES_PER_VIEW, jaVistos = []) {
   const out = {};
   const vistos = [...jaVistos];
+  await carregaBloqueados();
   for (const v of views) {
     const slice = (byViewRaw[v] || [])
       .filter(im => !isBannedSource(im))
