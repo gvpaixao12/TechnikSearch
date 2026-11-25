@@ -11,7 +11,7 @@
 
 import sharp from 'sharp';
 import { searchByView, searchFallback } from './imageProviders.js';
-import { validateImages, isTpdExhausted, isVisionAborted } from './imageValidator.js';
+import { validateImages, isTpdExhausted, isVisionAborted, VITRINE_APPROVED_PER_VIEW } from './imageValidator.js';
 import {
   BUCKET, putObject, removeObjects, listPrefix, pathFromUrl,
 } from './storage.js';
@@ -40,7 +40,15 @@ const BAD_TITLE_KEYWORDS = /\b(vs|review|teste|melhor|vale a pena|completo|compa
 // foto. O caminho heurístico não lê pixels, então filtramos pela origem.
 // (O caminho vision rejeita watermark olhando a imagem — ver imageValidator.)
 // Lista extensível: adicione domínios conforme aparecerem fotos marcadas.
-const WATERMARK_DOMAINS = ['carrosnaweb', 'usadosbr', 'napista'];
+const WATERMARK_DOMAINS = ['carrosnaweb', 'usadosbr', 'napista',
+  // Banco de imagem: marca d'água de licença ("Editorial use only") e foto que
+  // não temos direito de usar. Na 1ª rodada vitrine passou uma do iStock.
+  'istockphoto', 'gettyimages', 'shutterstock', 'alamy', 'dreamstime', 'depositphotos',
+  '123rf', 'stock.adobe', 'vecteezy', 'pond5',
+  // Classificados: foto de anúncio, com placa/letreiro/marca d'água de loja.
+  'standvirtual', 'webmotors', 'olx.', 'icarros', 'mobile.de', 'autoscout24',
+  'cars.com', 'autotrader', 'cargurus', 'carsales', 'coches.net', 'milanuncios',
+  'seminovos', 'mercadolivre', 'mercadolibre', 'mlstatic'];
 
 function hostOf(u) {
   try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; }
@@ -360,6 +368,7 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', ric
     // linhas "[validator] … reprovadas" logo acima).
     console.log(`[rebuild] ${key}: ${targetViews.map(v => `${v} ${byView[v]?.length || 0}→${approved[v]?.length || 0}`).join(' · ')}`);
     await completaVistasVazias({ marca, modelo, ano, views: targetViews, byView, approved });
+    tiraDuplicatas(approved, [], `${key}: `);
 
     onProgress({ stage: 'upload' });
     const uploaded = [];
@@ -402,23 +411,39 @@ export async function rebuildCarImages({ marca, modelo, ano, scope = 'full', ric
 // Favoritas e manuais são mantidas, na frente (a capa escolhida à mão continua).
 // dryRun: faz busca e visão (gasta) mas não grava — pra calibrar o resultado.
 const VITRINE_CANDIDATES_PER_VIEW = 25;
-export async function vitrineCarImages({ marca, modelo, ano, dryRun = false }) {
+// completar: em vez de trocar a galeria, MANTÉM tudo o que existe e só busca
+// as vistas abaixo da meta, acrescentando o que falta (sem repetir foto que já
+// está lá). É o modo pra galeria que ficou fina depois de uma revisão manual —
+// refazer do zero jogaria fora justamente as fotos que passaram na revisão.
+export async function vitrineCarImages({ marca, modelo, ano, dryRun = false, completar = false }) {
   if (!marca || !modelo || !ano) throw new Error('marca, modelo e ano são obrigatórios');
   await acquireBuildSlot();
   try {
     const key = makeKey({ marca, modelo, ano });
     const row = await readCacheRow(key);
     const prev = Array.isArray(row?.images) ? row.images : [];
-    const kept = prev.filter(im => im && (im.favorite || im.manual));
-    const replaceable = prev.filter(im => im && !im.favorite && !im.manual);
+    const kept = completar ? prev.filter(Boolean) : prev.filter(im => im && (im.favorite || im.manual));
+    const replaceable = completar ? [] : prev.filter(im => im && !im.favorite && !im.manual);
 
-    const byViewRaw = await searchByView({ marca, modelo, ano, vitrine: true });
-    const byView = await downloadByView(byViewRaw, VIEW_KEYS, VITRINE_CANDIDATES_PER_VIEW);
+    const contagem = viewCounts(kept);
+    const falta = completar
+      ? Object.fromEntries(VIEW_KEYS.map(v => [v, Math.max(0, (VITRINE_APPROVED_PER_VIEW[v] || 0) - (contagem[v] || 0))]))
+      : null;
+    const views = completar ? VIEW_KEYS.filter(v => falta[v] > 0) : VIEW_KEYS;
+    if (!views.length) {
+      return { key, antes: viewCounts(prev), depois: { front: 0, rear: 0, side: 0, interior: 0 }, capa: null, mantidas: kept.length, trocou: false, motivo: 'nada a completar' };
+    }
+    const jaVistos = completar ? await hashesDe(kept) : [];
+
+    const byViewRaw = await searchByView({ marca, modelo, ano, vitrine: true, views });
+    const byView = await downloadByView(byViewRaw, views, VITRINE_CANDIDATES_PER_VIEW, jaVistos);
     let approved = { front: [], rear: [], side: [], interior: [] };
-    if (VIEW_KEYS.some(v => byView[v]?.length)) {
+    if (views.some(v => byView[v]?.length)) {
       approved = await validateImages({ marca, modelo, ano, byView, vitrine: true });
     }
-    await completaVistasVazias({ marca, modelo, ano, views: VIEW_KEYS, byView, approved });
+    await completaVistasVazias({ marca, modelo, ano, views, byView, approved });
+    tiraDuplicatas(approved, jaVistos, `${key}: `);
+    if (completar) for (const v of VIEW_KEYS) approved[v] = (approved[v] || []).slice(0, falta[v]);
 
     const novas = VIEW_KEYS.reduce((s, v) => s + (approved[v]?.length || 0), 0);
     const capa = approved.front?.[0]?.capa ?? null;
@@ -426,10 +451,11 @@ export async function vitrineCarImages({ marca, modelo, ano, dryRun = false }) {
       key, antes: viewCounts(prev), depois: Object.fromEntries(VIEW_KEYS.map(v => [v, approved[v]?.length || 0])),
       capa, mantidas: kept.length,
     };
-    console.log(`[vitrine] ${key}: ${VIEW_KEYS.map(v => `${v} ${byView[v]?.length || 0}→${approved[v]?.length || 0}`).join(' · ')} · capa ${capa ?? '-'}`);
+    console.log(`[vitrine] ${key}${completar ? ' (completar)' : ''}: ${views.map(v => `${v} ${byView[v]?.length || 0}→${approved[v]?.length || 0}`).join(' · ')} · capa ${capa ?? '-'}`);
 
+    if (completar && novas === 0) return { ...resumo, trocou: false, motivo: 'nenhuma foto nova aprovada' };
     const frenteAntes = replaceable.some(im => im.view === 'front');
-    if (novas < replaceable.length || (frenteAntes && !approved.front?.length)) {
+    if (!completar && (novas < replaceable.length || (frenteAntes && !approved.front?.length))) {
       return { ...resumo, trocou: false, motivo: `nova galeria (${novas}) pior que a atual (${replaceable.length})` };
     }
     if (dryRun) return { ...resumo, trocou: false, motivo: 'dry-run' };
@@ -596,10 +622,54 @@ async function writeCache(row) {
   }
 }
 
+// Hash perceptual (dHash 64 bits): a mesma foto vinda de URLs diferentes —
+// outro tamanho, outra compressão, outro site — dá hash igual ou quase. O dedupe
+// por URL deixava passar isso, e na 1ª rodada vitrine a mesma foto apareceu 2-3
+// vezes na galeria, às vezes rotulada em vistas diferentes.
+async function dhash(buffer) {
+  const px = await sharp(buffer).grayscale().resize(9, 8, { fit: 'fill' }).raw().toBuffer();
+  let h = 0n;
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) h = (h << 1n) | (px[y * 9 + x] < px[y * 9 + x + 1] ? 1n : 0n);
+  }
+  return h;
+}
+function distancia(a, b) {
+  let x = a ^ b, n = 0;
+  while (x) { n += Number(x & 1n); x >>= 1n; }
+  return n;
+}
+// ≤ 6 de 64 bits: pega reencode e redimensionamento; fotos diferentes do mesmo
+// carro na mesma pose ficam bem acima disso.
+const DUPLICATA_MAX_BITS = 6;
+const ehDuplicata = (h, vistos) => h != null && vistos.some(v => distancia(h, v) <= DUPLICATA_MAX_BITS);
+
+// Tira duplicatas das aprovadas, entre TODAS as vistas e contra `jaVistos`
+// (hashes de fotos que já estão na galeria). A frente vem primeiro: se a mesma
+// foto foi aprovada como frente e como lateral, fica onde vale mais.
+function tiraDuplicatas(approved, jaVistos = [], rotulo = '') {
+  const vistos = [...jaVistos];
+  let tiradas = 0;
+  for (const view of ['front', 'side', 'rear', 'interior']) {
+    if (!approved[view]) continue;
+    approved[view] = approved[view].filter(im => {
+      if (ehDuplicata(im.hash, vistos)) { tiradas++; return false; }
+      if (im.hash != null) vistos.push(im.hash);
+      return true;
+    });
+  }
+  if (tiradas) console.log(`[images] ${rotulo}${tiradas} duplicata(s) por conteúdo removida(s)`);
+  return approved;
+}
+
 // Pra cada view, baixa os top-N candidatos e prepara a versão vision em base64.
-// Resultado: cada imagem ganha { buffer, visionUrl } adicionais.
-async function downloadByView(byViewRaw, views, maxPerView = MAX_CANDIDATES_PER_VIEW) {
+// Resultado: cada imagem ganha { buffer, visionUrl, hash } adicionais.
+// Candidato igual a outro já baixado (em qualquer vista desta chamada) ou a
+// `jaVistos` é descartado ANTES da visão — economiza a chamada e evita que a
+// mesma foto seja aprovada duas vezes.
+async function downloadByView(byViewRaw, views, maxPerView = MAX_CANDIDATES_PER_VIEW, jaVistos = []) {
   const out = {};
+  const vistos = [...jaVistos];
   for (const v of views) {
     const slice = (byViewRaw[v] || [])
       .filter(im => !isBannedSource(im))
@@ -607,14 +677,31 @@ async function downloadByView(byViewRaw, views, maxPerView = MAX_CANDIDATES_PER_
     const downloaded = await Promise.all(slice.map(async im => {
       const buffer = await downloadImage(im.url);
       if (!buffer) return null;
-      let visionUrl;
+      let visionUrl, hash = null;
       try { visionUrl = await toVisionDataUrl(buffer); }
       catch { return null; }
-      return { ...im, buffer, visionUrl };
+      try { hash = await dhash(buffer); } catch { /* sem hash: só não entra no dedupe */ }
+      return { ...im, buffer, visionUrl, hash };
     }));
-    out[v] = downloaded.filter(Boolean);
+    out[v] = downloaded.filter(im => {
+      if (!im) return false;
+      if (ehDuplicata(im.hash, vistos)) return false;
+      if (im.hash != null) vistos.push(im.hash);
+      return true;
+    });
   }
   return out;
+}
+
+// Hashes das fotos que já estão na galeria (baixa do bucket). Usado pra
+// completar uma galeria sem repetir foto que ela já tem.
+async function hashesDe(images) {
+  const hs = await Promise.all(images.map(async im => {
+    const buf = await downloadImage(im.url);
+    if (!buf) return null;
+    try { return await dhash(buf); } catch { return null; }
+  }));
+  return hs.filter(h => h != null);
 }
 
 async function buildImages({ marca, modelo, ano, key, skipVision = false }) {
@@ -655,6 +742,7 @@ async function _buildImagesUnlocked({ marca, modelo, ano, key, skipVision = fals
     ? selectHeuristic(byView, HEURISTIC_PER_VIEW)
     : await validateImages({ marca, modelo, ano, byView });
   if (!skipVision) await completaVistasVazias({ marca, modelo, ano, views, byView, approved });
+  tiraDuplicatas(approved, [], `${key}: `);
   const totalApproved = views.reduce((s, v) => s + approved[v].length, 0);
   console.log(`[images] ${key}: ${totalApproved} ${skipVision ? 'selecionadas (heurística)' : 'aprovadas no vision'}`);
 

@@ -11,6 +11,8 @@
 //   cd server && node scripts/fotos-vitrine.js --top=10 --calibrar  # busca + visão, NÃO grava (mede o resultado)
 //   cd server && node scripts/fotos-vitrine.js --top=30             # roda de verdade
 //   cd server && node scripts/fotos-vitrine.js --top=30 --refazer   # inclui os que já são vitrine
+//   cd server && node scripts/fotos-vitrine.js --completar          # só os vitrine com galeria fina:
+//        mantém as fotos que existem e acrescenta nas vistas abaixo da meta
 //
 // Na VPS (1 vCPU servindo o site): nice -n 19 e IMAGE_BUILD_CONCURRENCY=1.
 
@@ -30,11 +32,17 @@ const MIN_APARICOES = arg('min', 2);
 const LISTAR = ARGS.includes('--listar');
 const CALIBRAR = ARGS.includes('--calibrar');
 const REFAZER = ARGS.includes('--refazer');
+const COMPLETAR = ARGS.includes('--completar');
+
+// Galeria fina = o que sobrou depois de uma revisão manual: menos de 10 fotos
+// ou alguma vista vazia.
+const VISTAS = ['front', 'rear', 'side', 'interior'];
+const fina = imgs => imgs.length < 10 || VISTAS.some(v => !imgs.some(im => im.view === v));
 
 // Créditos Serper por carro no modo vitrine: frente 3 imprensa + 1-2 principal
 // + 6 cores; traseira/lateral/interior 1-2 + 3 cores cada; + reserva por vista
-// vazia. ~28 com folga.
-const SERPER_POR_CARRO = 28;
+// vazia. Medido em 2026-11-24: ~40/carro (a reserva entra em quase toda vista).
+const SERPER_POR_CARRO = 40;
 
 async function saldoSerper() {
   try {
@@ -78,11 +86,13 @@ async function main() {
     const imgs = atual.get(makeKey(r)) || [];
     r.fotos = imgs.length;
     r.vitrine = jaVitrine(imgs);
-    if (!REFAZER && r.vitrine) continue;
+    if (COMPLETAR) {
+      if (!r.vitrine || !fina(imgs)) continue;
+    } else if (!REFAZER && r.vitrine) continue;
     if (todo.length < TOP) todo.push(r);
   }
 
-  console.log(`[vitrine] ${ranking.length} carros com >= ${MIN_APARICOES} aparições · ${todo.length} na fila (top ${TOP}${REFAZER ? ', refazendo' : ', pulando os já vitrine'})\n`);
+  console.log(`[vitrine] ${ranking.length} carros com >= ${MIN_APARICOES} aparições · ${todo.length} na fila (top ${TOP}${COMPLETAR ? ', completando galerias finas' : REFAZER ? ', refazendo' : ', pulando os já vitrine'})\n`);
   for (const [i, r] of todo.entries()) {
     console.log(`  ${String(i + 1).padStart(3)}. ${String(r.n).padStart(3)}×  ${r.marca} ${r.modelo} ${r.ano}  (${r.fotos} fotos)`);
   }
@@ -105,11 +115,11 @@ async function main() {
     if (stop || isVisionAborted()) break;
     const nome = `${r.marca} ${r.modelo} ${r.ano}`;
     try {
-      const res = await vitrineCarImages({ marca: r.marca, modelo: r.modelo, ano: r.ano, dryRun: CALIBRAR });
+      const res = await vitrineCarImages({ marca: r.marca, modelo: r.modelo, ano: r.ano, dryRun: CALIBRAR, completar: COMPLETAR });
       const d = res.depois;
       const linha = `${d.front}F ${d.side}L ${d.rear}T ${d.interior}I · capa ${res.capa ?? '-'}`;
       if (res.trocou) trocou++; else manteve++;
-      if ((res.capa ?? 0) < 7) semCapaBoa.push(`${nome} (capa ${res.capa ?? '-'})`);
+      if (!COMPLETAR && (res.capa ?? 0) < 7) semCapaBoa.push(`${nome} (capa ${res.capa ?? '-'})`);
       console.log(`[${String(i + 1).padStart(3)}/${todo.length}] ${nome.slice(0, 60).padEnd(60)} ${r.fotos}→${linha} · ${res.trocou ? 'TROCOU' : `manteve: ${res.motivo}`}`);
     } catch (e) {
       falhou++;

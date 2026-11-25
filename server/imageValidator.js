@@ -152,6 +152,68 @@ const BODY_LABEL = {
 const ANO_FOLGA_ANTES = 0;
 const ANO_FOLGA_DEPOIS = 1;
 
+// Gerações vizinhas que o gpt-4o-mini confunde. O portão de ano acima depende
+// dos anos que o PRÓPRIO modelo declara pra foto — se ele acha que a M4 G82 é a
+// F82, declara 2014-2020 e passa. Na 1ª rodada vitrine foi assim que a M4 2020
+// ganhou capa da G82 e o M2 2021 ficou com quase todo interior do G87. Aqui vai
+// o que diferencia cada geração, visto de fora E de dentro, e o prompt diz qual
+// é a certa e qual reprova. Anos = ano-modelo vendido no Brasil (com a mesma
+// folga do portão). Acrescente conforme a revisão visual achar outros casos.
+const GERACOES = [
+  { marca: /^bmw$/i, modelo: /\bM4\b/i, geracoes: [
+    { de: 2014, ate: 2020, nome: 'F82/F83', visual: 'grade de duplo rim PEQUENA e horizontal, acima do para-choque; por dentro, quadro de instrumentos com ponteiros analógicos e tela solta em cima do painel, alavanca de câmbio alta' },
+    { de: 2021, ate: 2099, nome: 'G82/G83', visual: 'grade de duplo rim ENORME e VERTICAL, descendo até o para-choque; por dentro, quadro digital e tela larga (a partir de 2023, uma tela CURVA única), seletor de câmbio curtinho' },
+  ] },
+  { marca: /^bmw$/i, modelo: /\bM2\b/i, geracoes: [
+    { de: 2016, ate: 2022, nome: 'F87', visual: 'grade de duplo rim pequena e arredondada, para-lamas muito largos e curvos; por dentro, ponteiros analógicos e tela solta em cima do painel' },
+    { de: 2023, ate: 2099, nome: 'G87', visual: 'grade sem moldura, RETANGULAR e horizontal, carroceria quadrada e angulosa; por dentro, tela CURVA única cobrindo instrumentos e central' },
+  ] },
+  { marca: /^aston martin$/i, modelo: /\bvantage\b/i, geracoes: [
+    { de: 2006, ate: 2017, nome: 'Vantage clássico (VH)', visual: 'grade no formato tradicional Aston (trapézio de bordas curvas) e faróis em gota; por dentro, console central de botões em cascata' },
+    { de: 2018, ate: 2099, nome: 'Vantage novo', visual: 'grade larga e baixa, faróis finos e alongados, traseira com lanterna em faixa fina; por dentro, painel com central multimídia de origem Mercedes' },
+  ] },
+  { marca: /^mercedes-benz$/i, modelo: /\bC[\s-]?63\b/i, geracoes: [
+    { de: 2008, ate: 2014, nome: 'W204', visual: 'faróis retangulares angulosos, para-choque com tomadas grandes; por dentro, tela embutida no painel sob uma cobertura, saídas de ar retangulares' },
+    { de: 2015, ate: 2022, nome: 'W205', visual: 'faróis alongados e curvos, capô com dois vincos; por dentro, tela tipo TABLET solta sobre o painel e TRÊS saídas de ar REDONDAS no centro' },
+    { de: 2023, ate: 2099, nome: 'W206', visual: 'faróis finos, para-choque bem recortado; por dentro, tela central VERTICAL (em pé) no console e quadro digital solto' },
+  ] },
+  { marca: /^ford$/i, modelo: /\bmustang\b/i, geracoes: [
+    { de: 2015, ate: 2023, nome: 'S550', visual: 'faróis com três barras de LED inclinadas, lanternas de três barras verticais; por dentro, central pequena embutida no painel e fileira de interruptores tipo avião' },
+    { de: 2024, ate: 2099, nome: 'S650', visual: 'faróis mais angulosos com três segmentos separados, para-choque com grade mais alta; por dentro, UMA peça larga de telas unindo instrumentos e central' },
+  ] },
+  { marca: /^chevrolet$/i, modelo: /\bcamaro\b/i, geracoes: [
+    { de: 2010, ate: 2015, nome: '5ª geração', visual: 'carroceria retrô alta, frente quadrada; por dentro, quatro relógios auxiliares no pé do console e painel retrô quadrado' },
+    { de: 2016, ate: 2099, nome: '6ª geração', visual: 'carroceria mais baixa e afilada, faróis finos; por dentro, saídas de ar REDONDAS no console com o controle do ar-condicionado no aro delas' },
+  ] },
+  { marca: /^porsche$/i, modelo: /\b911\b/i, geracoes: [
+    { de: 2012, ate: 2019, nome: '991', visual: 'lanternas traseiras SEPARADAS (uma de cada lado); por dentro, alavanca de câmbio convencional e console com muitos botões' },
+    { de: 2020, ate: 2099, nome: '992', visual: 'faixa de luz traseira CONTÍNUA de lado a lado; por dentro, seletor de câmbio curtinho tipo interruptor e tela central larga' },
+  ] },
+  { marca: /^porsche$/i, modelo: /\b(718|boxster|cayman)\b/i, geracoes: [
+    { de: 2013, ate: 2016, nome: '981', visual: 'lanternas traseiras SEPARADAS, sem faixa entre elas' },
+    { de: 2017, ate: 2099, nome: '718 (982)', visual: 'faixa PRETA ligando as lanternas traseiras, com a escrita PORSCHE' },
+  ] },
+];
+
+// Texto pro prompt: geração certa + as vizinhas que reprovam. null se o modelo
+// não está na tabela.
+function dicaGeracao(marca, modelo, ano) {
+  const g = GERACOES.find(x => x.marca.test(String(marca).trim()) && x.modelo.test(modelo));
+  if (!g) return null;
+  // Só o encaixe exato. Ano que só cabe pela folga (ex.: M4 2021, ano-modelo
+  // que pode ser o último lote da F82 ou a G82) é ambíguo: sem dica, fica com
+  // o portão de ano normal.
+  const idx = g.geracoes.findIndex(x => ano >= x.de && ano <= x.ate);
+  if (idx < 0) return null;
+  const vizinha = g.geracoes[idx - 1];
+  if (vizinha && ano <= vizinha.ate + ANO_FOLGA_DEPOIS) return null;
+  const certa = g.geracoes[idx];
+  const erradas = g.geracoes.filter((_, i) => i !== idx);
+  return `\nGERAÇÃO CERTA para ${ano}: ${certa.nome} — ${certa.visual}.`
+    + erradas.map(e => `\nGERAÇÃO ERRADA (REPROVE): ${e.nome} — ${e.visual}.`).join('')
+    + `\nA geração mais nova é a que mais aparece na web: confira grade, faróis, lanternas e painel ANTES de aprovar, foto por foto.`;
+}
+
 // Marcas só importadas (ou com produção local idêntica à global): o carro
 // vendido aqui é o mesmo da foto de imprensa estrangeira. Nomes como a FIPE
 // grafa. Fica fora quem tem versão própria pro Brasil (VW, Fiat, GM, Ford...).
@@ -242,7 +304,7 @@ const MAX_CANDIDATES_TO_VALIDATE = 10;
 // Modo vitrine (carros que mais aparecem nas consultas): galeria maior e com mais
 // cores. Mais candidatos vão pra visão — o pool de busca também é maior — e a
 // cota por vista sobe. A diversidade de cor de _selecionaAprovadas faz o resto.
-const VITRINE_APPROVED_PER_VIEW = { front: 10, side: 6, rear: 6, interior: 8 };
+export const VITRINE_APPROVED_PER_VIEW = { front: 10, side: 6, rear: 6, interior: 8 };
 const VITRINE_MAX_CANDIDATES = 25;
 
 async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3, retries = 5 }) {
@@ -300,7 +362,7 @@ async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3
 
 CARRO ALVO: ${marca} ${modelo}, ano ${ano}.
 VISTA PEDIDA: ${VIEW_LABEL[view]}.
-MERCADO: Brasil — carro brasileiro tem volante à ESQUERDA.${bodyHint}${trimHint}
+MERCADO: Brasil — carro brasileiro tem volante à ESQUERDA.${bodyHint}${trimHint}${dicaGeracao(marca, modelo, ano) || ''}
 
 Julgue CADA foto POR SI. Isto NÃO é uma escolha das melhores: cada foto passa ou reprova sozinha, e reprovar TODAS é um resultado normal e aceitável.
 
@@ -316,6 +378,8 @@ ${mercadoRegras}
 - **THUMBNAIL DE VÍDEO / CHAMADA DE MATÉRIA**: capa de YouTube, headline sobreposta ("MELHOR HATCH 2024?", "TESTE COMPLETO"), preço ou número grande sobre o carro — REPROVE.
 - Colagem/montagem com várias fotos numa só (antes/depois, comparativo).
 - **FOTO EDITADA / DE LOJA DE ACESSÓRIOS**: círculo ou quadro com detalhe ampliado sobreposto ao carro (peça, aerofólio, ponteira), seta, linha, setinha ou marcação desenhada, texto sobreposto, ou placa trocada por plaqueta com nome de loja/marca ("ACESSÓRIOS", "@perfil", site). É anúncio de peça, não foto do carro — REPROVE, mesmo que o carro em si esteja certo e limpo.
+- **BANCO DE IMAGEM / CLASSIFICADO**: marca d'água de banco de imagem (iStock, Getty Images, Shutterstock, Alamy, Dreamstime, Adobe Stock, "Editorial use only", "Credit:") ou de site de classificados (Standvirtual, Webmotors, OLX, iCarros, Mobile.de, AutoScout24) — REPROVE SEMPRE, em QUALQUER tamanho, mesmo pequena no canto.
+- **LOJA AO FUNDO**: letreiro, fachada, placa ou bandeira com nome de revenda/concessionária visível atrás ou em volta do carro, ou placa do carro trocada por plaqueta de loja — REPROVE.
 - Marca d'água ou logo GRANDE cobrindo mais de ~10% do carro. Marca d'água de site pequena e discreta num canto é tolerável; logo de revenda, telefone ou faixa promocional NUNCA são.
 
 Em dúvida, REPROVE. Melhor zero foto que uma foto errada.
