@@ -34,10 +34,17 @@ const CALIBRAR = ARGS.includes('--calibrar');
 const REFAZER = ARGS.includes('--refazer');
 const COMPLETAR = ARGS.includes('--completar');
 
-// Galeria fina = o que sobrou depois de uma revisão manual: menos de 10 fotos
-// ou alguma vista vazia.
+// Faixa de preço FIPE (priceN da consulta), pra priorizar os carros caros:
+//   --min-preco=100000   só >= R$ 100 mil      --max-preco=99999   só abaixo
+const MIN_PRECO = arg('min-preco', 0);
+const MAX_PRECO = arg('max-preco', Infinity);
+
+// Galeria fina = o que sobrou depois de uma revisão manual: menos de 10 fotos,
+// alguma vista vazia, ou menos de 3 frentes (pouca opção de capa).
 const VISTAS = ['front', 'rear', 'side', 'interior'];
-const fina = imgs => imgs.length < 10 || VISTAS.some(v => !imgs.some(im => im.view === v));
+const fina = imgs => imgs.length < 10
+  || VISTAS.some(v => !imgs.some(im => im.view === v))
+  || imgs.filter(im => im.view === 'front').length < 3;
 
 // Créditos Serper por carro no modo vitrine: frente 3 imprensa + 1-2 principal
 // + 6 cores; traseira/lateral/interior 1-2 + 3 cores cada; + reserva por vista
@@ -63,15 +70,16 @@ async function main() {
 
   const ranking = await dbq(
     `select e->>'brand' as marca, e->>'model' as modelo, (e->>'year')::int as ano,
-            count(distinct c.id)::int as n
+            count(distinct c.id)::int as n,
+            max((e->>'priceN')::numeric)::int as preco
        from consultas c, jsonb_array_elements(c.top) e
       where (not c.teste or c.modelo) and jsonb_typeof(c.top) = 'array'
       group by 1, 2, 3
      having count(distinct c.id) >= $1
-      order by n desc, marca, modelo
+      order by n desc, preco desc nulls last, marca, modelo
       limit $2`,
     [MIN_APARICOES, TOP * 3]
-  );
+  ).then(rows => rows.filter(r => (r.preco ?? 0) >= MIN_PRECO && (r.preco ?? 0) <= MAX_PRECO));
 
   // Estado atual de cada um: já é vitrine? quantas fotos?
   const keys = ranking.map(r => makeKey(r));
@@ -94,7 +102,7 @@ async function main() {
 
   console.log(`[vitrine] ${ranking.length} carros com >= ${MIN_APARICOES} aparições · ${todo.length} na fila (top ${TOP}${COMPLETAR ? ', completando galerias finas' : REFAZER ? ', refazendo' : ', pulando os já vitrine'})\n`);
   for (const [i, r] of todo.entries()) {
-    console.log(`  ${String(i + 1).padStart(3)}. ${String(r.n).padStart(3)}×  ${r.marca} ${r.modelo} ${r.ano}  (${r.fotos} fotos)`);
+    console.log(`  ${String(i + 1).padStart(3)}. ${String(r.n).padStart(3)}×  ${r.marca} ${r.modelo} ${r.ano}  (${r.fotos} fotos${r.preco ? `, R$ ${r.preco.toLocaleString('pt-BR')}` : ''})`);
   }
   if (LISTAR || todo.length === 0) return;
 
