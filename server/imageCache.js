@@ -645,22 +645,25 @@ async function writeCache(row) {
 // Assinatura = miniatura de até 128 px em imagens integrais (cinza + R,G,B),
 // que dá a média de qualquer retângulo em O(1). Com ela:
 //   1. foto inteira × foto inteira: dHash 8×8 (64 bits) ≤ 6 → mesma foto;
-//   2. recorte: procura em A a janela com a proporção de B (6 escalas × 5×5
-//      posições) cujo dHash 8×8 bate com o de B (≤ 5), e CONFIRMA nessa janela
-//      com dHash 16×16 (≤ 30 de 256) e cor média 4×4 (≤ 12 em 255).
-// A confirmação existe porque, com 300 janelas, 64 bits acham coincidência:
+//   2. recorte: procura em A a janela com a proporção de B (11 escalas de 1 a
+//      0,5 × 7×7 posições) cujo dHash 8×8 bate com o de B (≤ 5), e CONFIRMA
+//      nessa janela com dHash 16×16 (≤ 34 de 256) e cor média 4×4 (≤ 12 em 255).
+// A confirmação existe porque, com ~1000 janelas, 64 bits acham coincidência:
 // fotos diferentes da mesma sessão de estúdio e o mesmo render em outra cor
-// chegaram a 3-4 bits. Medido em 34 duplicatas reais × 5.928 pares diferentes
-// (galerias da r4/r5): pega 31/34 (antes 21/34), 0 falso positivo.
+// chegaram a 3-4 bits. Medido nas galerias da r4/r5 (~5.900 pares): pega todas
+// as duplicatas reais (6 escalas × 5×5 e ≤ 30 pegava 31 de 34; o dHash da foto
+// inteira, 21), 0 falso positivo. O par diferente mais perto é outro quadro da
+// mesma sessão (C63, d16 = 39). Refino local da janela (subida de encosta) foi
+// testado e descartado: aproxima também os quadros vizinhos da mesma sessão.
 //
 // .rotate() antes de tudo: o encode do bucket aplica a orientação EXIF, então
 // sem ele a foto de celular e a cópia gravada dela davam 21 bits de distância.
 const ASSIN_LADO = 128;
-const ASSIN_ESCALAS = [1, 0.9, 0.8, 0.7, 0.6, 0.5];
-const ASSIN_POS = 5;
+const ASSIN_ESCALAS = [1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5];
+const ASSIN_POS = 7;
 const DUPLICATA_MAX_BITS = 6;   // foto inteira, 64 bits
 const RECORTE_MAX_BITS = 5;     // melhor janela, 64 bits
-const RECORTE_MAX_BITS16 = 30;  // confirmação, 256 bits
+const RECORTE_MAX_BITS16 = 34;  // confirmação, 256 bits
 const RECORTE_MAX_COR = 12;     // confirmação, diferença média por canal
 
 async function assinatura(buffer) {
@@ -724,7 +727,7 @@ function bitsDiferentes(a, b) {
 // B é um recorte de A?
 function ehRecorte(A, B) {
   const asp = B.w / B.h;
-  let melhor = null;
+  const cands = [];
   for (const esc of ASSIN_ESCALAS) {
     let w = A.w, h = w / asp;
     if (h > A.h) { h = A.h; w = h * asp; }
@@ -733,12 +736,20 @@ function ehRecorte(A, B) {
     for (let i = 0; i < ASSIN_POS; i++) for (let j = 0; j < ASSIN_POS; j++) {
       const x = (A.w - w) * i / (ASSIN_POS - 1), y = (A.h - h) * j / (ASSIN_POS - 1);
       const d = bitsDiferentes(gradeHash(A, x, y, w, h, 8), B.h8);
-      if (!melhor || d < melhor.d) melhor = { d, x, y, w, h };
+      if (d <= RECORTE_MAX_BITS) cands.push({ d, x, y, w, h });
     }
   }
-  if (!melhor || melhor.d > RECORTE_MAX_BITS) return false;
+  if (!cands.length) return false;
+  // Com ~1000 janelas, a de menor d8 nem sempre é a certa (empate em 2-3 bits
+  // com uma vizinha): confirma a melhor, pelo 16×16, entre as 3 de menor d8.
+  cands.sort((p, q) => p.d - q.d);
+  let melhor = null;
+  for (const c of cands.slice(0, 3)) {
+    c.d16 = bitsDiferentes(gradeHash(A, c.x, c.y, c.w, c.h, 16), B.h16);
+    if (!melhor || c.d16 < melhor.d16) melhor = c;
+  }
+  if (melhor.d16 > RECORTE_MAX_BITS16) return false;
   const { x, y, w, h } = melhor;
-  if (bitsDiferentes(gradeHash(A, x, y, w, h, 16), B.h16) > RECORTE_MAX_BITS16) return false;
   const ca = corMedia(A, x, y, w, h);
   const dif = ca.reduce((t, v, i) => t + Math.abs(v - B.cor[i]), 0) / ca.length;
   return dif <= RECORTE_MAX_COR;
