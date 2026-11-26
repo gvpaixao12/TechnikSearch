@@ -637,27 +637,118 @@ async function writeCache(row) {
   }
 }
 
-// Hash perceptual (dHash 64 bits): a mesma foto vinda de URLs diferentes —
-// outro tamanho, outra compressão, outro site — dá hash igual ou quase. O dedupe
-// por URL deixava passar isso, e na 1ª rodada vitrine a mesma foto apareceu 2-3
-// vezes na galeria, às vezes rotulada em vistas diferentes.
-async function dhash(buffer) {
-  const px = await sharp(buffer).grayscale().resize(9, 8, { fit: 'fill' }).raw().toBuffer();
-  let h = 0n;
-  for (let y = 0; y < 8; y++) {
-    for (let x = 0; x < 8; x++) h = (h << 1n) | (px[y * 9 + x] < px[y * 9 + x + 1] ? 1n : 0n);
+// Dedupe por conteúdo: a mesma foto vinda de URLs diferentes — outro tamanho,
+// outra compressão, outro site, OUTRO RECORTE — tem que ser reconhecida. Por URL
+// passava tudo; com um dHash só da imagem inteira passava o recorte (Jimny,
+// Creta, Toro e Discovery Sport ganharam a mesma foto 2-3 vezes na r4).
+//
+// Assinatura = miniatura de até 128 px em imagens integrais (cinza + R,G,B),
+// que dá a média de qualquer retângulo em O(1). Com ela:
+//   1. foto inteira × foto inteira: dHash 8×8 (64 bits) ≤ 6 → mesma foto;
+//   2. recorte: procura em A a janela com a proporção de B (6 escalas × 5×5
+//      posições) cujo dHash 8×8 bate com o de B (≤ 5), e CONFIRMA nessa janela
+//      com dHash 16×16 (≤ 30 de 256) e cor média 4×4 (≤ 12 em 255).
+// A confirmação existe porque, com 300 janelas, 64 bits acham coincidência:
+// fotos diferentes da mesma sessão de estúdio e o mesmo render em outra cor
+// chegaram a 3-4 bits. Medido em 34 duplicatas reais × 5.928 pares diferentes
+// (galerias da r4/r5): pega 31/34 (antes 21/34), 0 falso positivo.
+//
+// .rotate() antes de tudo: o encode do bucket aplica a orientação EXIF, então
+// sem ele a foto de celular e a cópia gravada dela davam 21 bits de distância.
+const ASSIN_LADO = 128;
+const ASSIN_ESCALAS = [1, 0.9, 0.8, 0.7, 0.6, 0.5];
+const ASSIN_POS = 5;
+const DUPLICATA_MAX_BITS = 6;   // foto inteira, 64 bits
+const RECORTE_MAX_BITS = 5;     // melhor janela, 64 bits
+const RECORTE_MAX_BITS16 = 30;  // confirmação, 256 bits
+const RECORTE_MAX_COR = 12;     // confirmação, diferença média por canal
+
+async function assinatura(buffer) {
+  const { data, info } = await sharp(buffer).rotate().flatten({ background: '#ffffff' })
+    .removeAlpha().toColourspace('srgb')
+    .resize(ASSIN_LADO, ASSIN_LADO, { fit: 'inside' })
+    .raw().toBuffer({ resolveWithObject: true });
+  const w = info.width, h = info.height, c = info.channels;
+  const W = w + 1;
+  const mk = () => new Float32Array(W * (h + 1)); // somas ≤ 128·128·255: exatas em float32
+  const I = mk(), R = mk(), G = mk(), B = mk();
+  for (let y = 0; y < h; y++) {
+    let s = 0, sr = 0, sg = 0, sb = 0;
+    for (let x = 0; x < w; x++) {
+      const p = (y * w + x) * c, r = data[p], g = data[p + 1], b = data[p + 2];
+      s += Math.round(0.299 * r + 0.587 * g + 0.114 * b); sr += r; sg += g; sb += b;
+      const k = (y + 1) * W + x + 1, k0 = y * W + x + 1;
+      I[k] = I[k0] + s; R[k] = R[k0] + sr; G[k] = G[k0] + sg; B[k] = B[k0] + sb;
+    }
   }
-  return h;
+  const sig = { w, h, I, R, G, B };
+  sig.h8 = gradeHash(sig, 0, 0, w, h, 8);
+  sig.h16 = gradeHash(sig, 0, 0, w, h, 16);
+  sig.cor = corMedia(sig, 0, 0, w, h);
+  return sig;
 }
-function distancia(a, b) {
-  let x = a ^ b, n = 0;
-  while (x) { n += Number(x & 1n); x >>= 1n; }
+function mediaRet(s, x0, y0, x1, y1, M = s.I) {
+  const W = s.w + 1, a = Math.floor(x0), b = Math.floor(y0);
+  const c = Math.min(s.w, Math.max(a + 1, Math.round(x1)));
+  const d = Math.min(s.h, Math.max(b + 1, Math.round(y1)));
+  return (M[d * W + c] - M[b * W + c] - M[d * W + a] + M[b * W + a]) / ((c - a) * (d - b));
+}
+// dHash n×n da janela, em palavras de 32 bits (8×8 → 2, 16×16 → 8).
+function gradeHash(s, x, y, w, h, n) {
+  const out = new Uint32Array((n * n) / 32);
+  const cw = w / (n + 1), ch = h / n;
+  let bit = 0;
+  const m = new Float64Array(n + 1);
+  for (let r = 0; r < n; r++) {
+    for (let k = 0; k <= n; k++) m[k] = mediaRet(s, x + k * cw, y + r * ch, x + (k + 1) * cw, y + (r + 1) * ch);
+    for (let k = 0; k < n; k++, bit++) if (m[k] < m[k + 1]) out[bit >>> 5] |= 1 << (bit & 31);
+  }
+  return out;
+}
+function corMedia(s, x, y, w, h) {
+  const o = [];
+  for (let r = 0; r < 4; r++) for (let k = 0; k < 4; k++) for (const M of [s.R, s.G, s.B]) {
+    o.push(mediaRet(s, x + k * w / 4, y + r * h / 4, x + (k + 1) * w / 4, y + (r + 1) * h / 4, M));
+  }
+  return o;
+}
+function bitsDiferentes(a, b) {
+  let n = 0;
+  for (let i = 0; i < a.length; i++) {
+    let v = (a[i] ^ b[i]) >>> 0;
+    v -= (v >>> 1) & 0x55555555; v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+    n += (((v + (v >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+  }
   return n;
 }
-// ≤ 6 de 64 bits: pega reencode e redimensionamento; fotos diferentes do mesmo
-// carro na mesma pose ficam bem acima disso.
-const DUPLICATA_MAX_BITS = 6;
-const ehDuplicata = (h, vistos) => h != null && vistos.some(v => distancia(h, v) <= DUPLICATA_MAX_BITS);
+// B é um recorte de A?
+function ehRecorte(A, B) {
+  const asp = B.w / B.h;
+  let melhor = null;
+  for (const esc of ASSIN_ESCALAS) {
+    let w = A.w, h = w / asp;
+    if (h > A.h) { h = A.h; w = h * asp; }
+    w *= esc; h *= esc;
+    if (w < 12 || h < 10) continue;
+    for (let i = 0; i < ASSIN_POS; i++) for (let j = 0; j < ASSIN_POS; j++) {
+      const x = (A.w - w) * i / (ASSIN_POS - 1), y = (A.h - h) * j / (ASSIN_POS - 1);
+      const d = bitsDiferentes(gradeHash(A, x, y, w, h, 8), B.h8);
+      if (!melhor || d < melhor.d) melhor = { d, x, y, w, h };
+    }
+  }
+  if (!melhor || melhor.d > RECORTE_MAX_BITS) return false;
+  const { x, y, w, h } = melhor;
+  if (bitsDiferentes(gradeHash(A, x, y, w, h, 16), B.h16) > RECORTE_MAX_BITS16) return false;
+  const ca = corMedia(A, x, y, w, h);
+  const dif = ca.reduce((t, v, i) => t + Math.abs(v - B.cor[i]), 0) / ca.length;
+  return dif <= RECORTE_MAX_COR;
+}
+function mesmaFoto(a, b) {
+  if (bitsDiferentes(a.h8, b.h8) <= DUPLICATA_MAX_BITS) return true;
+  return ehRecorte(a, b) || ehRecorte(b, a);
+}
+const ehDuplicata = (h, vistos) => h != null && vistos.some(v => mesmaFoto(h, v));
+export { assinatura, mesmaFoto }; // pra scripts de revisão/medição
 
 // Tira duplicatas das aprovadas, entre TODAS as vistas e contra `jaVistos`
 // (hashes de fotos que já estão na galeria). A frente vem primeiro: se a mesma
@@ -696,7 +787,7 @@ async function downloadByView(byViewRaw, views, maxPerView = MAX_CANDIDATES_PER_
       let visionUrl, hash = null;
       try { visionUrl = await toVisionDataUrl(buffer); }
       catch { return null; }
-      try { hash = await dhash(buffer); } catch { /* sem hash: só não entra no dedupe */ }
+      try { hash = await assinatura(buffer); } catch { /* sem assinatura: só não entra no dedupe */ }
       return { ...im, buffer, visionUrl, hash };
     }));
     out[v] = downloaded.filter(im => {
@@ -715,7 +806,7 @@ async function hashesDe(images) {
   const hs = await Promise.all(images.map(async im => {
     const buf = await downloadImage(im.url);
     if (!buf) return null;
-    try { return await dhash(buf); } catch { return null; }
+    try { return await assinatura(buf); } catch { return null; }
   }));
   return hs.filter(h => h != null);
 }
