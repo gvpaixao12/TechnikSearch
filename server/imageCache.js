@@ -644,17 +644,24 @@ async function writeCache(row) {
 //
 // Assinatura = miniatura de até 128 px em imagens integrais (cinza + R,G,B),
 // que dá a média de qualquer retângulo em O(1). Com ela:
-//   1. foto inteira × foto inteira: dHash 8×8 (64 bits) ≤ 6 → mesma foto;
+//   1. foto inteira × foto inteira: dHash 8×8 ≤ 6, CONFIRMADO por dHash 16×16
+//      ≤ 16 e pior célula da grade de cor 8×8 ≤ 30;
 //   2. recorte: procura em A a janela com a proporção de B (11 escalas de 1 a
 //      0,5 × 7×7 posições) cujo dHash 8×8 bate com o de B (≤ 5), e CONFIRMA
-//      nessa janela com dHash 16×16 (≤ 34 de 256) e cor média 4×4 (≤ 12 em 255).
-// A confirmação existe porque, com ~1000 janelas, 64 bits acham coincidência:
-// fotos diferentes da mesma sessão de estúdio e o mesmo render em outra cor
-// chegaram a 3-4 bits. Medido nas galerias da r4/r5 (~5.900 pares): pega todas
-// as duplicatas reais (6 escalas × 5×5 e ≤ 30 pegava 31 de 34; o dHash da foto
-// inteira, 21), 0 falso positivo. O par diferente mais perto é outro quadro da
-// mesma sessão (C63, d16 = 39). Refino local da janela (subida de encosta) foi
-// testado e descartado: aproxima também os quadros vizinhos da mesma sessão.
+//      (melhor das 3 janelas de menor d8) com dHash 16×16 ≤ 34, cor média ≤ 12
+//      e pior célula de cor ≤ 30.
+// A confirmação existe porque 64 bits acham coincidência: fotos diferentes da
+// mesma sessão e, sobretudo, o MESMO RENDER EM OUTRA COR (carro pequeno em
+// fundo liso — Gol, Q5, iX, Panamera, CrossFox) chegam a 0-6 bits. A cor tem
+// que ser olhada por célula pequena: na média 4×4 o fundo dilui o carro.
+// Medido (2026-11-26):
+//   - galerias da r4/r5, ~5.900 pares: 34/35 duplicatas, 0 falso positivo;
+//   - varredura das galerias no ar, 323 pares parecidos revisados à mão:
+//     8 de 10 falsos barrados (sobram configurador com/sem detalhe e outro
+//     carro no mesmo cenário), 14 de 311 duplicatas perdidas (recortes com
+//     marca d'água diferente por cima). Grade 4×4: 0 barrados, 0 perdidas.
+// Testado e descartado: refino local da janela (aproxima quadros vizinhos da
+// mesma sessão) e cor tolerante a deslocamento de 1 célula (não melhorou).
 //
 // .rotate() antes de tudo: o encode do bucket aplica a orientação EXIF, então
 // sem ele a foto de celular e a cópia gravada dela davam 21 bits de distância.
@@ -664,7 +671,10 @@ const ASSIN_POS = 7;
 const DUPLICATA_MAX_BITS = 6;   // foto inteira, 64 bits
 const RECORTE_MAX_BITS = 5;     // melhor janela, 64 bits
 const RECORTE_MAX_BITS16 = 34;  // confirmação, 256 bits
-const RECORTE_MAX_COR = 12;     // confirmação, diferença média por canal
+const COR_N = 8;                // grade de cor COR_N×COR_N
+const RECORTE_MAX_COR = 12;     // recorte: diferença média por canal
+const COR_MAX_CELULA = 30;      // pior célula da grade de cor (inteira e recorte)
+const FOTO_INTEIRA_MAX_BITS16 = 16; // foto inteira: cópia real dá ≤ 7
 
 async function assinatura(buffer) {
   const { data, info } = await sharp(buffer).rotate().flatten({ background: '#ffffff' })
@@ -710,8 +720,8 @@ function gradeHash(s, x, y, w, h, n) {
 }
 function corMedia(s, x, y, w, h) {
   const o = [];
-  for (let r = 0; r < 4; r++) for (let k = 0; k < 4; k++) for (const M of [s.R, s.G, s.B]) {
-    o.push(mediaRet(s, x + k * w / 4, y + r * h / 4, x + (k + 1) * w / 4, y + (r + 1) * h / 4, M));
+  for (let r = 0; r < COR_N; r++) for (let k = 0; k < COR_N; k++) for (const M of [s.R, s.G, s.B]) {
+    o.push(mediaRet(s, x + k * w / COR_N, y + r * h / COR_N, x + (k + 1) * w / COR_N, y + (r + 1) * h / COR_N, M));
   }
   return o;
 }
@@ -752,10 +762,26 @@ function ehRecorte(A, B) {
   const { x, y, w, h } = melhor;
   const ca = corMedia(A, x, y, w, h);
   const dif = ca.reduce((t, v, i) => t + Math.abs(v - B.cor[i]), 0) / ca.length;
-  return dif <= RECORTE_MAX_COR;
+  return dif <= RECORTE_MAX_COR && corMaxCelula(ca, B.cor) <= COR_MAX_CELULA;
+}
+// Pior célula da grade de cor (média dos 3 canais).
+function corMaxCelula(ca, cb) {
+  let max = 0;
+  for (let i = 0; i < ca.length; i += 3) {
+    const d = (Math.abs(ca[i] - cb[i]) + Math.abs(ca[i + 1] - cb[i + 1]) + Math.abs(ca[i + 2] - cb[i + 2])) / 3;
+    if (d > max) max = d;
+  }
+  return max;
 }
 function mesmaFoto(a, b) {
-  if (bitsDiferentes(a.h8, b.h8) <= DUPLICATA_MAX_BITS) return true;
+  // Foto inteira: o dHash 8×8 sozinho casava render de estúdio do mesmo fundo
+  // com o carro em outra cor (Gol azul × vermelho, 4 bits), outro quadro
+  // (Vantage de porta aberta) ou frente × traseira em fundo preto (125i). Na
+  // varredura das galerias no ar, foram 4 em 30 pares. Cópia real dá 16×16 ≤ 7
+  // e pior célula de cor ≤ 2; os falsos deram 21-41 bits e 42-93 de cor (8×8).
+  if (bitsDiferentes(a.h8, b.h8) <= DUPLICATA_MAX_BITS
+    && bitsDiferentes(a.h16, b.h16) <= FOTO_INTEIRA_MAX_BITS16
+    && corMaxCelula(a.cor, b.cor) <= COR_MAX_CELULA) return true;
   return ehRecorte(a, b) || ehRecorte(b, a);
 }
 const ehDuplicata = (h, vistos) => h != null && vistos.some(v => mesmaFoto(h, v));
