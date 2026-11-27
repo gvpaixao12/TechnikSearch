@@ -675,6 +675,7 @@ const COR_N = 8;                // grade de cor COR_N×COR_N
 const RECORTE_MAX_COR = 12;     // recorte: diferença média por canal
 const COR_MAX_CELULA = 30;      // pior célula da grade de cor (inteira e recorte)
 const FOTO_INTEIRA_MAX_BITS16 = 16; // foto inteira: cópia real dá ≤ 7
+const RUIDO_MAX = 0.6;          // foto real ≤ 0,36; ruído ≥ 1,05 (ver assinatura)
 
 async function assinatura(buffer) {
   const { data, info } = await sharp(buffer).rotate().flatten({ background: '#ffffff' })
@@ -685,16 +686,25 @@ async function assinatura(buffer) {
   const W = w + 1;
   const mk = () => new Float32Array(W * (h + 1)); // somas ≤ 128·128·255: exatas em float32
   const I = mk(), R = mk(), G = mk(), B = mk();
+  let soma = 0, soma2 = 0, vizinho = 0;
   for (let y = 0; y < h; y++) {
-    let s = 0, sr = 0, sg = 0, sb = 0;
+    let s = 0, sr = 0, sg = 0, sb = 0, ant = -1;
     for (let x = 0; x < w; x++) {
       const p = (y * w + x) * c, r = data[p], g = data[p + 1], b = data[p + 2];
-      s += Math.round(0.299 * r + 0.587 * g + 0.114 * b); sr += r; sg += g; sb += b;
+      const l = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+      s += l; sr += r; sg += g; sb += b;
+      soma += l; soma2 += l * l; if (ant >= 0) vizinho += Math.abs(l - ant); ant = l;
       const k = (y + 1) * W + x + 1, k0 = y * W + x + 1;
       I[k] = I[k0] + s; R[k] = R[k0] + sr; G[k] = G[k0] + sg; B[k] = B[k0] + sb;
     }
   }
   const sig = { w, h, I, R, G, B };
+  // Ruído: diferença média entre pixels vizinhos ÷ desvio-padrão. Em foto os
+  // vizinhos se parecem (≤ 0,32 em 824 fotos reais); no placeholder de ruído
+  // cinza que o netcarshow serve pra robô, não têm relação (1,04). A visão
+  // aprovou 56 desses como foto.
+  const N = w * h, media = soma / N, desvio = Math.sqrt(Math.max(0, soma2 / N - media * media));
+  sig.ruido = desvio > 0 ? (vizinho / ((w - 1) * h)) / desvio : 0;
   sig.h8 = gradeHash(sig, 0, 0, w, h, 8);
   sig.h16 = gradeHash(sig, 0, 0, w, h, 16);
   sig.cor = corMedia(sig, 0, 0, w, h);
@@ -825,6 +835,10 @@ async function downloadByView(byViewRaw, views, maxPerView = MAX_CANDIDATES_PER_
       try { visionUrl = await toVisionDataUrl(buffer); }
       catch { return null; }
       try { hash = await assinatura(buffer); } catch { /* sem assinatura: só não entra no dedupe */ }
+      if (hash && hash.ruido > RUIDO_MAX) {
+        console.log(`[images] ruído descartado antes da visão: ${im.url}`);
+        return null;
+      }
       return { ...im, buffer, visionUrl, hash };
     }));
     out[v] = downloaded.filter(im => {
