@@ -142,6 +142,21 @@ const BODY_LABEL = {
   perua: { nome: 'perua / station wagon', desc: 'frente de hatch ou sedã com o teto reto prolongado até a traseira, tampa traseira quase vertical' },
 };
 
+// Modelos cujo formato não cabe na descrição genérica da carroceria. O catálogo
+// continua chamando de hatch (é o certo pro filtro), mas a descrição de hatch
+// ("vidro traseiro termina logo acima da tampa") fazia a visão reprovar o Fusca
+// moderno, de teto em arco, como "carroceria errada": a busca direcionada de
+// 2026-11-27 reprovou assim 21 de 23 fotos do Fusca 2014.
+const FORMATO_ESPECIAL = [
+  { marca: /^vw/i, modelo: /\bfusca\b/i, de: 2012, ate: 2099, nome: 'Fusca moderno (VW Beetle A5) — hatch de 2 portas',
+    desc: 'teto em ARCO contínuo do para-brisa até a traseira, faróis redondos, para-lamas salientes; é o "New Beetle" de 2012 em diante — reprove o Fusca clássico (anos 50-90) e o New Beetle 1998-2010 (teto em meia-lua perfeita, sem capô definido)' },
+  { marca: /^vw/i, modelo: /\bfusca\b/i, de: 1900, ate: 2011, nome: 'Fusca clássico (VW Tipo 1) — 2 portas',
+    desc: 'teto em arco, capô dianteiro curto e tampa do motor traseira, para-lamas separados da carroceria, estribo entre eles' },
+];
+function formatoEspecial(marca, modelo, ano) {
+  return FORMATO_ESPECIAL.find(f => f.marca.test(String(marca).trim()) && f.modelo.test(modelo) && ano >= f.de && ano <= f.ate) || null;
+}
+
 // Tolerância do portão de ano, ASSIMÉTRICA. Depois do fim da geração, 1 ano de
 // folga: o ano-modelo da FIPE costuma ser o de produção + 1, então o último
 // lote sai com ano-modelo um acima. Antes do início, ZERO: ano-modelo anterior
@@ -349,7 +364,9 @@ async function validateBatch({ marca, modelo, ano, view, images, maxApproved = 3
 
   // Só nas vistas externas: do painel não dá pra dizer a carroceria, e com
   // "em dúvida, reprove" a regra zeraria os interiores.
-  const body = isExternal ? BODY_LABEL[classifyTipo(`${marca} ${modelo}`)] : null;
+  const body = isExternal
+    ? (formatoEspecial(marca, modelo, ano) || BODY_LABEL[classifyTipo(`${marca} ${modelo}`)])
+    : null;
   const bodyHint = body
     ? `\nCARROCERIA: ${body.nome} — ${body.desc}. Carroceria diferente REPROVA, mesmo que a marca e o nome do modelo batam.`
     : '';
